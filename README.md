@@ -1,6 +1,7 @@
 # Crypto Worm Wars match server
 
-Online 1v1 for [Crypto Worm Wars](https://t.me/CryptoWormWarsBot/play): sign-in with Telegram or a Solana wallet,
+Online 1v1 for [Crypto Worm Wars](https://t.me/CryptoWormWarsBot/play): one account across Telegram, the web and
+apps (Telegram, Solana wallet, or a login code from another device), a lobby of players online to challenge, friends,
 challenge links, quick match, and the live match relay. It runs on Cloudflare Workers with Durable Objects
 (one per match) and a D1 database for player profiles and results.
 
@@ -21,15 +22,28 @@ server never sends tokens or anything of value.
 | `POST /auth/telegram` | `{initData}` from the Mini App | `{token, player}` |
 | `POST /auth/solana/nonce` | `{address}` | `{message}` for the wallet to sign |
 | `POST /auth/solana` | `{address, message, signature}` (base58) | `{token, player}`; links the wallet if already signed in |
+| `POST /auth/telegram/web` | Telegram Login Widget fields | `{token, player}`; needs the bot's domain set with BotFather `/setdomain` |
 | `POST /auth/guest` | | `{token, player}` |
-| `GET /me` | | `{player}` |
+| `POST /auth/code` | | `{code, expires}`: a 10 minute login code for another device |
+| `POST /auth/code/redeem` | `{code}` | `{token, player}` for that account |
+| `GET /me` | | `{player, friendCode}` |
+| `GET /friends` | | `{friends}` with `online` |
+| `POST /friends/add` | `{code}` (both ways) or `{id}` (one way) | `{friend}` |
+| `POST /friends/remove` | `{id}` | |
+| `GET /lobby/ws?token=…` | WebSocket | the lobby: who is online, challenges (see `src/lobby.js`) |
 | `POST /match/new` | | `{code}` to share as `t.me/CryptoWormWarsBot/play?startapp=m_<code>` |
 | `POST /match/quick` | | `{code, side}` |
 | `GET /match/<code>/ws?token=…` | WebSocket | the match |
 
-Signed-in calls send `Authorization: Bearer <token>`.
+Signed-in calls send `Authorization: Bearer <token>`. Signing in with Telegram, a wallet or a login code while
+already signed in links it to the same account; two accounts are merged when they don't both have a Telegram account
+or both have a wallet. Offline friends get challenges as a Telegram message from the bot.
 
 ## Deploy
+
+Without npm: `python3 tools/deploy_api.py` (needs `CLOUDFLARE_API_TOKEN` with Workers Scripts Edit and D1 Edit,
+`CLOUDFLARE_ACCOUNT_ID`, and optionally `TELEGRAM_BOT_TOKEN`). With npm:
+
 
 1. `npm install`
 2. `npx wrangler login` (or set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`)
