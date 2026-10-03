@@ -107,7 +107,7 @@ export default {
       if (!(await verifySolana(body, env.SIGNIN_DOMAIN, env.SESSION_SECRET))) return json({ error: 'wallet sign-in failed' }, 401, cors);
       const me = await signedIn(req, env);
       let p = await env.DB.prepare('SELECT * FROM players WHERE wallet = ?').bind(body.address).first();
-      if (!p && me && !me.wallet) { await env.DB.prepare('UPDATE players SET wallet = ? WHERE id = ?').bind(body.address, me.id).run(); p = await playerById(env, me.id) }
+      if (!p && me && !me.wallet) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' THEN ? ELSE name END WHERE id = ?").bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
       else if (!p) p = await env.DB.prepare('INSERT INTO players (wallet, name, created) VALUES (?, ?, ?) RETURNING *').bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), Date.now()).first();
       return session(env, await link(env, me, p), cors);
     }
