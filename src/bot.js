@@ -14,25 +14,30 @@ export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears in a Worms-styl
 export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 A free Worms-style game right inside Telegram. Tap Play!';
 export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'help', description: 'How to play' }, { command: 'start', description: 'Welcome message' }];
 
+export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x.com/CryptoWorm72' };
+
 export function welcomeText(name) {
   return `🪱 Welcome to Crypto Worm Wars${name ? ', ' + name : ''}!\n\n` +
     'Bulls 🐂 vs Bears 🐻 in a turn-based worm battle. Aim, fire and blow the island apart, Worms-style.\n\n' +
     '🎯 Play the CPU, a friend on the same phone, or people online\n' +
     '🏰 A 24-level campaign against Bear forts\n' +
     '🗺️ 100+ maps, special weapons, hats and daily missions\n\n' +
-    'It\'s free. The $CWORM coins in the game are play money, not real tokens.\n\nTap Play to start!';
+    'It\'s free. The $CWORM coins in the game are play money, not real tokens.\n\n' +
+    '💬 Join the Crypto Worm group and follow us on X with the buttons below.\n\nTap Play to start!';
 }
 export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Walk with the joystick, push it up to jump.\n' +
   '• Tap the map to aim, then hold FIRE to power up and let go to shoot. A double tap on the map aims and fires.\n' +
   '• Pick weapons from the bar at the bottom. Blast the coins in the dirt to buy bigger ones.\n' +
   '• The market chart sets the wind: green blows right, red blows left.\n' +
-  '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!';
+  '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
+  `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
 function buttons(env) {
   const play = env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play';
   return { inline_keyboard: [[{ text: '🎮 Play now', url: play }],
-    [{ text: '👥 Invite a friend', url: 'https://t.me/share/url?url=' + encodeURIComponent(play) + '&text=' + encodeURIComponent('Fight me in Crypto Worm Wars! 🪱') }]] };
+    [{ text: '👥 Invite a friend', url: 'https://t.me/share/url?url=' + encodeURIComponent(play) + '&text=' + encodeURIComponent('Fight me in Crypto Worm Wars! 🪱') }],
+    [{ text: '💬 Telegram group', url: COMMUNITY.group }, { text: '𝕏 Follow on X', url: COMMUNITY.x }]] };
 }
 
 async function tg(env, method, body) {
