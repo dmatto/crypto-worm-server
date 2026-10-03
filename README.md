@@ -59,3 +59,12 @@ Without npm: `python3 tools/deploy_api.py` (needs `CLOUDFLARE_API_TOKEN` with Wo
 `node tools/local-server.mjs` runs the whole server on your computer without Cloudflare (Node 22+). Open the game
 twice, in two different browsers or profiles: the first with `?server=http://127.0.0.1:8787&match=NEW`, which shows
 a match code, and the second with `?server=http://127.0.0.1:8787&match=<code>`.
+
+## Telegram bot
+
+`src/bot.js` answers `/start` with the welcome picture (`WELCOME_PHOTO`), the welcome text and Play and Invite buttons. It also
+answers `/play` and `/help`. Telegram sends updates to `/telegram/webhook` with a secret header. To point the bot here and set
+its description, short description, commands and menu button, deploy with `BOT_AUTOSETUP=1` and add a cron trigger for a
+minute. The Worker then does it itself (it never replaces a webhook that belongs to another service), and `bot_log` in D1
+records what it did. Then remove the trigger. `/telegram/setup` does the same over HTTP, with `x-admin` set to the SHA-256
+of the bot token.

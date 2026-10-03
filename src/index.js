@@ -19,6 +19,7 @@
 //   POST /match/new                                             -> {code}      challenge a friend by link
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
+//   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
 // Signing in with a wallet never asks for a transaction. Scores are for fun: the server never sends tokens or anything
 // of value.
@@ -26,6 +27,7 @@
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
+import { webhook, setup, sync } from './bot.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -84,9 +86,12 @@ async function telegramUser(env, req, u, cors) {
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
 export default {
+  async scheduled(event, env, ctx) { ctx.waitUntil(sync(env)) },
   async fetch(req, env) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, ''), cors = corsFor(req, env);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
+    if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
+    if (path === '/telegram/setup') return setup(req, env, url.origin);
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
 
     if (path === '/auth/telegram' && req.method === 'POST') {

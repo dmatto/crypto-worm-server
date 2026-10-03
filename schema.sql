@@ -29,3 +29,7 @@ CREATE TABLE IF NOT EXISTS login_codes (   -- short codes that sign another devi
   player  INTEGER NOT NULL,
   expires INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bot_log (       -- what the scheduled bot setup saw and did
+  at      INTEGER NOT NULL,
+  note    TEXT NOT NULL
+);

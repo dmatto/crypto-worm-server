@@ -8,6 +8,8 @@ SIGNIN_DOMAIN = "rainbow-kitten-2ecc2a.netlify.app"
 ALLOWED_ORIGINS = "https://rainbow-kitten-2ecc2a.netlify.app"
 # The Mini App link, for the challenge messages the bot sends to friends who are offline.
 GAME_LINK = "https://t.me/CryptoWormWarsBot/play"
+# The picture sent with the bot's welcome message (welcome.jpg in the game site).
+WELCOME_PHOTO = "https://rainbow-kitten-2ecc2a.netlify.app/welcome.jpg"
 
 # Secrets (set with `npx wrangler secret put NAME`, never committed):
 #   BOT_TOKEN       the Telegram bot token from BotFather
