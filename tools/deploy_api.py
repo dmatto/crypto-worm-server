@@ -9,7 +9,8 @@ Secrets are sent to Cloudflare only and never printed.
 import json, os, secrets, sys, uuid, urllib.request, urllib.error
 
 NAME, DB_NAME, COMPAT = 'crypto-worm-server', 'crypto-worm', '2025-09-01'
-VARS = {'SIGNIN_DOMAIN': 'rainbow-kitten-2ecc2a.netlify.app', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app'}
+VARS = {'SIGNIN_DOMAIN': 'rainbow-kitten-2ecc2a.netlify.app', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app',
+        'GAME_LINK': 'https://t.me/CryptoWormWarsBot/play'}
 TOKEN, ACC = os.environ.get('CLOUDFLARE_API_TOKEN'), os.environ.get('CLOUDFLARE_ACCOUNT_ID')
 if not TOKEN or not ACC: sys.exit('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set')
 BASE = f'https://api.cloudflare.com/client/v4/accounts/{ACC}'
@@ -45,7 +46,7 @@ meta = {
 if first: meta['migrations'] = {'new_tag': 'v1', 'new_sqlite_classes': ['Match', 'Lobby']}
 b = uuid.uuid4().hex
 parts = [('metadata', 'metadata.json', 'application/json', json.dumps(meta).encode())]
-for f in ('index.js', 'auth.js', 'match.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
+for f in ('index.js', 'auth.js', 'match.js', 'lobby.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')

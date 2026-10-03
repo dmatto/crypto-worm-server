@@ -76,3 +76,29 @@ export async function readToken(token, secret, now = Date.now() / 1000) {
   if (!id || !exp || !sig || Number(exp) < now) return null;
   return sameHex(sig, b64url(await hmac(secret, `${id}.${exp}`))) ? Number(id) : null;
 }
+
+// Telegram Login Widget, for signing in with Telegram on the web: https://core.telegram.org/widgets/login#checking-authorization
+// The key is SHA-256 of the bot token (the Mini App check above uses an HMAC key instead). Returns the user or null.
+export async function verifyTelegramLogin(data, botToken, maxAge = 86400, now = Date.now() / 1000) {
+  if (!data || typeof data !== 'object' || !botToken || typeof data.hash !== 'string') return null;
+  const check = Object.keys(data).filter(k => k !== 'hash' && data[k] != null).sort().map(k => `${k}=${data[k]}`).join('\n');
+  const key = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(botToken)));
+  if (!sameHex(hex(await hmac(key, check)), data.hash)) return null;
+  const authDate = Number(data.auth_date);
+  if (!authDate || now - authDate > maxAge) return null;
+  return data.id ? { id: Number(data.id), first_name: data.first_name, last_name: data.last_name, username: data.username } : null;
+}
+
+// Friend codes: the player id in base 36 plus 4 signed characters, so codes can't be guessed by counting up.
+export async function friendCode(playerId, secret) {
+  const id = Number(playerId).toString(36).toUpperCase();
+  const sig = [...(await hmac(secret, `friend:${id}`)).slice(0, 4)].map(b => '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'[b % 34]).join('');
+  return id + sig;
+}
+export async function readFriendCode(code, secret) {
+  if (typeof code !== 'string') return null;
+  code = code.trim().toUpperCase();
+  if (!/^[0-9A-Z]{5,14}$/.test(code)) return null;
+  const id = parseInt(code.slice(0, -4), 36);
+  return id > 0 && sameHex(await friendCode(id, secret), code) ? id : null;
+}

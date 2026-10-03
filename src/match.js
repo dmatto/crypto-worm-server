@@ -96,18 +96,5 @@ export class Match {
   }
 }
 
-// Quick match: one waiting spot. The first player gets a fresh match code and waits; the next player gets the same code.
-// The game falls back to a CPU match if nobody shows up in about 30 seconds.
-export class Lobby {
-  constructor(ctx) { this.ctx = ctx }
-  async fetch(req) {
-    const player = Number(new URL(req.url).searchParams.get('player'));
-    const w = await this.ctx.storage.get('waiting');
-    if (w && w.player !== player && Date.now() - w.at < 30000) { await this.ctx.storage.delete('waiting'); return Response.json({ code: w.code, side: 1 }) }
-    const code = newCode(); await this.ctx.storage.put('waiting', { code, player, at: Date.now() });
-    return Response.json({ code, side: 0 });
-  }
-}
-
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export function newCode() { const b = crypto.getRandomValues(new Uint8Array(6)); return [...b].map(x => CODE_CHARS[x % 32]).join('') }

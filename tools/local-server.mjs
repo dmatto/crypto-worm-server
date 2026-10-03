@@ -23,6 +23,8 @@ const DB = { prepare: q => stmt(q), batch: async list => Promise.all(list.map(s 
 // The match greets a socket before the upgrade finishes, so messages wait in `early` until the socket is wired up.
 class ServerSide {
   constructor() { this.tags = []; this.sock = null; this.early = [] }
+  serializeAttachment(v) { this.att = structuredClone(v) }
+  deserializeAttachment() { return this.att }
   send(m) { if (this.sock) wsSend(this.sock, m); else this.early.push(m) }
   close() { this.closed = true; if (this.sock) this.sock.end() }
 }
@@ -41,7 +43,7 @@ function namespace(Cls, env) {
         const socks = [], store = new Map();
         const ctx = {
           acceptWebSocket(ws, tags) { ws.tags = tags; ws.obj = obj; socks.push(ws) },
-          getWebSockets: tag => socks.filter(w => w.sock && !w.closed && w.tags.includes(tag)),
+          getWebSockets: tag => socks.filter(w => !w.closed && (w.sock || w.early) && (tag == null || w.tags.includes(tag))),
           getTags: ws => ws.tags,
           storage: { get: async k => store.get(k), put: async (k, v) => void store.set(k, structuredClone(v)), delete: async k => void store.delete(k), setAlarm: async () => { } },
         };
@@ -54,7 +56,7 @@ function namespace(Cls, env) {
 }
 
 const { default: worker, Match, Lobby } = await import('../src/index.js');
-const env = { DB, SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*' };
+const env = { DB, SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '' };
 env.MATCH = namespace(Match, env); env.LOBBY = namespace(Lobby, env);
 
 // ---- tiny WebSocket server (text frames only)

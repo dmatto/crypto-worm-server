@@ -17,3 +17,15 @@ CREATE TABLE IF NOT EXISTS matches (
   ended   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS matches_ended ON matches (ended);
+CREATE TABLE IF NOT EXISTS friends (
+  player  INTEGER NOT NULL,        -- who added the friend
+  friend  INTEGER NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (player, friend)
+);
+CREATE INDEX IF NOT EXISTS friends_friend ON friends (friend);
+CREATE TABLE IF NOT EXISTS login_codes (   -- short codes that sign another device into the same account
+  code    TEXT PRIMARY KEY,
+  player  INTEGER NOT NULL,
+  expires INTEGER NOT NULL
+);
