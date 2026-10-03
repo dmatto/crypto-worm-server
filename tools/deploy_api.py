@@ -9,7 +9,7 @@ Secrets are sent to Cloudflare only and never printed.
 import json, os, secrets, sys, uuid, urllib.request, urllib.error
 
 NAME, DB_NAME, COMPAT = 'crypto-worm-server', 'crypto-worm', '2025-09-01'
-VARS = {'SIGNIN_DOMAIN': 'rainbow-kitten-2ecc2a.netlify.app', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app',
+VARS = {'SIGNIN_DOMAIN': 'rainbow-kitten-2ecc2a.netlify.app', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app,https://play.cryptoworm.io,https://cryptoworm.io,https://www.cryptoworm.io',
         'GAME_LINK': 'https://t.me/CryptoWormWarsBot/play', 'WELCOME_PHOTO': 'https://rainbow-kitten-2ecc2a.netlify.app/welcome.jpg',
         'MENU_URL': 'https://rainbow-kitten-2ecc2a.netlify.app/', 'PUBLIC_URL': 'https://crypto-worm-server.cryptoworm.workers.dev',
         'BOT_AUTOSETUP': os.environ.get('BOT_AUTOSETUP', '0')}

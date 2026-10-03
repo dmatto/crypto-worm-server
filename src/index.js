@@ -38,6 +38,13 @@ function corsFor(req, env) {
   return allowed.includes(origin) || allowed.includes('*') ? { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Headers': 'authorization, content-type', 'Vary': 'Origin' } : {};
 }
 
+// Wallet sign-in messages name the site the player is on (the game can live on more than one domain), falling back to SIGNIN_DOMAIN.
+function signDomain(req, env) {
+  const origin = req.headers.get('Origin') || '', allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim());
+  if (origin && allowed.includes(origin)) try { return new URL(origin).host } catch (e) { }
+  return env.SIGNIN_DOMAIN;
+}
+
 const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wallet: p.wallet || null, wins: p.wins, losses: p.losses };
 
 async function playerById(env, id) { return env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(id).first() }
@@ -105,11 +112,11 @@ export default {
 
     if (path === '/auth/solana/nonce' && req.method === 'POST') {
       if (typeof body.address !== 'string' || body.address.length > 50) return json({ error: 'bad address' }, 400, cors);
-      return json({ message: signInMessage(env.SIGNIN_DOMAIN, body.address, await makeNonce(body.address, env.SESSION_SECRET)) }, 200, cors);
+      return json({ message: signInMessage(signDomain(req, env), body.address, await makeNonce(body.address, env.SESSION_SECRET)) }, 200, cors);
     }
 
     if (path === '/auth/solana' && req.method === 'POST') {
-      if (!(await verifySolana(body, env.SIGNIN_DOMAIN, env.SESSION_SECRET))) return json({ error: 'wallet sign-in failed' }, 401, cors);
+      if (!(await verifySolana(body, signDomain(req, env), env.SESSION_SECRET))) return json({ error: 'wallet sign-in failed' }, 401, cors);
       const me = await signedIn(req, env);
       let p = await env.DB.prepare('SELECT * FROM players WHERE wallet = ?').bind(body.address).first();
       if (!p && me && !me.wallet) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' THEN ? ELSE name END WHERE id = ?").bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
