@@ -41,3 +41,7 @@ Signed-in calls send `Authorization: Bearer <token>`.
 ## Test
 
 `npm test` runs the sign-in and match tests with Node 20+ (no install needed).
+
+`node tools/local-server.mjs` runs the whole server on your computer without Cloudflare (Node 22+). Open the game
+twice, in two different browsers or profiles: the first with `?server=http://127.0.0.1:8787&match=NEW`, which shows
+a match code, and the second with `?server=http://127.0.0.1:8787&match=<code>`.

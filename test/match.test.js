@@ -46,11 +46,13 @@ test('match: a dropped phone resumes with the last handed-over state', async () 
   const c = ctx(), m = new Match(c, {});
   await open(m, 1); await open(m, 2);
   await m.webSocketMessage(c.socks.get('0'), JSON.stringify({ t: 'start', seed: 9, theme: 'ice', count: 1, hats: [] }));
-  await m.webSocketMessage(c.socks.get('0'), JSON.stringify({ t: 'auth', e: [], s: { turn: 1 } }));
+  await m.webSocketMessage(c.socks.get('0'), JSON.stringify({ t: 'f', e: [['carve', [100, 200, 30]], ['floatText', [1, 2, 'x', '#fff']]], s: {} }));
+  await m.webSocketMessage(c.socks.get('0'), JSON.stringify({ t: 'auth', e: [['carve', [5, 6, 7]]], s: { turn: 1 } }));
   const old = c.socks.get('1'); await open(m, 2);
   assert.equal(old.closed, true);
   const r = c.socks.get('1').out[0];
   assert.equal(r.t, 'resume'); assert.equal(r.side, 1); assert.equal(r.auth, true); assert.deepEqual(r.s, { turn: 1 }); assert.equal(r.start.seed, 9);
+  assert.deepEqual(r.carves, [[100, 200, 30], [5, 6, 7]]);
 });
 
 test('match: game over and leaving are recorded once', async () => {

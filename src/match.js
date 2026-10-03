@@ -6,7 +6,7 @@
 //   host / join {hat}           a seat is ready            start {seed,theme,count,hats}   seat 0 starts the match
 //   f {e,s}                     effects and state, ~20/s   auth {e,s}                      turn over, other phone takes over
 //   bye                         a player left
-// The server adds: seat {side}, resume {start,side,auth,s}, gone {side}, over {winner,reason}.
+// The server adds: seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason}.
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000;
 
@@ -16,7 +16,7 @@ export class Match {
     this.mem = null;                                                  // {players:[id,id], start, holder, state, last, done}
   }
   async load() {
-    if (!this.mem) this.mem = (await this.ctx.storage.get('m')) || { players: [null, null], start: null, holder: 0, state: null, last: Date.now(), done: null };
+    if (!this.mem) this.mem = (await this.ctx.storage.get('m')) || { players: [null, null], start: null, holder: 0, state: null, carves: [], last: Date.now(), done: null };
     return this.mem;
   }
   save() { return this.ctx.storage.put('m', this.mem) }
@@ -32,7 +32,7 @@ export class Match {
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);
-    pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state } : { t: 'seat', side }));
+    pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state, carves: m.carves } : { t: 'seat', side }));
     if (m.start) this.tell(1 - side, { t: 'back', side });
     m.last = Date.now(); await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] });
@@ -52,18 +52,24 @@ export class Match {
         m.holder = 0; await this.save(); this.tell(1, { t: 'start', ...m.start }); break;
       case 'f':
         if (side !== m.holder || !m.start) return;
-        this.tell(1 - side, raw);
+        this.tell(1 - side, raw); this.keepCarves(msg.e);
         const over = Array.isArray(msg.e) && msg.e.find(e => Array.isArray(e) && e[0] === 'gameOver');
         if (over) await this.finish(Array.isArray(over[1]) ? over[1][0] : -1, 'played');
         break;
       case 'auth':
         if (side !== m.holder || !m.start) return;
-        m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); break;
+        this.keepCarves(msg.e); m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); break;
       case 'bye':
         this.tell(1 - side, raw);
         if (m.start && !m.done) await this.finish(1 - side, 'left');
         break;
     }
+  }
+
+  // Craters so far, so a phone that rejoins can rebuild the island: the match start plus every carve gives the terrain.
+  keepCarves(events) {
+    if (!Array.isArray(events)) return;
+    for (const e of events) if (Array.isArray(e) && e[0] === 'carve' && Array.isArray(e[1]) && this.mem.carves.length < 20000) this.mem.carves.push(e[1].slice(0, 3).map(Number));
   }
 
   async webSocketClose(ws) { const side = Number(this.ctx.getTags(ws)[0]); this.tell(1 - side, { t: 'gone', side }) }
