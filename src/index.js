@@ -16,6 +16,7 @@
 //   POST /friends/add        {code} | {id}                      -> {friend}  a friend code adds both ways, an id one way
 //   POST /friends/remove     {id}
 //   GET  /lobby/ws?token=...[&hidden=1]                         websocket into the lobby (see lobby.js)
+//   GET  /online                                                -> {online, playing}  players with the game open now (no sign-in)
 //   POST /match/new                                             -> {code}      challenge a friend by link
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
@@ -99,6 +100,7 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
     if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
     if (path === '/telegram/setup') return setup(req, env, url.origin);
+    if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
 
     if (path === '/auth/telegram' && req.method === 'POST') {

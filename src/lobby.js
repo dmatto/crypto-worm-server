@@ -4,10 +4,11 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players, online, playing}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}
 //
-// It also keeps the one waiting spot for Quick match (plain HTTP, see quick()).
+// It also keeps the one waiting spot for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
+// also counts the players online: `online` is everyone connected (hidden players too), `playing` those in a match.
 
 import { newCode } from './match.js';
 
@@ -23,6 +24,7 @@ export class Lobby {
       const here = new Set(this.players().map(p => p.id));
       return Response.json({ online: (url.searchParams.get('ids') || '').split(',').map(Number).filter(id => here.has(id)) });
     }
+    if (url.pathname === '/count') return Response.json(this.count());
     return this.quick(Number(url.searchParams.get('player')));
   }
 
@@ -55,11 +57,21 @@ export class Lobby {
     }
     return [...seen.values()];
   }
+  // How many players are connected, and how many of them are in a match. One per player, hidden ones included.
+  count(except) {
+    const seen = new Map();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const p = ws.deserializeAttachment(); if (p) seen.set(p.id, seen.get(p.id) || p.busy);
+    }
+    let playing = 0; for (const b of seen.values()) if (b) playing++;
+    return { online: seen.size, playing };
+  }
   sock(id) { return this.ctx.getWebSockets(String(id))[0] || null }
   tell(id, msg) { const ws = this.sock(id); if (ws) try { ws.send(JSON.stringify(msg)) } catch { } return !!ws }
   broadcast(except) {
     const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy }) => ({ id, name, wins, losses, busy }));
-    const out = JSON.stringify({ t: 'list', players: list });
+    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except) });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) try { ws.send(out) } catch { }
   }
 

@@ -54,3 +54,13 @@ test('lobby: quick match pairs two players on one code', async () => {
   const one = await (await l.fetch(new Request('https://lobby/?player=1'))).json(), two = await (await l.fetch(new Request('https://lobby/?player=2'))).json();
   assert.equal(one.side, 0); assert.equal(two.side, 1); assert.equal(one.code, two.code);
 });
+
+test('lobby: counts the players online, hidden ones too, and how many are in a game', async () => {
+  const c = ctx(), l = new Lobby(c, {});
+  const a = await enter(l, c, 1, 'Ana'), b = await enter(l, c, 2, 'Bo'); await enter(l, c, 3, 'Hid', true);
+  assert.equal(last(a, 'list').online, 3); assert.equal(last(a, 'list').playing, 0);
+  await say(l, b, { t: 'busy', on: true });
+  assert.equal(last(a, 'list').playing, 1);
+  b.closed = true; await l.webSocketClose(b);
+  assert.deepEqual(await (await l.fetch(new Request('https://lobby/count'))).json(), { online: 2, playing: 0 });
+});
