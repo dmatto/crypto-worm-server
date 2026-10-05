@@ -77,3 +77,29 @@ test('friends: a friend code adds both ways, an id one way, and remove works', a
   await call(env, '/friends/remove', { id: b.player.id }, a.token);
   assert.deepEqual((await call(env, '/friends', undefined, a.token)).friends.map(f => f.id), [c.player.id]);
 });
+
+test('feedback: stored with the linked wallet, checked, limited per day, and sent to the admins', async () => {
+  const env = { ...makeEnv(), ADMIN_PLAYERS: '1' }, sent = [], realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { sent.push([String(url).split('/').pop(), init.body instanceof FormData ? init.body : JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
+  try {
+    const boss = await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') });   // player 1, the admin
+    const w = await walletSignIn(env);
+    assert.equal((await call(env, '/feedback', { text: 'hi' })).status, 401);
+    assert.equal((await call(env, '/feedback', { text: '   ' }, w.token)).status, 400);
+    assert.equal((await call(env, '/feedback', { text: 'hi', wallet: 'not a wallet' }, w.token)).status, 400);
+    assert.equal((await call(env, '/feedback', { text: 'Love the <vulture>!', rating: 5, info: 'web en L3' }, w.token)).ok, true);
+    const row = env.sql.prepare('SELECT * FROM feedback').get();
+    assert.equal(row.wallet, w.player.wallet); assert.equal(row.wallet_ok, 1); assert.equal(row.rating, 5);
+    assert.equal(sent.length, 1); assert.equal(sent[0][1].chat_id, 42); assert.match(sent[0][1].text, /Love the &lt;vulture&gt;!/); assert.match(sent[0][1].text, /★★★★★/);
+    const g = await call(env, '/auth/guest', {}), typed = w.player.wallet;
+    assert.equal((await call(env, '/feedback', { text: 'ok', rating: 9, wallet: typed }, g.token)).ok, true);
+    const r2 = env.sql.prepare('SELECT * FROM feedback WHERE player = ?').get(g.player.id);
+    assert.equal(r2.wallet_ok, 0); assert.equal(r2.rating, null);
+    for (let i = 1; i < 10; i++) await call(env, '/feedback', { text: 'more ' + i }, g.token);
+    assert.equal((await call(env, '/feedback', { text: 'too many' }, g.token)).status, 429);
+    const { feedbackCsv } = await import('../src/bot.js');
+    const csv = await feedbackCsv(env);
+    assert.equal(csv.messages, 11); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
+    assert.match(csv.csv, /"Love the <vulture>!"|Love the <vulture>!/); assert.ok(boss.player.id === 1);
+  } finally { globalThis.fetch = realFetch }
+});

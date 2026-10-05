@@ -12,7 +12,7 @@ NAME, DB_NAME, COMPAT = 'crypto-worm-server', 'crypto-worm', '2025-09-01'
 VARS = {'SIGNIN_DOMAIN': 'play.cryptoworm.io', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app,https://play.cryptoworm.io,https://cryptoworm.io,https://www.cryptoworm.io',
         'GAME_LINK': 'https://t.me/CryptoWormWarsBot/play', 'WELCOME_PHOTO': 'https://play.cryptoworm.io/welcome.jpg',
         'MENU_URL': 'https://play.cryptoworm.io/', 'PUBLIC_URL': 'https://crypto-worm-server.cryptoworm.workers.dev',
-        'BOT_AUTOSETUP': os.environ.get('BOT_AUTOSETUP', '0')}
+        'BOT_AUTOSETUP': os.environ.get('BOT_AUTOSETUP', '0'), 'ADMIN_PLAYERS': os.environ.get('ADMIN_PLAYERS', '2')}
 TOKEN, ACC = os.environ.get('CLOUDFLARE_API_TOKEN'), os.environ.get('CLOUDFLARE_ACCOUNT_ID')
 if not TOKEN or not ACC: sys.exit('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set')
 BASE = f'https://api.cloudflare.com/client/v4/accounts/{ACC}'

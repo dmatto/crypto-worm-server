@@ -45,6 +45,46 @@ async function tg(env, method, body) {
   return r.json().catch(() => ({ ok: false }));
 }
 
+// Admins are the players listed in ADMIN_PLAYERS (account ids, comma separated); the bot reaches them through their Telegram id.
+async function adminTgIds(env) {
+  const ids = String(env.ADMIN_PLAYERS || '').split(',').map(Number).filter(n => n > 0);
+  if (!ids.length) return [];
+  const { results } = await env.DB.prepare(`SELECT tg_id FROM players WHERE tg_id IS NOT NULL AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+  return results.map(r => r.tg_id);
+}
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const stars = r => r ? '★'.repeat(r) + '☆'.repeat(5 - r) : 'no rating';
+
+// A beta tester sent feedback from the game: pass it on to every admin right away.
+export async function tellAdmins(env, f) {
+  if (!env.BOT_TOKEN) return;
+  const who = f.tg_id != null ? `<a href="tg://user?id=${f.tg_id}">${esc(f.name)}</a>` : esc(f.name);
+  const text = `📝 Feedback from ${who} (player ${f.player})\n${stars(f.rating)}\n` +
+    (f.wallet ? `Wallet: <code>${esc(f.wallet)}</code>${f.wallet_ok ? ' ✅ signed in' : ' (typed)'}\n` : 'No wallet\n') +
+    (f.info ? `<i>${esc(f.info)}</i>\n` : '') + '\n' + esc(f.text);
+  for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+}
+
+// /feedback (admins only): every message so far as a spreadsheet, plus one line per tester with their wallet, for the airdrop.
+const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+export async function feedbackCsv(env) {
+  const { results } = await env.DB.prepare('SELECT * FROM feedback ORDER BY created').all();
+  const head = ['date', 'player', 'name', 'telegram_id', 'wallet', 'wallet_signed_in', 'rating', 'feedback', 'platform_language_level'];
+  const rows = results.map(f => [new Date(f.created).toISOString().slice(0, 16).replace('T', ' '), f.player, f.name, f.tg_id, f.wallet, f.wallet_ok ? 'yes' : 'no', f.rating, f.text, f.info]);
+  const testers = new Map(); for (const f of results) { const t = testers.get(f.player) || { name: f.name, n: 0, wallet: null }; t.n++; if (f.wallet) t.wallet = f.wallet; testers.set(f.player, t) }
+  return { csv: '\ufeff' + [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n', messages: results.length, testers: testers.size, withWallet: [...testers.values()].filter(t => t.wallet).length };
+}
+async function sendCsv(env, chat_id) {
+  const r = await feedbackCsv(env);
+  if (!r.messages) return tg(env, 'sendMessage', { chat_id, text: 'No feedback yet.' });
+  const form = new FormData();
+  form.append('chat_id', String(chat_id));
+  form.append('caption', `${r.messages} messages from ${r.testers} testers, ${r.withWallet} with a wallet.`);
+  form.append('document', new Blob([r.csv], { type: 'text/csv' }), `crypto-worm-feedback-${new Date().toISOString().slice(0, 10)}.csv`);
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
+  return res.json().catch(() => ({ ok: false }));
+}
+
 export async function webhook(req, env) {
   if (!same(req.headers.get('X-Telegram-Bot-Api-Secret-Token') || '', await webhookSecret(env))) return new Response('forbidden', { status: 403 });
   const u = await req.json().catch(() => null), m = u && u.message;
@@ -56,6 +96,10 @@ export async function webhook(req, env) {
     if (!sent.ok) await tg(env, 'sendMessage', { chat_id, text: caption, reply_markup: buttons(env) });
   } else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: buttons(env) });
   else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env) });
+  else if (cmd === '/feedback') {
+    if ((await adminTgIds(env)).includes(m.from && m.from.id)) await sendCsv(env, chat_id);
+    else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
+  }
   return new Response('ok');
 }
 

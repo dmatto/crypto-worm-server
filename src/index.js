@@ -20,6 +20,7 @@
 //   POST /match/new                                             -> {code}      challenge a friend by link
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
+//   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
 // Signing in with a wallet never asks for a transaction. Scores are for fun: the server never sends tokens or anything
@@ -28,11 +29,12 @@
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
-import { webhook, setup, sync } from './bot.js';
+import { webhook, setup, sync, tellAdmins } from './bot.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
-const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000;
+const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
+const SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 function corsFor(req, env) {
   const origin = req.headers.get('Origin') || '', allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -95,7 +97,7 @@ const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
 export default {
   async scheduled(event, env, ctx) { ctx.waitUntil(sync(env)) },
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, ''), cors = corsFor(req, env);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
     if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
@@ -177,6 +179,20 @@ export default {
       const h = new Headers(req.headers);
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
       return lobbyOf(env).fetch(new Request(req.url, { headers: h }));
+    }
+    if (path === '/feedback' && req.method === 'POST') {
+      const text = String(body.text || '').trim().slice(0, MAX_FEEDBACK), typed = String(body.wallet || '').trim();
+      if (!text) return json({ error: 'write something first' }, 400, cors);
+      if (typed && !SOLANA.test(typed)) return json({ error: 'that does not look like a Solana address' }, 400, cors);
+      const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM feedback WHERE player = ? AND created > ?').bind(me.id, Date.now() - 864e5).first();
+      if (n.n >= FEEDBACK_PER_DAY) return json({ error: 'thanks! that is plenty for today' }, 429, cors);
+      const wallet = typed || me.wallet || null, rating = Math.round(Number(body.rating)), info = String(body.info || '').slice(0, 120);
+      const row = { player: me.id, name: me.name, tg_id: me.tg_id ?? null, wallet, wallet_ok: wallet && wallet === me.wallet ? 1 : 0, rating: rating >= 1 && rating <= 5 ? rating : null, text, info, created: Date.now() };
+      await env.DB.prepare('INSERT INTO feedback (player, name, tg_id, wallet, wallet_ok, rating, text, info, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(row.player, row.name, row.tg_id, row.wallet, row.wallet_ok, row.rating, row.text, row.info, row.created).run();
+      const note = tellAdmins(env, row).catch(() => { });
+      if (ctx && ctx.waitUntil) ctx.waitUntil(note); else await note;
+      return json({ ok: true }, 200, cors);
     }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
