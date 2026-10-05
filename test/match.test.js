@@ -66,3 +66,21 @@ test('match: game over and leaving are recorded once', async () => {
   assert.equal(m.mem.done.reason, 'played');
   assert.equal((await open(m, 1)).code, 410);
 });
+
+test('match: quick chat relays only a line number, from either side, at most every 1.5 s', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); await open(m, 22);
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 1 }));               // nothing before the match starts
+  assert.notEqual(s0.out.at(-1).t, 'chat');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 5 }));
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 3, text: 'anything' }));   // the other side can talk on any turn
+  assert.deepEqual(s0.out.at(-1), { t: 'chat', id: 3 });
+  const n = s0.out.length;
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 4 }));               // too soon
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 'x' }));             // not a number
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 99 }));              // not on the list
+  assert.equal(s0.out.length, n); assert.notEqual(s1.out.at(-1).t, 'chat');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 0 }));
+  assert.deepEqual(s1.out.at(-1), { t: 'chat', id: 0 });
+});

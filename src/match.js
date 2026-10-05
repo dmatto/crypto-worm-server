@@ -59,6 +59,11 @@ export class Match {
       case 'auth':
         if (side !== m.holder || !m.start) return;
         this.keepCarves(msg.e); m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); break;
+      case 'chat': {                                  // quick chat: only a line number from the game's fixed list, at most one every 1.5 s
+        const id = msg.id, now = Date.now(); this.chatAt = this.chatAt || [0, 0];
+        if (!m.start || !Number.isInteger(id) || id < 0 || id > 63 || now - this.chatAt[side] < 1500) return;
+        this.chatAt[side] = now; this.tell(1 - side, { t: 'chat', id }); break;
+      }
       case 'bye':
         this.tell(1 - side, raw);
         if (m.start && !m.done) await this.finish(1 - side, 'left');
