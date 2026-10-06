@@ -91,7 +91,7 @@ export class Match {
     const m = this.mem; if (m.done) return;
     m.done = { winner, reason, at: Date.now() }; await this.save();
     for (const side of [0, 1]) this.tell(side, { t: 'over', winner, reason });
-    if (this.env.DB && m.players[0] != null && m.players[1] != null) {
+    if (this.env.DB && m.players[0] != null && m.players[1] != null && m.players[0] !== m.players[1]) {   // one account on both phones doesn't count
       const w = winner === 0 || winner === 1 ? m.players[winner] : null, l = w == null ? null : m.players[1 - winner];
       await this.env.DB.batch([
         this.env.DB.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').bind(m.players[0], m.players[1], w, reason, Date.now()),

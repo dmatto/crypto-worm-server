@@ -46,3 +46,8 @@ CREATE TABLE IF NOT EXISTS feedback (      -- what beta testers tell us from the
   created  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS feedback_player ON feedback (player, created);
+CREATE TABLE IF NOT EXISTS nicknames (     -- names players picked themselves; Telegram sign-in then keeps them
+  player  INTEGER PRIMARY KEY,
+  nick    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  changed INTEGER NOT NULL
+);

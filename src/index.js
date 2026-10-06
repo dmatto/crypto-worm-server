@@ -20,6 +20,8 @@
 //   POST /match/new                                             -> {code}      challenge a friend by link
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
+//   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
+//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, wins, losses}], me}
 //   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
@@ -35,6 +37,27 @@ export { Match, Lobby };
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
 const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
 const SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const NICK = /^[\p{L}\p{N}][\p{L}\p{N} _.\-]{1,14}[\p{L}\p{N}]$/u, RANK_TOP = 50, NICK_GAP_MS = 60 * 1000;
+// A short list of words a nickname can't contain, and names that would pass for the team or the game.
+const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm)/i;
+// Monday 00:00 UTC of this week: the weekly ranking starts over then.
+function weekStart(now = Date.now()) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime() }
+
+async function ranking(env, period, me) {
+  if (period === 'week') {
+    const since = weekStart();
+    const rows = (await env.DB.prepare(`SELECT p.id, p.name, SUM(CASE WHEN m.winner = p.id THEN 1 ELSE 0 END) AS wins, SUM(CASE WHEN m.winner IS NOT NULL AND m.winner != p.id THEN 1 ELSE 0 END) AS losses
+      FROM matches m JOIN players p ON p.id = m.p0 OR p.id = m.p1 WHERE m.ended >= ? AND m.p0 != m.p1 GROUP BY p.id HAVING wins + losses > 0
+      ORDER BY wins DESC, losses ASC, p.id ASC`).bind(since).all()).results;
+    return { period, since, ...place(rows, me) };
+  }
+  const rows = (await env.DB.prepare('SELECT id, name, wins, losses FROM players WHERE wins + losses > 0 ORDER BY wins DESC, losses ASC, id ASC').all()).results;
+  return { period: 'all', since: null, ...place(rows, me) };
+}
+function place(rows, me) {
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, wins: r.wins | 0, losses: r.losses | 0 }));
+  return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
+}
 
 function corsFor(req, env) {
   const origin = req.headers.get('Origin') || '', allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -59,7 +82,8 @@ async function signedIn(req, env) {
 }
 
 async function session(env, p, cors, withToken = true) {
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: publicPlayer(p), friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -78,6 +102,9 @@ async function link(env, me, target) {
     q('DELETE FROM friends WHERE player = ? OR friend = ?', a, a),
     q('UPDATE matches SET p0 = ? WHERE p0 = ?', b, a), q('UPDATE matches SET p1 = ? WHERE p1 = ?', b, a), q('UPDATE matches SET winner = ? WHERE winner = ?', b, a),
     q('UPDATE login_codes SET player = ? WHERE player = ?', b, a),
+    q('UPDATE OR IGNORE nicknames SET player = ? WHERE player = ?', b, a),             // a nickname picked as a guest comes along, unless the account has one
+    q('DELETE FROM nicknames WHERE player = ?', a),
+    q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
   return playerById(env, b);
@@ -87,8 +114,8 @@ async function telegramUser(env, req, u, cors) {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40) || u.username || 'Worm';
   const me = await signedIn(req, env);
   let p = await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(u.id).first();
-  if (p) { if (p.name !== name) await env.DB.prepare('UPDATE players SET name = ? WHERE id = ?').bind(name, p.id).run(); p.name = name }
-  else if (me && me.tg_id == null) { await env.DB.prepare('UPDATE players SET tg_id = ?, name = ? WHERE id = ?').bind(u.id, name, me.id).run(); p = await playerById(env, me.id) }
+  if (p) { if (p.name !== name) await env.DB.prepare('UPDATE players SET name = ? WHERE id = ? AND id NOT IN (SELECT player FROM nicknames)').bind(name, p.id).run(); p = await playerById(env, p.id) }
+  else if (me && me.tg_id == null) { await env.DB.prepare('UPDATE players SET tg_id = ?, name = CASE WHEN id IN (SELECT player FROM nicknames) THEN name ELSE ? END WHERE id = ?').bind(u.id, name, me.id).run(); p = await playerById(env, me.id) }
   else p = await env.DB.prepare('INSERT INTO players (tg_id, name, created) VALUES (?, ?, ?) RETURNING *').bind(u.id, name, Date.now()).first();
   return session(env, await link(env, me, p), cors);
 }
@@ -180,6 +207,22 @@ export default {
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
       return lobbyOf(env).fetch(new Request(req.url, { headers: h }));
     }
+    if (path === '/me/name' && req.method === 'POST') {
+      const nick = String(body.name || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+      if (!NICK.test(nick)) return json({ error: 'use 3 to 16 letters or numbers (spaces, _ - . in between are fine)' }, 400, cors);
+      if (NICK_BLOCK.test(nick.replace(/[\s_.\-]/g, '')) || NICK_BLOCK.test(nick) || /^guest\b/i.test(nick)) return json({ error: 'pick a different nickname' }, 400, cors);
+      const mine = await env.DB.prepare('SELECT nick, changed FROM nicknames WHERE player = ?').bind(me.id).first();
+      if (mine && mine.nick === nick) return session(env, me, cors, false);
+      if (mine && Date.now() - mine.changed < NICK_GAP_MS && mine.nick.toLowerCase() !== nick.toLowerCase()) return json({ error: 'wait a minute before changing it again' }, 429, cors);
+      const taken = await env.DB.prepare('SELECT player FROM nicknames WHERE nick = ? AND player != ?').bind(nick, me.id).first();
+      if (taken) return json({ error: 'that nickname is taken' }, 409, cors);
+      await env.DB.batch([
+        env.DB.prepare('INSERT INTO nicknames (player, nick, changed) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET nick = excluded.nick, changed = excluded.changed').bind(me.id, nick, Date.now()),
+        env.DB.prepare('UPDATE players SET name = ? WHERE id = ?').bind(nick, me.id),
+      ]);
+      return session(env, await playerById(env, me.id), cors, false);
+    }
+    if (path === '/ranking' && req.method === 'GET') return json(await ranking(env, url.searchParams.get('period') === 'week' ? 'week' : 'all', me), 200, cors);
     if (path === '/feedback' && req.method === 'POST') {
       const text = String(body.text || '').trim().slice(0, MAX_FEEDBACK), typed = String(body.wallet || '').trim();
       if (!text) return json({ error: 'write something first' }, 400, cors);

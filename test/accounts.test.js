@@ -103,3 +103,38 @@ test('feedback: stored with the linked wallet, checked, limited per day, and sen
     assert.match(csv.csv, /"Love the <vulture>!"|Love the <vulture>!/); assert.ok(boss.player.id === 1);
   } finally { globalThis.fetch = realFetch }
 });
+
+test('nicknames: checked, unique, kept through Telegram sign-in and account linking', async () => {
+  const env = makeEnv();
+  const a = await call(env, '/auth/telegram', { initData: tgInit(5, 'Ana') }), b = await call(env, '/auth/guest', {});
+  assert.equal(a.player.nick, false);
+  for (const bad of ['ab', 'x'.repeat(17), ' -ab', 'Guest 77', 'fuckworm', 'f.u.c.k', 'Crypto Worm']) assert.equal((await call(env, '/me/name', { name: bad }, a.token)).status, 400, bad);
+  const ok = await call(env, '/me/name', { name: '  Moon   Boy ' }, a.token);
+  assert.equal(ok.player.name, 'Moon Boy'); assert.equal(ok.player.nick, true);
+  assert.equal((await call(env, '/me/name', { name: 'moon boy' }, b.token)).status, 409);          // taken, whatever the case
+  assert.equal((await call(env, '/me/name', { name: 'Worm King' }, a.token)).status, 429);         // not again right away
+  const again = await call(env, '/auth/telegram', { initData: tgInit(5, 'Ana') });                 // Telegram doesn't overwrite it
+  assert.equal(again.player.name, 'Moon Boy');
+  assert.equal((await call(env, '/me/name', { name: 'Señor_Gusano' }, b.token)).player.name, 'Señor_Gusano');
+  const linked = await call(env, '/auth/telegram', { initData: tgInit(6, 'Bo') }, b.token);       // the guest's nickname comes along
+  assert.equal(linked.player.name, 'Señor_Gusano'); assert.equal(linked.player.nick, true);
+});
+
+test('ranking: all time from the totals, the week from matches since Monday', async () => {
+  const env = makeEnv();
+  const p = [];
+  for (const n of ['A', 'B', 'C']) p.push((await call(env, '/auth/guest', {})).player.id);
+  const t = (await call(env, '/auth/guest', {})).token;
+  const add = (w, l, ended) => { env.sql.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').run(w, l, w, 'played', ended); env.sql.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').run(w); env.sql.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').run(l) };
+  const old = Date.now() - 30 * 864e5;
+  add(p[0], p[1], old); add(p[0], p[1], old); add(p[0], p[2], old);
+  add(p[1], p[2], Date.now()); add(p[2], p[0], Date.now()); add(p[2], p[0], Date.now() - 1000);
+  env.sql.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').run(p[1], p[1], p[1], 'played', Date.now());   // same account both sides: ignored
+  const all = await call(env, '/ranking?period=all', undefined, t);
+  assert.deepEqual(all.top.map(r => [r.id, r.wins, r.losses]), [[p[0], 3, 2], [p[2], 2, 2], [p[1], 1, 2]]);
+  assert.equal(all.me, null);
+  const week = await call(env, '/ranking?period=week', undefined, t);
+  assert.deepEqual(week.top.map(r => [r.rank, r.id, r.wins, r.losses]), [[1, p[2], 2, 1], [2, p[1], 1, 0], [3, p[0], 0, 2]]);
+  assert.ok(week.since <= Date.now() && new Date(week.since).getUTCDay() === 1);
+  assert.equal((await call(env, '/ranking?period=week')).status, 401);
+});
