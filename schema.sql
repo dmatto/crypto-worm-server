@@ -51,3 +51,15 @@ CREATE TABLE IF NOT EXISTS nicknames (     -- names players picked themselves; T
   nick    TEXT NOT NULL UNIQUE COLLATE NOCASE,
   changed INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cworm_scores (  -- play-money $CWORM each player gained, for the ranking (the game reports it after each match)
+  player     INTEGER PRIMARY KEY,
+  total      INTEGER NOT NULL DEFAULT 0,   -- all time
+  week_start INTEGER NOT NULL DEFAULT 0,   -- Monday 00:00 UTC of the week `week` counts
+  week       INTEGER NOT NULL DEFAULT 0,
+  day_start  INTEGER NOT NULL DEFAULT 0,   -- for the daily cap
+  day        INTEGER NOT NULL DEFAULT 0,
+  last       INTEGER NOT NULL DEFAULT 0,   -- last report, for the minimum gap
+  imported   INTEGER NOT NULL DEFAULT 0    -- 1 once the wallet total from before the ranking was brought in
+);
+CREATE INDEX IF NOT EXISTS cworm_week ON cworm_scores (week_start, week);
+CREATE INDEX IF NOT EXISTS cworm_total ON cworm_scores (total);

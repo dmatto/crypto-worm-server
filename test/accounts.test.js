@@ -120,21 +120,29 @@ test('nicknames: checked, unique, kept through Telegram sign-in and account link
   assert.equal(linked.player.name, 'Señor_Gusano'); assert.equal(linked.player.nick, true);
 });
 
-test('ranking: all time from the totals, the week from matches since Monday', async () => {
-  const env = makeEnv();
-  const p = [];
-  for (const n of ['A', 'B', 'C']) p.push((await call(env, '/auth/guest', {})).player.id);
-  const t = (await call(env, '/auth/guest', {})).token;
-  const add = (w, l, ended) => { env.sql.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').run(w, l, w, 'played', ended); env.sql.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').run(w); env.sql.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').run(l) };
-  const old = Date.now() - 30 * 864e5;
-  add(p[0], p[1], old); add(p[0], p[1], old); add(p[0], p[2], old);
-  add(p[1], p[2], Date.now()); add(p[2], p[0], Date.now()); add(p[2], p[0], Date.now() - 1000);
-  env.sql.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').run(p[1], p[1], p[1], 'played', Date.now());   // same account both sides: ignored
-  const all = await call(env, '/ranking?period=all', undefined, t);
-  assert.deepEqual(all.top.map(r => [r.id, r.wins, r.losses]), [[p[0], 3, 2], [p[2], 2, 2], [p[1], 1, 2]]);
-  assert.equal(all.me, null);
-  const week = await call(env, '/ranking?period=week', undefined, t);
-  assert.deepEqual(week.top.map(r => [r.rank, r.id, r.wins, r.losses]), [[1, p[2], 2, 1], [2, p[1], 1, 0], [3, p[0], 0, 2]]);
-  assert.ok(week.since <= Date.now() && new Date(week.since).getUTCDay() === 1);
-  assert.equal((await call(env, '/ranking?period=week')).status, 401);
+test('ranking: $CWORM gained this week and all time, capped, and merged with a linked account', async () => {
+  const env = makeEnv(), realNow = Date.now;
+  let now = realNow(); Date.now = () => now;
+  try {
+    const a = await call(env, '/auth/guest', {}), b = await call(env, '/auth/guest', {}), c = await call(env, '/auth/telegram', { initData: tgInit(9, 'Cy') });
+    assert.equal((await call(env, '/score', { amount: 0 }, a.token)).status, 400);
+    assert.equal((await call(env, '/score', { amount: 120 }, a.token)).added, 120);
+    assert.equal((await call(env, '/score', { amount: 50 }, a.token)).status, 429);          // too soon after the last one
+    now += 9000; assert.equal((await call(env, '/score', { amount: 5000 }, a.token)).added, 600);   // capped per match
+    assert.equal((await call(env, '/score', { import: 99999 }, a.token)).added, 3000);       // the old wallet total, once, capped, all time only
+    assert.equal((await call(env, '/score', { import: 500 }, a.token)).added, 0);
+    await call(env, '/score', { amount: 300 }, b.token); await call(env, '/score', { amount: 200 }, c.token);
+    let week = await call(env, '/ranking?period=week', undefined, b.token), all = await call(env, '/ranking?period=all', undefined, b.token);
+    assert.deepEqual(week.top.map(r => [r.id, r.cworm]), [[a.player.id, 720], [b.player.id, 300], [c.player.id, 200]]);
+    assert.deepEqual(all.top.map(r => [r.id, r.cworm]), [[a.player.id, 3720], [b.player.id, 300], [c.player.id, 200]]);
+    assert.deepEqual(week.me, { rank: 2, id: b.player.id, name: b.player.name, cworm: 300 });
+    for (let i = 0; i < 12; i++) { now += 9000; await call(env, '/score', { amount: 600 }, b.token) }   // daily cap
+    assert.equal((await call(env, '/ranking?period=week', undefined, b.token)).me.cworm, 6000);
+    now += 8 * 864e5; await call(env, '/score', { amount: 10 }, c.token);                    // a new week starts from zero
+    week = await call(env, '/ranking?period=week', undefined, c.token);
+    assert.deepEqual(week.top.map(r => [r.id, r.cworm]), [[c.player.id, 10]]);
+    const merged = await call(env, '/auth/telegram', { initData: tgInit(9, 'Cy') }, a.token);   // the guest's score joins the Telegram account
+    all = await call(env, '/ranking?period=all', undefined, merged.token);
+    assert.deepEqual(all.top.map(r => [r.id, r.cworm]), [[c.player.id, 3930], [b.player.id, 6000]].sort((x, y) => y[1] - x[1]));
+  } finally { Date.now = realNow }
 });

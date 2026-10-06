@@ -21,7 +21,8 @@
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
-//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, wins, losses}], me}
+//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
+//   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
@@ -37,25 +38,40 @@ export { Match, Lobby };
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
 const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
 const SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SCORE_MAX = 600, SCORE_DAY = 6000, SCORE_GAP_MS = 8000, SCORE_IMPORT_MAX = 3000;
+async function addScore(env, me, amount, imported) {
+  const now = Date.now(), week = weekStart(now), day = Math.floor(now / 864e5) * 864e5;
+  const s = await env.DB.prepare('SELECT * FROM cworm_scores WHERE player = ?').bind(me.id).first() || { total: 0, week_start: week, week: 0, day_start: day, day: 0, last: 0, imported: 0 };
+  if (imported) { if (s.imported) return { added: 0, s }; s.imported = 1; amount = Math.min(SCORE_IMPORT_MAX, amount); s.total += amount }
+  else {
+    if (now - s.last < SCORE_GAP_MS) return { error: 'too soon', status: 429 };
+    if (s.day_start !== day) { s.day_start = day; s.day = 0 }
+    if (s.week_start !== week) { s.week_start = week; s.week = 0 }
+    amount = Math.min(amount, SCORE_MAX, Math.max(0, SCORE_DAY - s.day));
+    s.total += amount; s.week += amount; s.day += amount; s.last = now;
+  }
+  await env.DB.prepare(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(player) DO UPDATE SET total = excluded.total, week_start = excluded.week_start, week = excluded.week, day_start = excluded.day_start, day = excluded.day, last = excluded.last, imported = excluded.imported`)
+    .bind(me.id, s.total, s.week_start, s.week, s.day_start, s.day, s.last, s.imported).run();
+  return { added: amount, s };
+}
 const NICK = /^[\p{L}\p{N}][\p{L}\p{N} _.\-]{1,14}[\p{L}\p{N}]$/u, RANK_TOP = 50, NICK_GAP_MS = 60 * 1000;
 // A short list of words a nickname can't contain, and names that would pass for the team or the game.
 const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm)/i;
 // Monday 00:00 UTC of this week: the weekly ranking starts over then.
 function weekStart(now = Date.now()) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime() }
 
+// The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC) or all time. The game reports what each
+// match banked; the server caps each report and each day so a tampered phone can't run away with it.
 async function ranking(env, period, me) {
-  if (period === 'week') {
-    const since = weekStart();
-    const rows = (await env.DB.prepare(`SELECT p.id, p.name, SUM(CASE WHEN m.winner = p.id THEN 1 ELSE 0 END) AS wins, SUM(CASE WHEN m.winner IS NOT NULL AND m.winner != p.id THEN 1 ELSE 0 END) AS losses
-      FROM matches m JOIN players p ON p.id = m.p0 OR p.id = m.p1 WHERE m.ended >= ? AND m.p0 != m.p1 GROUP BY p.id HAVING wins + losses > 0
-      ORDER BY wins DESC, losses ASC, p.id ASC`).bind(since).all()).results;
-    return { period, since, ...place(rows, me) };
-  }
-  const rows = (await env.DB.prepare('SELECT id, name, wins, losses FROM players WHERE wins + losses > 0 ORDER BY wins DESC, losses ASC, id ASC').all()).results;
-  return { period: 'all', since: null, ...place(rows, me) };
+  const since = weekStart();
+  const rows = period === 'week'
+    ? (await env.DB.prepare('SELECT p.id, p.name, s.week AS cworm FROM cworm_scores s JOIN players p ON p.id = s.player WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC').bind(since).all()).results
+    : (await env.DB.prepare('SELECT p.id, p.name, s.total AS cworm FROM cworm_scores s JOIN players p ON p.id = s.player WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC').all()).results;
+  return { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me) };
 }
 function place(rows, me) {
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, wins: r.wins | 0, losses: r.losses | 0 }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0 }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -104,6 +120,11 @@ async function link(env, me, target) {
     q('UPDATE login_codes SET player = ? WHERE player = ?', b, a),
     q('UPDATE OR IGNORE nicknames SET player = ? WHERE player = ?', b, a),             // a nickname picked as a guest comes along, unless the account has one
     q('DELETE FROM nicknames WHERE player = ?', a),
+    q(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) SELECT ?, total, week_start, week, day_start, day, last, imported FROM cworm_scores WHERE player = ?
+       ON CONFLICT(player) DO UPDATE SET total = total + excluded.total,
+       week = CASE WHEN week_start = excluded.week_start THEN week + excluded.week WHEN excluded.week_start > week_start THEN excluded.week ELSE week END,
+       week_start = MAX(week_start, excluded.week_start), imported = MAX(imported, excluded.imported), last = MAX(last, excluded.last)`, b, a),
+    q('DELETE FROM cworm_scores WHERE player = ?', a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -221,6 +242,13 @@ export default {
         env.DB.prepare('UPDATE players SET name = ? WHERE id = ?').bind(nick, me.id),
       ]);
       return session(env, await playerById(env, me.id), cors, false);
+    }
+    if (path === '/score' && req.method === 'POST') {
+      const imp = body.import != null, amount = Math.floor(Number(imp ? body.import : body.amount));
+      if (!(amount > 0) || amount > 1e9) return json({ error: 'bad amount' }, 400, cors);
+      const r = await addScore(env, me, amount, imp);
+      if (r.error) return json({ error: r.error }, r.status, cors);
+      return json({ added: r.added, week: r.s.week_start === weekStart() ? r.s.week : 0, total: r.s.total }, 200, cors);
     }
     if (path === '/ranking' && req.method === 'GET') return json(await ranking(env, url.searchParams.get('period') === 'week' ? 'week' : 'all', me), 200, cors);
     if (path === '/feedback' && req.method === 'POST') {
