@@ -6,7 +6,8 @@
 //   host / join {hat}           a seat is ready            start {seed,theme,count,hats}   seat 0 starts the match
 //   f {e,s}                     effects and state, ~20/s   auth {e,s}                      turn over, other phone takes over
 //   bye                         a player left
-// The server adds: seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason}.
+// The server adds: seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
+// flags {cc:[country,country]} (two-letter codes from Cloudflare, null when unknown) to both phones whenever one connects.
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000;
 
@@ -29,11 +30,14 @@ export class Match {
     if (m.done) return new Response('match is over', { status: 410 });
     let side = m.players.indexOf(player);
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
+    const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
+    m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; await this.save();
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);
     pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state, carves: m.carves } : { t: 'seat', side }));
     if (m.start) this.tell(1 - side, { t: 'back', side });
+    this.tell(0, { t: 'flags', cc: m.cc }); this.tell(1, { t: 'flags', cc: m.cc });
     m.last = Date.now(); await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }

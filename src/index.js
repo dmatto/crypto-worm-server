@@ -270,7 +270,7 @@ export default {
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
     if (ws) {
-      const h = new Headers(req.headers); h.set('x-player', String(me.id));
+      const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', String((req.cf && req.cf.country) || ''));   // country only, from Cloudflare, for the opponent's flag
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }
     return json({ error: 'not found' }, 404, cors);

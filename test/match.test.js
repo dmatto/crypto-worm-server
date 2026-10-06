@@ -84,3 +84,13 @@ test('match: quick chat relays only a line number, from either side, at most eve
   await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 0 }));
   assert.deepEqual(s1.out.at(-1), { t: 'chat', id: 0 });
 });
+
+test('match: both phones get each player\'s country for the flag, unknown ones as null', async () => {
+  const c = ctx(), m = new Match(c, {});
+  const at = (player, cc) => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-country': cc } }));
+  await at(11, 'br'); await at(22, 'XX');
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null] }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null] });
+  await at(22, 'UY');                                                              // rejoining from somewhere else updates it
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'] });
+});
