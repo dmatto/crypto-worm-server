@@ -64,3 +64,10 @@ test('lobby: counts the players online, hidden ones too, and how many are in a g
   b.closed = true; await l.webSocketClose(b);
   assert.deepEqual(await (await l.fetch(new Request('https://lobby/count'))).json(), { online: 2, playing: 0 });
 });
+
+test('lobby: each player carries their country for the flag, unknown as null', async () => {
+  const c = ctx(), l = new Lobby(c, {});
+  const at = async (id, name, cc) => { await l.fetch(new Request('https://lobby/ws', { headers: { Upgrade: 'websocket', 'x-player': String(id), 'x-name': name, 'x-country': cc } })); return c.socks.at(-1) };
+  const a = await at(1, 'Ana', 'uy'); await at(2, 'Bo', 'XX');
+  assert.deepEqual(last(a, 'list').players.map(p => [p.name, p.cc]), [['Ana', 'UY'], ['Bo', null]]);
+});

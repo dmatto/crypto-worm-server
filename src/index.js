@@ -227,6 +227,7 @@ export default {
     if (path === '/lobby/ws') {
       const h = new Headers(req.headers);
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
+      h.set('x-country', String((req.cf && req.cf.country) || ''));
       return lobbyOf(env).fetch(new Request(req.url, { headers: h }));
     }
     if (path === '/me/name' && req.method === 'POST') {

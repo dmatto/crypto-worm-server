@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players, online, playing}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}
 //
 // It also keeps the one waiting spot for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
@@ -12,6 +12,8 @@
 
 import { newCode } from './match.js';
 
+// Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
+const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
 const MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000;
 
 export class Lobby {
@@ -39,7 +41,7 @@ export class Lobby {
   enter(req) {
     const h = req.headers, id = Number(h.get('x-player'));
     const me = { id, name: decodeURIComponent(h.get('x-name') || 'Worm').slice(0, 40), wins: Number(h.get('x-wins')) || 0, losses: Number(h.get('x-losses')) || 0,
-      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false };
+      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')) };
     for (const old of this.ctx.getWebSockets(String(id))) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(id)]);
@@ -70,7 +72,7 @@ export class Lobby {
   sock(id) { return this.ctx.getWebSockets(String(id))[0] || null }
   tell(id, msg) { const ws = this.sock(id); if (ws) try { ws.send(JSON.stringify(msg)) } catch { } return !!ws }
   broadcast(except) {
-    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy }) => ({ id, name, wins, losses, busy }));
+    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc }) => ({ id, name, wins, losses, busy, cc }));
     const out = JSON.stringify({ t: 'list', players: list, ...this.count(except) });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) try { ws.send(out) } catch { }
   }
@@ -80,7 +82,7 @@ export class Lobby {
     let msg; try { msg = JSON.parse(raw) } catch { return }
     const me = ws.deserializeAttachment(); if (!me || !msg || typeof msg.t !== 'string') return;
     const send = m => { try { ws.send(JSON.stringify(m)) } catch { } };
-    const who = ({ id, name, wins, losses }) => ({ id, name, wins, losses });
+    const who = ({ id, name, wins, losses, cc }) => ({ id, name, wins, losses, cc });
     switch (msg.t) {
       case 'busy':
         if (me.busy !== !!msg.on) { me.busy = !!msg.on; ws.serializeAttachment(me); this.broadcast() }
