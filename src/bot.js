@@ -67,22 +67,38 @@ export async function tellAdmins(env, f) {
 
 // /feedback (admins only): every message so far as a spreadsheet, plus one line per tester with their wallet, for the airdrop.
 const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+const toCsv = rows => '\ufeff' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+const when = t => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+// Every feedback message, plus one row per tester for the airdrop. A wallet linked after the feedback still counts.
 export async function feedbackCsv(env) {
-  const { results } = await env.DB.prepare('SELECT * FROM feedback ORDER BY created').all();
+  const { results } = await env.DB.prepare('SELECT f.*, p.wallet AS wallet_now, p.tg_id AS tg_now FROM feedback f LEFT JOIN players p ON p.id = f.player ORDER BY f.created').all();
   const head = ['date', 'player', 'name', 'telegram_id', 'wallet', 'wallet_signed_in', 'rating', 'feedback', 'platform_language_level'];
-  const rows = results.map(f => [new Date(f.created).toISOString().slice(0, 16).replace('T', ' '), f.player, f.name, f.tg_id, f.wallet, f.wallet_ok ? 'yes' : 'no', f.rating, f.text, f.info]);
-  const testers = new Map(); for (const f of results) { const t = testers.get(f.player) || { name: f.name, n: 0, wallet: null }; t.n++; if (f.wallet) t.wallet = f.wallet; testers.set(f.player, t) }
-  return { csv: '\ufeff' + [head, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n', messages: results.length, testers: testers.size, withWallet: [...testers.values()].filter(t => t.wallet).length };
+  const rows = results.map(f => [when(f.created), f.player, f.name, f.tg_id, f.wallet_now || f.wallet, f.wallet_now || f.wallet_ok ? 'yes' : 'no', f.rating, f.text, f.info]);
+  const testers = new Map();
+  for (const f of results) {
+    const t = testers.get(f.player) || { player: f.player, n: 0, first: f.created, wallet: null, ok: false };
+    t.n++; t.last = f.created; t.name = f.name; t.tg_id = f.tg_now ?? f.tg_id ?? t.tg_id;
+    if (f.wallet_now) { t.wallet = f.wallet_now; t.ok = true } else if (f.wallet && !t.ok) { t.wallet = f.wallet; t.ok = !!f.wallet_ok }
+    testers.set(f.player, t);
+  }
+  const list = [...testers.values()];
+  const airdrop = [['player', 'name', 'telegram_id', 'wallet', 'wallet_signed_in', 'feedback_messages', 'first_feedback', 'last_feedback'],
+    ...list.map(t => [t.player, t.name, t.tg_id, t.wallet, t.wallet ? (t.ok ? 'yes' : 'no') : '', t.n, when(t.first), when(t.last)])];
+  return { csv: toCsv([head, ...rows]), airdropCsv: toCsv(airdrop), messages: results.length, testers: testers.size, withWallet: list.filter(t => t.wallet).length };
 }
-async function sendCsv(env, chat_id) {
-  const r = await feedbackCsv(env);
-  if (!r.messages) return tg(env, 'sendMessage', { chat_id, text: 'No feedback yet.' });
+async function sendDoc(env, chat_id, csv, file, caption) {
   const form = new FormData();
   form.append('chat_id', String(chat_id));
-  form.append('caption', `${r.messages} messages from ${r.testers} testers, ${r.withWallet} with a wallet.`);
-  form.append('document', new Blob([r.csv], { type: 'text/csv' }), `crypto-worm-feedback-${new Date().toISOString().slice(0, 10)}.csv`);
+  if (caption) form.append('caption', caption);
+  form.append('document', new Blob([csv], { type: 'text/csv' }), file);
   const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
   return res.json().catch(() => ({ ok: false }));
+}
+async function sendCsv(env, chat_id) {
+  const r = await feedbackCsv(env), day = new Date().toISOString().slice(0, 10);
+  if (!r.messages) return tg(env, 'sendMessage', { chat_id, text: 'No feedback yet.' });
+  await sendDoc(env, chat_id, r.csv, `crypto-worm-feedback-${day}.csv`, `${r.messages} messages from ${r.testers} testers, ${r.withWallet} with a wallet.`);
+  return sendDoc(env, chat_id, r.airdropCsv, `crypto-worm-airdrop-testers-${day}.csv`, 'Airdrop list: one row per tester who sent feedback.');
 }
 
 export async function webhook(req, env) {

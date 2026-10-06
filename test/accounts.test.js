@@ -146,3 +146,24 @@ test('ranking: $CWORM gained this week and all time, capped, and merged with a l
     assert.deepEqual(all.top.map(r => [r.id, r.cworm]), [[c.player.id, 3930], [b.player.id, 6000]].sort((x, y) => y[1] - x[1]));
   } finally { Date.now = realNow }
 });
+
+test('airdrop list: one row per tester, with a wallet linked after the feedback and across account merges', async () => {
+  const env = { ...makeEnv(), ADMIN_PLAYERS: '1' }, realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ ok: true, result: {} });
+  try {
+    const tgUser = await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') });
+    const g = await call(env, '/auth/guest', {});
+    await call(env, '/feedback', { text: 'first' }, g.token); await call(env, '/feedback', { text: 'second' }, g.token);
+    const w = await walletSignIn(env, g.token);                       // links a wallet after the feedback
+    const h = await call(env, '/auth/guest', {});
+    await call(env, '/feedback', { text: 'from a guest phone' }, h.token);
+    await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') }, h.token);   // the guest signs in to the Telegram account
+    const { feedbackCsv } = await import('../src/bot.js');
+    const r = await feedbackCsv(env), lines = r.airdropCsv.replace('﻿', '').trim().split('\r\n');
+    assert.equal(r.testers, 2); assert.equal(r.withWallet, 1); assert.equal(lines.length, 3);
+    const mine = lines.find(l => l.includes(w.player.wallet));
+    assert.ok(mine, 'the wallet linked later is on the airdrop list'); assert.match(mine, /,yes,2,/);
+    assert.ok(lines.some(l => l.startsWith(tgUser.player.id + ',') && l.includes(',42,')), 'merged guest feedback moves to the Telegram account');
+    assert.ok(env.sql.prepare('SELECT COUNT(*) AS n FROM feedback').get().n === 3);
+  } finally { globalThis.fetch = realFetch }
+});

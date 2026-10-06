@@ -118,6 +118,7 @@ async function link(env, me, target) {
     q('DELETE FROM friends WHERE player = ? OR friend = ?', a, a),
     q('UPDATE matches SET p0 = ? WHERE p0 = ?', b, a), q('UPDATE matches SET p1 = ? WHERE p1 = ?', b, a), q('UPDATE matches SET winner = ? WHERE winner = ?', b, a),
     q('UPDATE login_codes SET player = ? WHERE player = ?', b, a),
+    q('UPDATE feedback SET player = ? WHERE player = ?', b, a),                          // feedback follows the merged account, for the airdrop list
     q('UPDATE OR IGNORE nicknames SET player = ? WHERE player = ?', b, a),             // a nickname picked as a guest comes along, unless the account has one
     q('DELETE FROM nicknames WHERE player = ?', a),
     q(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) SELECT ?, total, week_start, week, day_start, day, last, imported FROM cworm_scores WHERE player = ?
