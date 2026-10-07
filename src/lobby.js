@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing, live: [{code, names, cc, viewers, at}]}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}
 //
 // It also keeps the Live now list: matches in progress, which each match adds itself to when it starts and takes itself
@@ -24,6 +24,7 @@ export class Lobby {
 
   async fetch(req) {
     const url = new URL(req.url);
+    if (!this.liveList) this.liveList = await this.live();
     if (req.headers.get('Upgrade') === 'websocket') return this.enter(req);
     if (url.pathname === '/online') {
       const here = new Set(this.players().map(p => p.id));
@@ -46,7 +47,11 @@ export class Lobby {
     else { const old = all[code] || {}, s = v => (v == null ? null : String(v).slice(0, 40));
       all[code] = { code, names: (Array.isArray(b.names) ? b.names : [null, null]).slice(0, 2).map(s), cc: (Array.isArray(b.cc) ? b.cc : [null, null]).slice(0, 2).map(country),
         viewers: Math.max(0, Number(b.viewers) || 0), at: Number(b.at) || old.at || now } }
-    await this.ctx.storage.put('live', all); return Response.json({ ok: true });
+    await this.ctx.storage.put('live', all);
+    const was = (this.liveList || []).length, codes = new Set((this.liveList || []).map(l => l.code));
+    this.liveList = await this.live();
+    if (b.gone || !codes.has(code) || was !== this.liveList.length) this.broadcast();   // starts and ends go out at once; viewer counts ride along later
+    return Response.json({ ok: true });
   }
 
   // Quick match: the first player gets a fresh match code and waits; the next player within 30 seconds gets the same code.
@@ -92,7 +97,7 @@ export class Lobby {
   tell(id, msg) { const ws = this.sock(id); if (ws) try { ws.send(JSON.stringify(msg)) } catch { } return !!ws }
   broadcast(except) {
     const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc }) => ({ id, name, wins, losses, busy, cc }));
-    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except) });
+    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [] });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) try { ws.send(out) } catch { }
   }
 
