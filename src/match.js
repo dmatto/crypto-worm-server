@@ -8,8 +8,14 @@
 //   bye                         a player left
 // The server adds: seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
 // flags {cc:[country,country]} (two-letter codes from Cloudflare, null when unknown) to both phones whenever one connects.
+//
+// Viewers (GET /match/<code>/watch) watch a match live without playing. They get watch {start,s,carves,names,cc,viewers}
+// (or wait {} until the match starts, then watch), every f and auth the players send, chat {id,side}, over, and
+// viewers {n} whenever someone starts or stops watching (the players get viewers {n} too). The only thing a viewer can send
+// is cheer {id}: one of the game's six cheer emojis, at most one every 0.7 s, shown to everyone in the match.
+// A started match is listed in the lobby's Live now list until it ends.
 
-const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000;
+const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
 export class Match {
   constructor(ctx, env) {
@@ -23,11 +29,43 @@ export class Match {
   save() { return this.ctx.storage.put('m', this.mem) }
   sock(side) { return this.ctx.getWebSockets(String(side))[0] || null }
   tell(side, msg) { const ws = this.sock(side); if (ws) try { ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)) } catch { } }
+  viewers() { return this.ctx.getWebSockets('v') }
+  spread(msg, players) {                                              // to every viewer (and both players when asked)
+    const out = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    for (const ws of [...this.viewers(), ...(players ? [this.sock(0), this.sock(1)] : [])]) if (ws) try { ws.send(out) } catch { }
+  }
+  watchMsg(m) { return { t: 'watch', start: m.start, s: m.state, carves: m.carves, names: m.names || [null, null], cc: m.cc || [null, null], viewers: this.viewers().length } }
+  countViewers(gone) {                                                // tell everyone, and keep the Live now list roughly up to date
+    const n = this.viewers().filter(w => w !== gone).length; this.spread({ t: 'viewers', n }, true);
+    const m = this.mem; if (m && m.start && !m.done && Date.now() - (this.liveAt || 0) > 5000) { this.liveAt = Date.now(); this.live({ viewers: n }) }
+  }
+  // The lobby's Live now list: add (or update) this match when it starts, take it off when it ends.
+  live(extra, gone) {
+    const m = this.mem, code = this.code || (m && m.code); if (!this.env.LOBBY || !code) return;
+    const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], at: m.start && m.start.at, ...extra };
+    const p = this.env.LOBBY.get(this.env.LOBBY.idFromName('lobby')).fetch('https://lobby/live', { method: 'POST', body: JSON.stringify(body) }).catch(() => { });
+    if (this.ctx.waitUntil) this.ctx.waitUntil(p); return p;
+  }
+  async watch(m) {
+    if (this.viewers().length >= MAX_VIEWERS) return new Response('too many viewers', { status: 503 });
+    const pair = new WebSocketPair();
+    this.ctx.acceptWebSocket(pair[1], ['v']);
+    pair[1].send(JSON.stringify(m.start ? this.watchMsg(m) : { t: 'wait' }));
+    this.countViewers();
+    return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+  async names(m) {                                                    // the players' nicknames, for viewers and the Live now list
+    if (!this.env.DB || m.players[0] == null || m.players[1] == null) return;
+    try { const r = await this.env.DB.prepare('SELECT id, name FROM players WHERE id IN (?, ?)').bind(m.players[0], m.players[1]).all();
+      const by = new Map((r.results || []).map(p => [p.id, p.name])); m.names = m.players.map(id => by.get(id) || null) } catch { }
+  }
 
   async fetch(req) {
     if (req.headers.get('Upgrade') !== 'websocket') return new Response('expected a websocket', { status: 426 });
-    const m = await this.load(), player = Number(req.headers.get('x-player'));
+    const m = await this.load(), url = new URL(req.url), player = Number(req.headers.get('x-player'));
+    const code = url.pathname.split('/')[2]; if (code && !m.code) { m.code = code; await this.save() } this.code = m.code;
     if (m.done) return new Response('match is over', { status: 410 });
+    if (url.pathname.endsWith('/watch')) return this.watch(m);
     let side = m.players.indexOf(player);
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
@@ -43,30 +81,36 @@ export class Match {
   }
 
   async webSocketMessage(ws, raw) {
-    const m = await this.load(), side = Number(this.ctx.getTags(ws)[0]);
+    const m = await this.load(), tag = this.ctx.getTags(ws)[0], side = Number(tag); this.code = m.code;
     if (typeof raw !== 'string' || raw.length > MAX_MSG) return;
     let msg; try { msg = JSON.parse(raw) } catch { return }
     if (!msg || typeof msg.t !== 'string') return;
+    if (tag === 'v') {                                                // a viewer: cheers only
+      const id = msg.id, now = Date.now(); this.cheerAt = this.cheerAt || new WeakMap();
+      if (msg.t !== 'cheer' || !m.start || m.done || !Number.isInteger(id) || id < 0 || id >= CHEERS || now - (this.cheerAt.get(ws) || 0) < CHEER_GAP_MS) return;
+      this.cheerAt.set(ws, now); this.spread({ t: 'cheer', id }, true); return;
+    }
     m.last = Date.now();
     switch (msg.t) {
       case 'host': case 'join': this.tell(1 - side, raw); break;
       case 'start':
         if (side !== 0 || m.start) return;
         m.start = { seed: msg.seed | 0, theme: String(msg.theme).slice(0, 20), count: Math.min(3, Math.max(1, msg.count | 0)), hats: (msg.hats || []).slice(0, 2).map(h => String(h).slice(0, 20)) };
-        m.holder = 0; await this.save(); this.tell(1, { t: 'start', ...m.start }); break;
+        m.holder = 0; await this.names(m); m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
+        this.spread(this.watchMsg(m)); await this.live({ viewers: this.viewers().length }); break;
       case 'f':
         if (side !== m.holder || !m.start) return;
-        this.tell(1 - side, raw); this.keepCarves(msg.e);
+        this.tell(1 - side, raw); this.spread(raw); this.keepCarves(msg.e);
         const over = Array.isArray(msg.e) && msg.e.find(e => Array.isArray(e) && e[0] === 'gameOver');
         if (over) await this.finish(Array.isArray(over[1]) ? over[1][0] : -1, 'played');
         break;
       case 'auth':
         if (side !== m.holder || !m.start) return;
-        this.keepCarves(msg.e); m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); break;
+        this.keepCarves(msg.e); m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); this.spread(raw); break;
       case 'chat': {                                  // quick chat: only a line number from the game's fixed list, at most one every 1.5 s
         const id = msg.id, now = Date.now(); this.chatAt = this.chatAt || [0, 0];
         if (!m.start || !Number.isInteger(id) || id < 0 || id > 63 || now - this.chatAt[side] < 1500) return;
-        this.chatAt[side] = now; this.tell(1 - side, { t: 'chat', id }); break;
+        this.chatAt[side] = now; this.tell(1 - side, { t: 'chat', id }); this.spread({ t: 'chat', id, side }); break;
       }
       case 'bye':
         this.tell(1 - side, raw);
@@ -81,7 +125,9 @@ export class Match {
     for (const e of events) if (Array.isArray(e) && e[0] === 'carve' && Array.isArray(e[1]) && this.mem.carves.length < 20000) this.mem.carves.push(e[1].slice(0, 3).map(Number));
   }
 
-  async webSocketClose(ws) { const side = Number(this.ctx.getTags(ws)[0]); this.tell(1 - side, { t: 'gone', side }) }
+  async webSocketClose(ws) { const tag = this.ctx.getTags(ws)[0]; await this.load(); this.code = this.mem.code;
+    if (tag === 'v') return this.countViewers(ws);
+    const side = Number(tag); this.tell(1 - side, { t: 'gone', side }) }
   async webSocketError(ws) { return this.webSocketClose(ws) }
 
   // Nobody has said anything for a while: the phone running the turn has gone quiet, so the other player wins.
@@ -95,6 +141,7 @@ export class Match {
     const m = this.mem; if (m.done) return;
     m.done = { winner, reason, at: Date.now() }; await this.save();
     for (const side of [0, 1]) this.tell(side, { t: 'over', winner, reason });
+    this.spread({ t: 'over', winner, reason }); await this.live(null, true);
     if (this.env.DB && m.players[0] != null && m.players[1] != null && m.players[0] !== m.players[1]) {   // one account on both phones doesn't count
       const w = winner === 0 || winner === 1 ? m.players[winner] : null, l = w == null ? null : m.players[1 - winner];
       await this.env.DB.batch([

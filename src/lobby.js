@@ -7,6 +7,9 @@
 //   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}
 //
+// It also keeps the Live now list: matches in progress, which each match adds itself to when it starts and takes itself
+// off when it ends (see match.js). Entries older than LIVE_MAX_MS are dropped in case an end never arrived.
+//
 // It also keeps the one waiting spot for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
 // also counts the players online: `online` is everyone connected (hidden players too), `playing` those in a match.
 
@@ -14,7 +17,7 @@ import { newCode } from './match.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
-const MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000;
+const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000;
 
 export class Lobby {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.recent = new Map() }
@@ -27,7 +30,23 @@ export class Lobby {
       return Response.json({ online: (url.searchParams.get('ids') || '').split(',').map(Number).filter(id => here.has(id)) });
     }
     if (url.pathname === '/count') return Response.json(this.count());
+    if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
     return this.quick(Number(url.searchParams.get('player')));
+  }
+
+  async live() {
+    const all = (await this.ctx.storage.get('live')) || {}, now = Date.now();
+    return Object.values(all).filter(l => now - l.at < LIVE_MAX_MS).sort((a, b) => b.viewers - a.viewers || b.at - a.at).slice(0, LIVE_MAX);
+  }
+  async setLive(b) {
+    const code = String(b.code || ''); if (!/^[A-Z2-9]{6}$/.test(code)) return Response.json({ ok: false }, { status: 400 });
+    const all = (await this.ctx.storage.get('live')) || {}, now = Date.now();
+    for (const k in all) if (now - all[k].at > LIVE_MAX_MS) delete all[k];
+    if (b.gone) delete all[code];
+    else { const old = all[code] || {}, s = v => (v == null ? null : String(v).slice(0, 40));
+      all[code] = { code, names: (Array.isArray(b.names) ? b.names : [null, null]).slice(0, 2).map(s), cc: (Array.isArray(b.cc) ? b.cc : [null, null]).slice(0, 2).map(country),
+        viewers: Math.max(0, Number(b.viewers) || 0), at: Number(b.at) || old.at || now } }
+    await this.ctx.storage.put('live', all); return Response.json({ ok: true });
   }
 
   // Quick match: the first player gets a fresh match code and waits; the next player within 30 seconds gets the same code.

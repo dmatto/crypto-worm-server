@@ -20,6 +20,8 @@
 //   POST /match/new                                             -> {code}      challenge a friend by link
 //   POST /match/quick                                           -> {code, side} quick match
 //   GET  /match/<code>/ws?token=...                             websocket into the match
+//   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
+//   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
@@ -152,6 +154,9 @@ export default {
     if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
     if (path === '/telegram/setup') return setup(req, env, url.origin);
     if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
+    if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
+    const watch = path.match(/^\/match\/([A-Z2-9]{6})\/watch$/);
+    if (watch) return env.MATCH.get(env.MATCH.idFromName(watch[1])).fetch(new Request(req.url, { headers: req.headers }));
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
 
     if (path === '/auth/telegram' && req.method === 'POST') {
