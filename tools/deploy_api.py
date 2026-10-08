@@ -11,7 +11,7 @@ import json, os, secrets, sys, uuid, urllib.request, urllib.error
 NAME, DB_NAME, COMPAT = 'crypto-worm-server', 'crypto-worm', '2025-09-01'
 VARS = {'SIGNIN_DOMAIN': 'play.cryptoworm.io', 'ALLOWED_ORIGINS': 'https://rainbow-kitten-2ecc2a.netlify.app,https://play.cryptoworm.io,https://cryptoworm.io,https://www.cryptoworm.io',
         'GAME_LINK': 'https://t.me/CryptoWormWarsBot/play', 'WELCOME_PHOTO': 'https://play.cryptoworm.io/welcome.jpg',
-        'MENU_URL': 'https://play.cryptoworm.io/', 'PUBLIC_URL': 'https://crypto-worm-server.cryptoworm.workers.dev',
+        'MENU_URL': 'https://play.cryptoworm.io/', 'SITE_URL': 'https://play.cryptoworm.io', 'PUBLIC_URL': 'https://crypto-worm-server.cryptoworm.workers.dev',
         'BOT_AUTOSETUP': os.environ.get('BOT_AUTOSETUP', '0'), 'ADMIN_PLAYERS': os.environ.get('ADMIN_PLAYERS', '2')}
 TOKEN, ACC = os.environ.get('CLOUDFLARE_API_TOKEN'), os.environ.get('CLOUDFLARE_ACCOUNT_ID')
 if not TOKEN or not ACC: sys.exit('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set')
@@ -48,10 +48,13 @@ meta = {
 if first: meta['migrations'] = {'new_tag': 'v1', 'new_sqlite_classes': ['Match', 'Lobby']}
 b = uuid.uuid4().hex
 parts = [('metadata', 'metadata.json', 'application/json', json.dumps(meta).encode())]
-for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
+for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')
+# every 15 minutes: the Monday top 10 post, bot reminders, and (with BOT_AUTOSETUP=1) the bot's settings
+call('PUT', f'/workers/scripts/{NAME}/schedules', [{'cron': '*/15 * * * *'}])
+print('cron set')
 
 # 3. secrets: a session secret made once, and the bot token when given
 have = {s['name'] for s in call('GET', f'/workers/scripts/{NAME}/secrets')['result']}

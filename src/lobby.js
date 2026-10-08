@@ -31,6 +31,7 @@ export class Lobby {
       return Response.json({ online: (url.searchParams.get('ids') || '').split(',').map(Number).filter(id => here.has(id)) });
     }
     if (url.pathname === '/count') return Response.json(this.count());
+    if (url.pathname === '/ids') return Response.json({ ids: this.players().map(p => p.id) });   // visible players, for the bot's "friend is online" reminders
     if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
     return this.quick(Number(url.searchParams.get('player')));
   }

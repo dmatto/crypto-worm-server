@@ -1,4 +1,7 @@
-// The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play and /help.
+// The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play, /help, /top,
+// /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
+// /setgroup (admins) picks the group for the Monday top 10 post. Inline mode (@CryptoWormWarsBot in any chat) offers a
+// "Duel me" card. Admins also get /feedback and /sources.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -7,12 +10,18 @@ const enc = new TextEncoder();
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
 async function sha256(s) { return hex(await crypto.subtle.digest('SHA-256', enc.encode(s))) }
 function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 }
+import { friendCode } from './auth.js';
+import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears in a Worms-style artillery game. Free to play right here in Telegram: ' +
   'battle the CPU, a friend or players online, smash Bear forts in the campaign, and unlock hats and special weapons. Tap Start, then Play!';
 export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 A free Worms-style game right inside Telegram. Tap Play!';
-export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'help', description: 'How to play' }, { command: 'start', description: 'Welcome message' }];
+export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
+  { command: 'privacy', description: 'Privacy policy' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
+export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
+export const UPDATES = ['message', 'inline_query'];
+export const privacyUrl = env => (env.SITE_URL || (env.MENU_URL || 'https://play.cryptoworm.io/')).replace(/\/+$/, '') + '/privacy.html';
 
 export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x.com/CryptoWorm72' };
 
@@ -33,14 +42,15 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
-function buttons(env) {
-  const play = env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play';
+// The Play button carries a source tag from the /start link (t.me/<bot>?start=s_<tag>), and the invite button the player's friend code.
+function buttons(env, src, invite) {
+  const play = gameLink(env, src ? 's_' + src : null), share = invite || env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play';
   return { inline_keyboard: [[{ text: '🎮 Play now', url: play }],
-    [{ text: '👥 Invite a friend', url: 'https://t.me/share/url?url=' + encodeURIComponent(play) + '&text=' + encodeURIComponent('Fight me in Crypto Worm Wars! 🪱') }],
+    [{ text: '👥 Invite a friend (+200 for both)', url: 'https://t.me/share/url?url=' + encodeURIComponent(share) + '&text=' + encodeURIComponent('Fight me in Crypto Worm Wars! 🪱') }],
     [{ text: '💬 Telegram group', url: COMMUNITY.group }, { text: '𝕏 Follow on X', url: COMMUNITY.x }]] };
 }
 
-async function tg(env, method, body) {
+export async function tg(env, method, body) {
   const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
   return r.json().catch(() => ({ ok: false }));
 }
@@ -101,19 +111,47 @@ async function sendCsv(env, chat_id) {
   return sendDoc(env, chat_id, r.airdropCsv, `crypto-worm-airdrop-testers-${day}.csv`, 'Airdrop list: one row per tester who sent feedback.');
 }
 
+const isAdmin = async (env, from) => !!from && (await adminTgIds(env)).includes(from.id);
+async function inviteLink(env, from) {
+  const p = from && env.DB && await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
+  return p ? gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)) : null;
+}
+
 export async function webhook(req, env) {
   if (!same(req.headers.get('X-Telegram-Bot-Api-Secret-Token') || '', await webhookSecret(env))) return new Response('forbidden', { status: 403 });
   const u = await req.json().catch(() => null), m = u && u.message;
-  if (!m || !m.chat || m.chat.type !== 'private' || typeof m.text !== 'string') return new Response('ok');
-  const cmd = m.text.trim().split(/[\s@]/)[0].toLowerCase(), chat_id = m.chat.id;
+  if (u && u.inline_query && u.inline_query.from && env.DB) { await inlineQuery(env, u.inline_query).catch(() => { }); return new Response('ok') }
+  if (!m || !m.chat || typeof m.text !== 'string') return new Response('ok');
+  const [head, ...rest] = m.text.trim().split(/\s+/), [c, at] = head.toLowerCase().split('@'), cmd = c, chat_id = m.chat.id, arg = rest.join(' ');
+  if (at && at !== botUsername(env).toLowerCase()) return new Response('ok');          // a command for another bot in the group
+  if (m.chat.type === 'group' || m.chat.type === 'supergroup') {
+    if (cmd === '/duel') await duel(env, m);
+    else if (cmd === '/top') await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
+    else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
+    else if (cmd === '/setgroup' && await isAdmin(env, m.from)) {
+      await setGroup(env, chat_id);
+      await tg(env, 'sendMessage', { chat_id, text: '✅ Done. Every Monday the bot posts last week\'s top 10 here.' });
+    }
+    return new Response('ok');
+  }
+  if (m.chat.type !== 'private') return new Response('ok');
   if (cmd === '/start') {
-    const caption = welcomeText(m.from && m.from.first_name ? String(m.from.first_name).slice(0, 40) : '');
-    const sent = env.WELCOME_PHOTO ? await tg(env, 'sendPhoto', { chat_id, photo: env.WELCOME_PHOTO, caption, reply_markup: buttons(env) }) : { ok: false };
-    if (!sent.ok) await tg(env, 'sendMessage', { chat_id, text: caption, reply_markup: buttons(env) });
-  } else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: buttons(env) });
-  else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env) });
+    const src = arg.startsWith('s_') ? cleanSource(arg.slice(2)) : null;
+    if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET no_dm = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
+    const caption = welcomeText(m.from && m.from.first_name ? String(m.from.first_name).slice(0, 40) : ''), kb = buttons(env, src, env.DB && await inviteLink(env, m.from));
+    const sent = env.WELCOME_PHOTO ? await tg(env, 'sendPhoto', { chat_id, photo: env.WELCOME_PHOTO, caption, reply_markup: kb }) : { ok: false };
+    if (!sent.ok) await tg(env, 'sendMessage', { chat_id, text: caption, reply_markup: kb });
+  } else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from)) });
+  else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from)) });
+  else if (cmd === '/top' && env.DB) await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
+  else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
+  else if (cmd === '/stop') {
+    if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET remind = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
+    await tg(env, 'sendMessage', { chat_id, text: '🔕 Reminders are off. You can turn them back on in the game\'s Settings.' });
+  }
+  else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/feedback') {
-    if ((await adminTgIds(env)).includes(m.from && m.from.id)) await sendCsv(env, chat_id);
+    if (await isAdmin(env, m.from)) await sendCsv(env, chat_id);
     else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
   }
   return new Response('ok');
@@ -125,10 +163,11 @@ export async function setup(req, env, origin) {
     short: (await tg(env, 'getMyShortDescription')).result, commands: (await tg(env, 'getMyCommands')).result, menu: (await tg(env, 'getChatMenuButton')).result });
   if (req.method !== 'POST') return Response.json(await look());
   const opts = await req.json().catch(() => ({})), done = {};
-  done.webhook = await tg(env, 'setWebhook', { url: origin + '/telegram/webhook', secret_token: await webhookSecret(env), allowed_updates: ['message'], drop_pending_updates: false });
+  done.webhook = await tg(env, 'setWebhook', { url: origin + '/telegram/webhook', secret_token: await webhookSecret(env), allowed_updates: UPDATES, drop_pending_updates: false });
   done.description = await tg(env, 'setMyDescription', { description: DESCRIPTION });
   done.short = await tg(env, 'setMyShortDescription', { short_description: SHORT_DESCRIPTION });
   done.commands = await tg(env, 'setMyCommands', { commands: COMMANDS });
+  done.groupCommands = await tg(env, 'setMyCommands', { commands: GROUP_COMMANDS, scope: { type: 'all_group_chats' } });
   if (opts.menuUrl) done.menu = await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Play', web_app: { url: opts.menuUrl } } });
   return Response.json({ done, now: await look() });
 }
@@ -136,6 +175,12 @@ export async function setup(req, env, origin) {
 // Cron: this sandbox can't call the Worker's URL, so the Worker sets the bot up itself on a schedule. It writes what it
 // saw and did to the bot_log table. It never replaces a webhook that points somewhere else, and it only applies the
 // settings when BOT_AUTOSETUP is "1".
+// The cron also runs the Monday top 10 post and the bot reminders (every 15 minutes).
+export async function cron(env, now = Date.now()) {
+  if (env.BOT_AUTOSETUP === '1') await sync(env);
+  if (!env.BOT_TOKEN || !env.DB) return;
+  for (const job of [weekly, reminders]) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+}
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }
 }
@@ -146,10 +191,11 @@ async function syncNow(env) {
   await log('seen ' + JSON.stringify({ webhook: info.url || '', pending: info.pending_update_count, lastError: info.last_error_message || '', menu: menu.type }));
   if (env.BOT_AUTOSETUP !== '1') return;
   if (info.url && info.url !== mine) return log('left alone: the webhook points to another service');
-  const r = { webhook: (await tg(env, 'setWebhook', { url: mine, secret_token: await webhookSecret(env), allowed_updates: ['message'] })).ok,
+  const r = { webhook: (await tg(env, 'setWebhook', { url: mine, secret_token: await webhookSecret(env), allowed_updates: UPDATES })).ok,
     description: (await tg(env, 'setMyDescription', { description: DESCRIPTION })).ok,
     short: (await tg(env, 'setMyShortDescription', { short_description: SHORT_DESCRIPTION })).ok,
-    commands: (await tg(env, 'setMyCommands', { commands: COMMANDS })).ok };
+    commands: (await tg(env, 'setMyCommands', { commands: COMMANDS })).ok,
+    groupCommands: (await tg(env, 'setMyCommands', { commands: GROUP_COMMANDS, scope: { type: 'all_group_chats' } })).ok };
   if (menu.type !== 'web_app' && env.MENU_URL) r.menu = (await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Play', web_app: { url: env.MENU_URL } } })).ok;
   return log('set ' + JSON.stringify(r));
 }

@@ -26,6 +26,8 @@
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
+//   POST /played, /rewards, /share/prepare, /me/remind           finished matches, invite rewards, share cards, reminders (see growth.js)
+// The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
 // Signing in with a wallet never asks for a transaction. Scores are for fun: the server never sends tokens or anything
@@ -34,7 +36,8 @@
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
-import { webhook, setup, sync, tellAdmins } from './bot.js';
+import { webhook, setup, cron, tellAdmins } from './bot.js';
+import { weekStart, newPlayer, seen, noteInvite, played, claim, prepareShare, setRemind } from './growth.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -48,7 +51,9 @@ async function addScore(env, me, amount, imported) {
   else {
     if (now - s.last < SCORE_GAP_MS) return { error: 'too soon', status: 429 };
     if (s.day_start !== day) { s.day_start = day; s.day = 0 }
-    if (s.week_start !== week) { s.week_start = week; s.week = 0 }
+    if (s.week_start !== week) {                                   // keep the week that ended, for the Monday top 10
+      if (s.week > 0) await env.DB.prepare('INSERT OR IGNORE INTO week_scores (week_start, player, cworm) VALUES (?, ?, ?)').bind(s.week_start, me.id, s.week).run();
+      s.week_start = week; s.week = 0 }
     amount = Math.min(amount, SCORE_MAX, Math.max(0, SCORE_DAY - s.day));
     s.total += amount; s.week += amount; s.day += amount; s.last = now;
   }
@@ -60,8 +65,6 @@ async function addScore(env, me, amount, imported) {
 const NICK = /^[\p{L}\p{N}][\p{L}\p{N} _.\-]{1,14}[\p{L}\p{N}]$/u, RANK_TOP = 50, NICK_GAP_MS = 60 * 1000;
 // A short list of words a nickname can't contain, and names that would pass for the team or the game.
 const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm)/i;
-// Monday 00:00 UTC of this week: the weekly ranking starts over then.
-function weekStart(now = Date.now()) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime() }
 
 // The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC) or all time. The game reports what each
 // match banked; the server caps each report and each day so a tampered phone can't run away with it.
@@ -101,7 +104,8 @@ async function signedIn(req, env) {
 
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -128,26 +132,29 @@ async function link(env, me, target) {
        week = CASE WHEN week_start = excluded.week_start THEN week + excluded.week WHEN excluded.week_start > week_start THEN excluded.week ELSE week END,
        week_start = MAX(week_start, excluded.week_start), imported = MAX(imported, excluded.imported), last = MAX(last, excluded.last)`, b, a),
     q('DELETE FROM cworm_scores WHERE player = ?', a),
+    q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
+    q('UPDATE OR IGNORE player_meta SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_meta WHERE player = ?', a),
+    q('UPDATE player_meta SET invited_by = ? WHERE invited_by = ?', b, a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
   return playerById(env, b);
 }
 
-async function telegramUser(env, req, u, cors) {
+async function telegramUser(env, req, u, cors, src) {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40) || u.username || 'Worm';
   const me = await signedIn(req, env);
   let p = await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(u.id).first();
   if (p) { if (p.name !== name) await env.DB.prepare('UPDATE players SET name = ? WHERE id = ? AND id NOT IN (SELECT player FROM nicknames)').bind(name, p.id).run(); p = await playerById(env, p.id) }
   else if (me && me.tg_id == null) { await env.DB.prepare('UPDATE players SET tg_id = ?, name = CASE WHEN id IN (SELECT player FROM nicknames) THEN name ELSE ? END WHERE id = ?').bind(u.id, name, me.id).run(); p = await playerById(env, me.id) }
-  else p = await env.DB.prepare('INSERT INTO players (tg_id, name, created) VALUES (?, ?, ?) RETURNING *').bind(u.id, name, Date.now()).first();
+  else { p = await env.DB.prepare('INSERT INTO players (tg_id, name, created) VALUES (?, ?, ?) RETURNING *').bind(u.id, name, Date.now()).first(); await newPlayer(env, p.id, src) }
   return session(env, await link(env, me, p), cors);
 }
 
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
 export default {
-  async scheduled(event, env, ctx) { ctx.waitUntil(sync(env)) },
+  async scheduled(event, env, ctx) { ctx.waitUntil(cron(env, event && event.scheduledTime || Date.now())) },
   async fetch(req, env, ctx) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, ''), cors = corsFor(req, env);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
@@ -161,11 +168,11 @@ export default {
 
     if (path === '/auth/telegram' && req.method === 'POST') {
       const u = await verifyTelegram(body.initData, env.BOT_TOKEN);
-      return u ? telegramUser(env, req, u, cors) : json({ error: 'telegram sign-in failed' }, 401, cors);
+      return u ? telegramUser(env, req, u, cors, body.src) : json({ error: 'telegram sign-in failed' }, 401, cors);
     }
     if (path === '/auth/telegram/web' && req.method === 'POST') {
       const u = await verifyTelegramLogin(body, env.BOT_TOKEN);
-      return u ? telegramUser(env, req, u, cors) : json({ error: 'telegram sign-in failed' }, 401, cors);
+      return u ? telegramUser(env, req, u, cors, body.src) : json({ error: 'telegram sign-in failed' }, 401, cors);
     }
 
     if (path === '/auth/solana/nonce' && req.method === 'POST') {
@@ -178,12 +185,13 @@ export default {
       const me = await signedIn(req, env);
       let p = await env.DB.prepare('SELECT * FROM players WHERE wallet = ?').bind(body.address).first();
       if (!p && me && !me.wallet) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' THEN ? ELSE name END WHERE id = ?").bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
-      else if (!p) p = await env.DB.prepare('INSERT INTO players (wallet, name, created) VALUES (?, ?, ?) RETURNING *').bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), Date.now()).first();
+      else if (!p) { p = await env.DB.prepare('INSERT INTO players (wallet, name, created) VALUES (?, ?, ?) RETURNING *').bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), Date.now()).first(); await newPlayer(env, p.id, body.src) }
       return session(env, await link(env, me, p), cors);
     }
 
     if (path === '/auth/guest' && req.method === 'POST') {
       const r = await env.DB.prepare('INSERT INTO players (name, created) VALUES (?, ?) RETURNING *').bind('Guest ' + Math.floor(1000 + Math.random() * 9000), Date.now()).first();
+      await newPlayer(env, r.id, body.src);
       return session(env, r, cors);
     }
 
@@ -222,7 +230,8 @@ export default {
       if (n.n >= MAX_FRIENDS) return json({ error: 'friend list is full' }, 400, cors);
       const add = (a, b) => env.DB.prepare('INSERT OR IGNORE INTO friends (player, friend, created) VALUES (?, ?, ?)').bind(a, b, Date.now());
       await env.DB.batch(byCode ? [add(me.id, f.id), add(f.id, me.id)] : [add(me.id, f.id)]);
-      return json({ friend: { id: f.id, name: f.name, wins: f.wins, losses: f.losses } }, 200, cors);
+      const invited = byCode && await noteInvite(env, me, f.id);                            // a brand-new player who came through a friend link
+      return json({ friend: { id: f.id, name: f.name, wins: f.wins, losses: f.losses }, invited }, 200, cors);
     }
     if (path === '/friends/remove' && req.method === 'POST') {
       await env.DB.prepare('DELETE FROM friends WHERE player = ? AND friend = ?').bind(me.id, Number(body.id)).run();
@@ -272,6 +281,10 @@ export default {
       if (ctx && ctx.waitUntil) ctx.waitUntil(note); else await note;
       return json({ ok: true }, 200, cors);
     }
+    if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), req.cf && req.cf.country), 200, cors);
+    if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
+    if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
+    if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
