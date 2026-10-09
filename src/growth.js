@@ -209,3 +209,27 @@ export async function reminders(env, now = Date.now()) {
   return sent;
 }
 export const botUsername = botName;
+
+// ---- update notes: the cron sends the oldest unfinished announcement to the group, then to players in batches ----
+export const ANNOUNCE_BATCH = 150;
+export async function announce(env) {
+  const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 ORDER BY id LIMIT 1').first();
+  if (!a) return;
+  const kb = { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] };
+  if (!a.group_done) {
+    const group = await kv.get(env, 'group');
+    if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: a.text, reply_markup: kb, disable_web_page_preview: true });
+    await env.DB.prepare('UPDATE announcements SET group_done = 1 WHERE id = ?').bind(a.id).run();
+  }
+  const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id FROM players p LEFT JOIN player_meta m ON m.player = p.id
+      WHERE p.tg_id IS NOT NULL AND p.id > ? AND COALESCE(m.remind, 1) = 1 AND COALESCE(m.no_dm, 0) = 0 ORDER BY p.id LIMIT ?`).bind(a.last_player, ANNOUNCE_BATCH).all();
+  let sent = 0, last = a.last_player;
+  for (const r of results) {
+    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: a.text + '\n\nNo more of these: /stop', reply_markup: kb, disable_web_page_preview: true });
+    if (res && res.ok) sent++;
+    else if (res && res.error_code === 403) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, no_dm) VALUES (?, 0, 1) ON CONFLICT(player) DO UPDATE SET no_dm = 1').bind(r.id).run();
+    last = r.id;
+  }
+  await env.DB.prepare('UPDATE announcements SET last_player = ?, sent = sent + ?, done = ? WHERE id = ?').bind(last, sent, results.length < ANNOUNCE_BATCH ? 1 : 0, a.id).run();
+}
+export const addAnnouncement = (env, text) => env.DB.prepare('INSERT INTO announcements (text, created) VALUES (?, ?)').bind(String(text).slice(0, 3500), Date.now()).run();

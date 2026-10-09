@@ -126,3 +126,21 @@ test('growth: a week that rolls over is kept for the top 10', async () => {
   await call(env, '/score', { amount: 50 }, a.token);
   assert.equal(env.sql.prepare('SELECT cworm FROM week_scores WHERE week_start = ?').get(lastWeek).cworm, 300);
 });
+
+test('growth: an announcement goes to the group once and to every Telegram player in batches, skipping /stop', async () => {
+  const env = makeEnv(); calls.length = 0;
+  const a = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
+  await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana') });
+  await call(env, '/auth/telegram', { initData: tgInit(666, 'Blocked') });
+  await call(env, '/auth/guest', {});
+  await hook(env, msg('/stop', 55));
+  await hook(env, msg('/setgroup', 42, { id: -100, type: 'supergroup' }));
+  calls.length = 0; await hook(env, msg('/announce 🆕 Update: easier jumps', 55)); assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM announcements').get().n, 0);   // admins only
+  await hook(env, msg('/announce 🆕 Update: easier jumps', 42));
+  calls.length = 0; await cron(env, Date.now()); await cron(env, Date.now());
+  const to = calls.filter(c => c[0] === 'sendMessage' && /easier jumps/.test(c[1].text)).map(c => c[1].chat_id);
+  assert.deepEqual(to, [-100, 42, 666]);
+  assert.equal(env.sql.prepare('SELECT no_dm FROM player_meta p JOIN players x ON x.id = p.player WHERE x.tg_id = 666').get().no_dm, 1);
+  const row = env.sql.prepare('SELECT * FROM announcements').get(); assert.equal(row.done, 1); assert.equal(row.sent, 1);
+  assert.ok(a);
+});

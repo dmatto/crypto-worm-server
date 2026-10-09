@@ -1,6 +1,6 @@
 // The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play, /help, /top,
 // /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
-// /setgroup (admins) picks the group for the Monday top 10 post. Inline mode (@CryptoWormWarsBot in any chat) offers a
+// /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
 // "Duel me" card. Admins also get /feedback and /sources.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
@@ -11,7 +11,7 @@ const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')
 async function sha256(s) { return hex(await crypto.subtle.digest('SHA-256', enc.encode(s))) }
 function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 }
 import { friendCode } from './auth.js';
-import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders } from './growth.js';
+import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears in a Worms-style artillery game. Free to play right here in Telegram: ' +
@@ -149,6 +149,10 @@ export async function webhook(req, env) {
     if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET remind = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
     await tg(env, 'sendMessage', { chat_id, text: '🔕 Reminders are off. You can turn them back on in the game\'s Settings.' });
   }
+  else if (cmd === '/announce' && env.DB && await isAdmin(env, m.from)) {           // admins: a "what's new" note for the group and every player
+    if (!arg.trim()) await tg(env, 'sendMessage', { chat_id, text: 'Write the note after the command: /announce New update! ...' });
+    else { await addAnnouncement(env, m.text.trim().slice(head.length).trim()); await tg(env, 'sendMessage', { chat_id, text: '📣 Queued. It goes to the group and to every Telegram player (except those who sent /stop) within 15 minutes.' }) }
+  }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/feedback') {
     if (await isAdmin(env, m.from)) await sendCsv(env, chat_id);
@@ -179,7 +183,7 @@ export async function setup(req, env, origin) {
 export async function cron(env, now = Date.now()) {
   if (env.BOT_AUTOSETUP === '1') await sync(env);
   if (!env.BOT_TOKEN || !env.DB) return;
-  for (const job of [weekly, reminders]) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of [weekly, announce, reminders]) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }

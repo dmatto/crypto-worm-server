@@ -100,3 +100,12 @@ CREATE TABLE IF NOT EXISTS bot_kv (        -- small bot settings: the community 
   k TEXT PRIMARY KEY,
   v TEXT
 );
+CREATE TABLE IF NOT EXISTS announcements ( -- "what's new" notes the bot sends to the community group and to every Telegram player (not those who sent /stop)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  text        TEXT NOT NULL,
+  created     INTEGER NOT NULL,
+  group_done  INTEGER NOT NULL DEFAULT 0,
+  last_player INTEGER NOT NULL DEFAULT 0,   -- players are messaged in id order, a batch per cron run
+  sent        INTEGER NOT NULL DEFAULT 0,
+  done        INTEGER NOT NULL DEFAULT 0
+);
