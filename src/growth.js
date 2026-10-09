@@ -213,7 +213,7 @@ export const botUsername = botName;
 // ---- update notes: the cron sends the oldest unfinished announcement to the group, then to players in batches ----
 // A Worker run may make only 50 outside calls (Bot API and database together), so each run sends a small batch and saves
 // its place after every message; the cron runs every minute while a note is going out.
-export const ANNOUNCE_BATCH = 15;
+export const ANNOUNCE_BATCH = 40;   // Telegram calls per run stay under the 50-subrequest cap; progress is saved per message, so hitting it loses nothing
 export async function announce(env) {
   const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 ORDER BY id LIMIT 1').first();
   if (!a) return;
