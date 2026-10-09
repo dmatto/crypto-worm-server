@@ -17,14 +17,17 @@ globalThis.fetch = async (url, init) => {
 };
 const { default: worker } = await import('../src/index.js');
 const { webhook, cron } = await import('../src/bot.js');
-const { weekStart } = await import('../src/growth.js');
+const { weekStart, announce } = await import('../src/growth.js');
 
 function makeEnv(online = []) {
   const sql = new DatabaseSync(':memory:'); sql.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
   const stmt = (q, a = []) => ({ bind: (...b) => stmt(q, b), first: async () => sql.prepare(q).get(...a) ?? null, run: async () => sql.prepare(q).run(...a), all: async () => ({ results: sql.prepare(q).all(...a) }) });
   const DB = { prepare: q => stmt(q), batch: async l => { sql.exec('BEGIN'); try { const r = []; for (const s of l) r.push(await s.run()); sql.exec('COMMIT'); return r } catch (e) { sql.exec('ROLLBACK'); throw e } } };
-  const LOBBY = { idFromName: n => n, get: () => ({ fetch: async u => Response.json(String(u).endsWith('/ids') ? { ids: online } : { online: [] }) }) };
-  return { DB, sql, LOBBY, SESSION_SECRET: 'test-secret', BOT_TOKEN: '123:BOT', GAME_LINK: 'https://t.me/CryptoWormWarsBot/play', SITE_URL: 'https://play.test', ADMIN_PLAYERS: '1' };
+  const env = { DB, sql, SESSION_SECRET: 'test-secret', BOT_TOKEN: '123:BOT', GAME_LINK: 'https://t.me/CryptoWormWarsBot/play', SITE_URL: 'https://play.test', ADMIN_PLAYERS: '1' };
+  env.LOBBY = { idFromName: n => n, get: () => ({ fetch: async u => {
+    if (String(u).endsWith('/announce')) { while (await announce(env, env.now || Date.now())); return Response.json({ ok: true }) }   // the lobby's alarm loop, run straight through
+    return Response.json(String(u).endsWith('/ids') ? { ids: online } : { online: [] }) } }) };
+  return env;
 }
 const call = async (env, path, body, token) => {
   const r = await worker.fetch(new Request('https://api.test' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
@@ -136,11 +139,16 @@ test('growth: an announcement goes to the group once and to every Telegram playe
   await hook(env, msg('/stop', 55));
   await hook(env, msg('/setgroup', 42, { id: -100, type: 'supergroup' }));
   calls.length = 0; await hook(env, msg('/announce 🆕 Update: easier jumps', 55)); assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM announcements').get().n, 0);   // admins only
-  await hook(env, msg('/announce 🆕 Update: easier jumps', 42));
-  calls.length = 0; await cron(env, Date.now()); await cron(env, Date.now());
+  calls.length = 0; await hook(env, msg('/announce 🆕 Update: easier jumps', 42)); await cron(env, Date.now()); await cron(env, Date.now());   // sent at once; the cron sends nothing twice
   const to = calls.filter(c => c[0] === 'sendMessage' && /easier jumps/.test(c[1].text)).map(c => c[1].chat_id);
   assert.deepEqual(to, [-100, 42, 666]);
   assert.equal(env.sql.prepare('SELECT no_dm FROM player_meta p JOIN players x ON x.id = p.player WHERE x.tg_id = 666').get().no_dm, 1);
   const row = env.sql.prepare('SELECT * FROM announcements').get(); assert.equal(row.done, 1); assert.equal(row.sent, 1);
+  assert.ok(env.sql.prepare('SELECT reminded FROM player_meta p JOIN players x ON x.id = p.player WHERE x.tg_id = 42').get().reminded > 0);   // no reminder on top today
+  // one note a day: a second note waits for the next UTC day
+  calls.length = 0; await hook(env, msg('/announce Second note', 42)); await cron(env, Date.now());
+  assert.equal(calls.filter(c => c[0] === 'sendMessage' && /Second note/.test(c[1].text)).length, 0);
+  env.now = Date.now() + 86400000; await cron(env, env.now);
+  assert.deepEqual(calls.filter(c => c[0] === 'sendMessage' && /Second note/.test(c[1].text)).map(c => c[1].chat_id), [-100, 42]);   // 666 blocked the bot last time
   assert.ok(a);
 });

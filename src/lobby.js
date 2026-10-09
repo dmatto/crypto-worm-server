@@ -14,6 +14,7 @@
 // also counts the players online: `online` is everyone connected (hidden players too), `playing` those in a match.
 
 import { newCode } from './match.js';
+import { announce } from './growth.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
@@ -30,10 +31,18 @@ export class Lobby {
       const here = new Set(this.players().map(p => p.id));
       return Response.json({ online: (url.searchParams.get('ids') || '').split(',').map(Number).filter(id => here.has(id)) });
     }
+    if (url.pathname === '/announce') { if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 100); return Response.json({ ok: true }) }
     if (url.pathname === '/count') return Response.json(this.count());
     if (url.pathname === '/ids') return Response.json({ ids: this.players().map(p => p.id) });   // visible players, for the bot's "friend is online" reminders
     if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
     return this.quick(Number(url.searchParams.get('player')));
+  }
+
+  // update notes: one batch per alarm (each alarm is a fresh run with its own call limit), again 1.5 s later while players remain
+  async alarm() {
+    let more = false;
+    try { more = await announce(this.env) } catch (e) { await this.env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'announce error ' + (e && e.message)).run().catch(() => { }) }
+    if (more) await this.ctx.storage.setAlarm(Date.now() + 1500);
   }
 
   async live() {

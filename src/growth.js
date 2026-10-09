@@ -210,15 +210,21 @@ export async function reminders(env, now = Date.now()) {
 }
 export const botUsername = botName;
 
-// ---- update notes: the cron sends the oldest unfinished announcement to the group, then to players in batches ----
-// A Worker run may make only 50 outside calls (Bot API and database together), so each run sends a small batch and saves
-// its place after every message; the cron runs every minute while a note is going out.
+// ---- update notes: the oldest unfinished announcement goes to the group, then to players in batches ----
+// A Worker run may make only about 50 outside calls, so each run sends one batch and saves its place after every message.
+// The lobby Durable Object runs the batches back to back on its alarm (each alarm is a fresh run), so a note reaches
+// everyone within seconds; the cron is the backup. At most one note starts per UTC day: a second one waits for tomorrow,
+// and a player who got a note today gets no reminder that day.
 export const ANNOUNCE_BATCH = 40;   // Telegram calls per run stay under the 50-subrequest cap; progress is saved per message, so hitting it loses nothing
-export async function announce(env) {
+export const utcDay = (now = Date.now()) => new Date(now).toISOString().slice(0, 10);
+// sends one batch; true while that note has more players to go
+export async function announce(env, now = Date.now()) {
   const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 ORDER BY id LIMIT 1').first();
-  if (!a) return;
+  if (!a) return false;
   const kb = { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] };
   if (!a.group_done) {
+    if (await kv.get(env, 'note_day') === utcDay(now)) return false;              // one note a day: this one starts tomorrow
+    await kv.set(env, 'note_day', utcDay(now));
     const group = await kv.get(env, 'group');
     if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: a.text, reply_markup: kb, disable_web_page_preview: true });
     await env.DB.prepare('UPDATE announcements SET group_done = 1 WHERE id = ?').bind(a.id).run();
@@ -229,8 +235,12 @@ export async function announce(env) {
     const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: a.text + '\n\nNo more of these: /stop', reply_markup: kb, disable_web_page_preview: true });
     const ok = !!(res && res.ok);
     if (res && res.error_code === 403) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, no_dm) VALUES (?, 0, 1) ON CONFLICT(player) DO UPDATE SET no_dm = 1').bind(r.id).run();
+    else if (ok) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, reminded) VALUES (?, 0, ?) ON CONFLICT(player) DO UPDATE SET reminded = excluded.reminded').bind(r.id, now).run();
     await env.DB.prepare('UPDATE announcements SET last_player = ?, sent = sent + ? WHERE id = ?').bind(r.id, ok ? 1 : 0, a.id).run();
   }
-  if (results.length < ANNOUNCE_BATCH) await env.DB.prepare('UPDATE announcements SET done = 1 WHERE id = ?').bind(a.id).run();
+  if (results.length < ANNOUNCE_BATCH) { await env.DB.prepare('UPDATE announcements SET done = 1 WHERE id = ?').bind(a.id).run(); return false }
+  return true;
 }
+// starts the lobby's alarm loop that sends a note's batches back to back
+export const kickAnnounce = env => env.LOBBY ? env.LOBBY.get(env.LOBBY.idFromName('lobby')).fetch('https://lobby/announce', { method: 'POST' }).catch(() => { }) : null;
 export const addAnnouncement = (env, text) => env.DB.prepare('INSERT INTO announcements (text, created) VALUES (?, ?)').bind(String(text).slice(0, 3500), Date.now()).run();
