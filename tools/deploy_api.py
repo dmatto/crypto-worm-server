@@ -52,8 +52,8 @@ for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js'):
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')
-# every 15 minutes: the Monday top 10 post, bot reminders, and (with BOT_AUTOSETUP=1) the bot's settings
-call('PUT', f'/workers/scripts/{NAME}/schedules', [{'cron': '*/15 * * * *'}])
+# every minute: update notes go out in small batches; every 15 minutes the Monday top 10 post, bot reminders and (with BOT_AUTOSETUP=1) the bot's settings
+call('PUT', f'/workers/scripts/{NAME}/schedules', [{'cron': '* * * * *'}])
 print('cron set')
 
 # 3. secrets: a session secret made once, and the bot token when given

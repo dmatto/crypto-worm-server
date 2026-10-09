@@ -99,7 +99,7 @@ test('growth: the Monday top 10 goes to the group once, /sources is for admins, 
   env.sql.prepare("UPDATE player_meta SET cc = 'BR' WHERE player = ?").run(a.player.id);
   await hook(env, msg('/setgroup', 55, { id: -100, type: 'supergroup' })); assert.equal(calls.length, 0);   // not an admin
   await hook(env, msg('/setgroup', 42, { id: -100, type: 'supergroup' }));
-  calls.length = 0; const monday = weekStart() + 10 * 60e3;
+  calls.length = 0; const monday = weekStart() + 15 * 60e3;
   await cron(env, monday); await cron(env, monday + 15 * 60e3);
   const posts = calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === -100);
   assert.equal(posts.length, 1); assert.match(posts[0][1].text, /🥇 🇧🇷 Ana: 500 \$CWORM\n🥈 Dami: 90/); assert.match(posts[0][1].text, /not real tokens/);
@@ -109,7 +109,7 @@ test('growth: the Monday top 10 goes to the group once, /sources is for admins, 
   env.sql.prepare('INSERT INTO friends (player, friend, created) VALUES (?, ?, 0)').run(a.player.id, admin.player.id);
   env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player = ?').run(Date.now() - 3 * 3600e3, a.player.id);
   const env2 = { ...env, LOBBY: makeEnv([admin.player.id]).LOBBY };
-  calls.length = 0; await cron(env2, Date.now()); await cron(env2, Date.now());
+  const q = Math.floor(Date.now() / 9e5) * 9e5; calls.length = 0; await cron(env2, q); await cron(env2, q);
   const pings = calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === 55);
   assert.equal(pings.length, 1); assert.match(pings[0][1].text, /Dami is online/); assert.match(pings[0][1].text, /\/stop/);
   await hook(env, msg('/stop', 55));

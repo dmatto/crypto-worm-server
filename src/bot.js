@@ -179,11 +179,12 @@ export async function setup(req, env, origin) {
 // Cron: this sandbox can't call the Worker's URL, so the Worker sets the bot up itself on a schedule. It writes what it
 // saw and did to the bot_log table. It never replaces a webhook that points somewhere else, and it only applies the
 // settings when BOT_AUTOSETUP is "1".
-// The cron also runs the Monday top 10 post and the bot reminders (every 15 minutes).
+// The cron also runs the Monday top 10 post and the bot reminders (every 15 minutes), and sends update notes (every minute).
 export async function cron(env, now = Date.now()) {
-  if (env.BOT_AUTOSETUP === '1') await sync(env);
+  const quarter = new Date(now).getUTCMinutes() % 15 === 0;                       // the cron runs every minute: update notes then, the rest every 15 minutes
+  if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
   if (!env.BOT_TOKEN || !env.DB) return;
-  for (const job of [weekly, announce, reminders]) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, announce, reminders] : [announce]) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }
