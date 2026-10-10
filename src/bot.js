@@ -11,6 +11,7 @@ const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')
 async function sha256(s) { return hex(await crypto.subtle.digest('SHA-256', enc.encode(s))) }
 function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 }
 import { friendCode } from './auth.js';
+import { cleanup as mapCleanup } from './map.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
@@ -187,7 +188,7 @@ export async function cron(env, now = Date.now()) {
   if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 LIMIT 1').first()) await kickAnnounce(env);   // the lobby sends notes back to back
-  for (const job of quarter ? [weekly, reminders] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, reminders, mapCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }

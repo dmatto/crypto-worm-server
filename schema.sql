@@ -109,3 +109,40 @@ CREATE TABLE IF NOT EXISTS announcements ( -- "what's new" notes the bot sends t
   sent        INTEGER NOT NULL DEFAULT 0,
   done        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS land (          -- World Map: tiles players own (src/world.js ids); tiles not here are held by CPU worms
+  tile    INTEGER PRIMARY KEY,
+  owner   INTEGER NOT NULL,
+  since   INTEGER NOT NULL,
+  def     TEXT NOT NULL DEFAULT '0000',    -- defense levels, one digit each: mines, bunker, arsenal, garrison
+  truce   INTEGER NOT NULL DEFAULT 0       -- just taken: nobody can attack it until then
+);
+CREATE INDEX IF NOT EXISTS land_owner ON land (owner);
+CREATE TABLE IF NOT EXISTS landlords (     -- World Map players: home country, worm upgrades, daily attacks and battle stats
+  player     INTEGER PRIMARY KEY,
+  cc         TEXT,                         -- the country they play for
+  home       INTEGER,                      -- first tile of their latest plot
+  joined     INTEGER NOT NULL DEFAULT 0,
+  shield     INTEGER NOT NULL DEFAULT 0,   -- new players can't be attacked until then (ends when they attack a player)
+  acc        INTEGER NOT NULL DEFAULT 0,   -- worm accuracy level, 0-5: their CPU defenders aim better
+  res        INTEGER NOT NULL DEFAULT 0,   -- worm resistance level, 0-5: +10 health per level on the map
+  day        INTEGER NOT NULL DEFAULT 0,   -- UTC day number `attacks` counts
+  attacks    INTEGER NOT NULL DEFAULT 0,
+  buys       INTEGER NOT NULL DEFAULT 0,   -- plots bought after losing all land (the price rises)
+  buy_day    INTEGER NOT NULL DEFAULT 0,
+  buys_today INTEGER NOT NULL DEFAULT 0,
+  won        INTEGER NOT NULL DEFAULT 0,   -- tiles taken
+  lost       INTEGER NOT NULL DEFAULT 0,   -- attacks that failed
+  held       INTEGER NOT NULL DEFAULT 0,   -- attacks their defenders beat
+  notified   INTEGER NOT NULL DEFAULT 0    -- last "your land was taken" bot message
+);
+CREATE TABLE IF NOT EXISTS attacks (       -- World Map battles: a ticket from /map/attack, closed by /map/result
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket   TEXT NOT NULL UNIQUE,
+  attacker INTEGER NOT NULL,
+  tile     INTEGER NOT NULL,
+  defender INTEGER,                        -- NULL: CPU land
+  started  INTEGER NOT NULL,
+  ended    INTEGER,
+  result   TEXT                            -- won | lost | dropped | late
+);
+CREATE INDEX IF NOT EXISTS attacks_attacker ON attacks (attacker, ended);

@@ -48,7 +48,7 @@ meta = {
 if first: meta['migrations'] = {'new_tag': 'v1', 'new_sqlite_classes': ['Match', 'Lobby']}
 b = uuid.uuid4().hex
 parts = [('metadata', 'metadata.json', 'application/json', json.dumps(meta).encode())]
-for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
+for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js', 'map.js', 'world.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')

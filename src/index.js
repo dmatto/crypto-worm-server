@@ -26,6 +26,7 @@
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
+//   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /played, /rewards, /share/prepare, /me/remind           finished matches, invite rewards, share cards, reminders (see growth.js)
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
@@ -37,6 +38,7 @@ import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySo
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { webhook, setup, cron, tellAdmins } from './bot.js';
+import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, played, claim, prepareShare, setRemind } from './growth.js';
 export { Match, Lobby };
 
@@ -135,6 +137,9 @@ async function link(env, me, target) {
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
     q('UPDATE OR IGNORE player_meta SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_meta WHERE player = ?', a),
     q('UPDATE player_meta SET invited_by = ? WHERE invited_by = ?', b, a),
+    q('UPDATE land SET owner = ? WHERE owner = ?', b, a),                                // World Map land and upgrades follow the account
+    q('UPDATE OR IGNORE landlords SET player = ? WHERE player = ?', b, a), q('DELETE FROM landlords WHERE player = ?', a),
+    q('UPDATE attacks SET attacker = ? WHERE attacker = ?', b, a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -285,6 +290,7 @@ export default {
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
+    if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
