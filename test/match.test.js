@@ -94,3 +94,23 @@ test('match: both phones get each player\'s country for the flag, unknown ones a
   await at(22, 'UY');                                                              // rejoining from somewhere else updates it
   assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'] });
 });
+
+test('match: the waiting phone takes over a turn only after the other phone has been quiet for a while', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); await open(m, 22);
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 5, theme: 'island', count: 1, hats: [] }));
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: {} }));
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'skip' }));                    // side 0 was just heard from: refused
+  assert.equal(m.mem.holder, 0); assert.notEqual(s1.out.at(-1).t, 'took');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'skip' }));                    // the holder can't skip itself
+  assert.equal(m.mem.holder, 0);
+  m.heard[0] = Date.now() - 8000;                                                 // side 0 minimised the app 8 s ago
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'skip' }));
+  assert.equal(m.mem.holder, 1); assert.deepEqual(s1.out.at(-1), { t: 'took' }); assert.deepEqual(s0.out.at(-1), { t: 'lost' });
+  const n = s1.out.length;
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: {} }));        // the away phone's late frames are dropped
+  assert.equal(s1.out.length, n);
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'f', e: [], s: {} }));
+  assert.equal(s0.out.at(-1).t, 'f');
+});

@@ -6,7 +6,9 @@
 //   host / join {hat}           a seat is ready            start {seed,theme,count,hats}   seat 0 starts the match
 //   f {e,s}                     effects and state, ~20/s   auth {e,s}                      turn over, other phone takes over
 //   bye                         a player left
-// The server adds: seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
+//   skip                        the waiting phone asks to take over because the phone running the turn went quiet
+//                               (closed or minimised app): allowed after SKIP_MS of silence from it
+// The server adds: took {} to the phone that took over and lost {} to the quiet one, seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
 // flags {cc:[country,country]} (two-letter codes from Cloudflare, null when unknown) to both phones whenever one connects.
 //
 // Viewers (GET /match/<code>/watch) watch a match live without playing. They get watch {start,s,carves,names,cc,viewers}
@@ -15,7 +17,7 @@
 // is cheer {id}: one of the game's six cheer emojis, at most one every 0.7 s, shown to everyone in the match.
 // A started match is listed in the lobby's Live now list until it ends.
 
-const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
+const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
 export class Match {
   constructor(ctx, env) {
@@ -90,7 +92,8 @@ export class Match {
       if (msg.t !== 'cheer' || !m.start || m.done || !Number.isInteger(id) || id < 0 || id >= CHEERS || now - (this.cheerAt.get(ws) || 0) < CHEER_GAP_MS) return;
       this.cheerAt.set(ws, now); this.spread({ t: 'cheer', id }, true); return;
     }
-    m.last = Date.now();
+    m.last = Date.now(); this.heard = this.heard || [0, 0];
+    if (side === m.holder) this.heard[side] = m.last;
     switch (msg.t) {
       case 'host': case 'join': this.tell(1 - side, raw); break;
       case 'start':
@@ -106,7 +109,14 @@ export class Match {
         break;
       case 'auth':
         if (side !== m.holder || !m.start) return;
-        this.keepCarves(msg.e); m.holder = 1 - side; m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); this.spread(raw); break;
+        this.keepCarves(msg.e); m.holder = 1 - side; this.heard[m.holder] = Date.now(); m.state = msg.s || null; await this.save(); this.tell(1 - side, raw); this.spread(raw); break;
+      case 'skip': {                                  // the game never waits for a player who left the app: the other phone takes the turn over
+        if (!m.start || m.done || side === m.holder) return;
+        const quiet = this.heard[m.holder]; if (!quiet) { this.heard[m.holder] = Date.now(); return }   // just woke up: start counting now
+        if (Date.now() - quiet < SKIP_MS) return;
+        const away = m.holder; m.holder = side; this.heard[side] = Date.now(); await this.save();
+        this.tell(away, { t: 'lost' }); this.tell(side, { t: 'took' }); break;
+      }
       case 'chat': {                                  // quick chat: only a line number from the game's fixed list, at most one every 1.5 s
         const id = msg.id, now = Date.now(); this.chatAt = this.chatAt || [0, 0];
         if (!m.start || !Number.isInteger(id) || id < 0 || id > 63 || now - this.chatAt[side] < 1500) return;
