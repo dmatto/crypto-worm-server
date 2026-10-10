@@ -8,16 +8,23 @@
 //   POST /map/buy                      -> buy a new plot after losing all land: {price} is what the game takes from the wallet
 //   POST /map/attack   {tile}          -> {ticket, def, acc, res, owner}: start a battle for a tile next to this player's land
 //   POST /map/result   {ticket, win}   -> a battle ended; a win takes the tile
+//   GET  /map/attack/<ticket>          -> the attacker waits up to 30 s for the owner: {state: wait | live | cpu, code}
+//   POST /map/cpu      {ticket}        -> the attacker doesn't wait: the CPU defends
+//   GET  /map/alert                    -> an attack on this player's land they can still jump into: {alert}
+//   POST /map/defend-live {attack}     -> the owner plays the defense: {code} of an online match with the attacker
+//   POST /map/result   {attack}        -> the owner closes a live defense; live results come from the match server, not the phone
 //   POST /map/defend   {tile, item}    -> one more level of a defense on one of this player's tiles: {price}
 //   POST /map/upgrade  {stat}          -> one more level of worm accuracy or resistance: {price}
 // The game spends the wallet after the server says yes; the server caps levels and counts, and battles have a minimum
 // length, so a tampered phone can't take the world in a minute.
 import { HEX, TERRAIN, COUNTRIES, TILES } from './world.js';
 import { tg } from './bot.js';
+import { newCode } from './match.js';
 import { flag, gameLink } from './growth.js';
 
 export const ATTACKS_PER_DAY = 10, HOME_TILES = 7, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
-  INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8;
+  INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8,
+  LIVE_WAIT_MS = 30e3, ALERT_GAP_MS = 3 * 60e3;   // how long an attacker waits for the owner to jump in; bot alerts at most this often
 // defenses, one digit each in a tile's `def`: mines, bunker, arsenal, garrison. PRICES[item][level - 1]
 export const DEFENSES = ['mines', 'bunker', 'arsenal', 'garrison'];
 export const DEF_PRICES = { mines: [150, 300, 600], bunker: [400], arsenal: [200, 400, 800], garrison: [1000] };
@@ -106,12 +113,48 @@ async function notify(env, ownerId, text, now) {
   if (r && r.error_code === 403) await q(env, 'UPDATE player_meta SET no_dm = 1 WHERE player = ?', ownerId).run();
 }
 
+// "You are under attack": a bot message with a button straight into the defense (the in-game alert works without it)
+async function alertOwner(env, ownerId, attackId, name, tile, now) {
+  if (!env.BOT_TOKEN) return false;
+  const p = await q(env, `SELECT p.tg_id, COALESCE(m.no_dm, 0) AS no_dm, COALESCE(m.remind, 1) AS remind, COALESCE(a.at, 0) AS at FROM players p
+    LEFT JOIN player_meta m ON m.player = p.id LEFT JOIN map_alerts a ON a.player = p.id WHERE p.id = ?`, ownerId).first();
+  if (!p || p.tg_id == null || p.no_dm || !p.remind || now - p.at < ALERT_GAP_MS) return false;
+  await q(env, 'INSERT INTO map_alerts (player, at) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET at = excluded.at', ownerId, now).run();
+  const cc = countryOf(tile);
+  const r = await tg(env, 'sendMessage', { chat_id: p.tg_id, text: `⚔️ ${name} is attacking your land in ${flag(cc)} ${countryName(cc)}!\n\nJump in within 30 seconds and defend it yourself, or your CPU worms will fight for you.`,
+    reply_markup: { inline_keyboard: [[{ text: '🛡️ Defend it myself', url: gameLink(env, 'd_' + attackId) }]] } });
+  if (r && r.error_code === 403) await q(env, 'UPDATE player_meta SET no_dm = 1 WHERE player = ?', ownerId).run();
+  return !!(r && r.ok);
+}
+
+// Who defends a player's tile: the owner live ('ABC123'), the CPU (''), or not decided yet (null, still in the wait window)
+async function fighter(env, a, now) {
+  if (!a.defender) return '';
+  let f = await q(env, 'SELECT code FROM live_fights WHERE attack = ?', a.id).first();
+  if (f) return f.code;
+  if (now - a.started < LIVE_WAIT_MS) return null;
+  await q(env, "INSERT OR IGNORE INTO live_fights (attack, code, at) VALUES (?, '', ?)", a.id, now).run();
+  return (await q(env, 'SELECT code FROM live_fights WHERE attack = ?', a.id).first()).code;
+}
+
 const countryName = cc => { try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(cc) } catch (e) { return cc } };
 
 export async function handle(path, req, env, me, body, cors, ctx, now = Date.now()) {
   const out = (b, s = 200) => json(b, s, cors), err = (e, s = 400) => out({ error: e }, s);
   const full = async extra => out({ ...(await state(env, me, now)), geo: (req.cf && req.cf.country) || null, ...extra });
   if (path === '/map' && req.method === 'GET') return full();
+  if (path === '/map/alert' && req.method === 'GET') {
+    const a = await q(env, `SELECT a.id, a.tile, a.started, p.name FROM attacks a JOIN players p ON p.id = a.attacker
+      LEFT JOIN live_fights f ON f.attack = a.id WHERE a.defender = ? AND a.ended IS NULL AND a.started > ? AND f.attack IS NULL ORDER BY a.id DESC LIMIT 1`, me.id, now - LIVE_WAIT_MS).first();
+    return out({ alert: a ? { id: a.id, tile: a.tile, cc: countryOf(a.tile), name: a.name, left: Math.ceil((a.started + LIVE_WAIT_MS - now) / 1000) } : null });
+  }
+  const st = path.match(/^\/map\/attack\/([0-9a-f]{32})$/);
+  if (st && req.method === 'GET') {
+    const a = await q(env, 'SELECT * FROM attacks WHERE ticket = ? AND attacker = ?', st[1], me.id).first();
+    if (!a) return err('no such battle', 404);
+    const f = await fighter(env, a, now);
+    return out({ state: f == null ? 'wait' : f ? 'live' : 'cpu', code: f || null, left: Math.max(0, Math.ceil((a.started + LIVE_WAIT_MS - now) / 1000)) });
+  }
   if (req.method !== 'POST') return null;
   let l = await lord(env, me.id);
 
@@ -159,29 +202,66 @@ export async function handle(path, req, env, me, body, cors, ctx, now = Date.now
       q(env, 'INSERT INTO attacks (ticket, attacker, tile, defender, started) VALUES (?, ?, ?, ?, ?)', ticket, me.id, t, row ? row.owner : null, now),
       q(env, 'UPDATE landlords SET attacks = CASE WHEN day = ? THEN attacks + 1 ELSE 1 END, day = ?, shield = CASE WHEN ? THEN 0 ELSE shield END WHERE player = ?', today, today, row ? 1 : 0, me.id),
     ]);
+    let wait = 0;
+    if (row) {                       // a player's land: tell them, and give them LIVE_WAIT_MS to jump in
+      const id = (await q(env, 'SELECT id FROM attacks WHERE ticket = ?', ticket).first()).id;
+      const n = alertOwner(env, row.owner, id, me.name, t, now).catch(() => false);
+      if (ctx && ctx.waitUntil) ctx.waitUntil(n); else await n;
+      wait = LIVE_WAIT_MS;
+    }
     return out({ ticket, tile: t, terrain: terrain(t), cc: countryOf(t), def: row ? row.def : neutralDef(t), acc: row ? row.acc : 0, res: row ? row.res : 0,
-      owner: row ? { id: row.owner, name: row.name } : null, me: meOut(await lord(env, me.id), tiles, now) });
+      owner: row ? { id: row.owner, name: row.name } : null, wait, me: meOut(await lord(env, me.id), tiles, now) });
+  }
+
+  if (path === '/map/cpu') {
+    const a = await q(env, 'SELECT * FROM attacks WHERE ticket = ? AND attacker = ? AND ended IS NULL', String(body.ticket || ''), me.id).first();
+    if (!a) return err('that battle is over');
+    await q(env, "INSERT OR IGNORE INTO live_fights (attack, code, at) VALUES (?, '', ?)", a.id, now).run();
+    const f = await fighter(env, a, now);
+    return out({ state: f ? 'live' : 'cpu', code: f || null });
+  }
+
+  if (path === '/map/defend-live') {
+    const a = await q(env, 'SELECT a.*, p.name FROM attacks a JOIN players p ON p.id = a.attacker WHERE a.id = ? AND a.defender = ?', Math.floor(Number(body.attack)) || 0, me.id).first();
+    if (!a) return err('no such attack', 404);
+    const late = 'too late: your CPU worms are already defending. Next time be quicker!';
+    if (a.ended != null || now - a.started > LIVE_WAIT_MS + 5e3) return err(a.ended != null ? 'that battle is over' : late, 409);
+    await q(env, 'INSERT OR IGNORE INTO live_fights (attack, code, at) VALUES (?, ?, ?)', a.id, newCode(), now).run();
+    const f = await q(env, 'SELECT code FROM live_fights WHERE attack = ?', a.id).first();
+    if (!f.code) return err(late, 409);
+    return out({ code: f.code, attack: a.id, tile: a.tile, cc: countryOf(a.tile), name: a.name });
   }
 
   if (path === '/map/result') {
-    const a = await q(env, 'SELECT * FROM attacks WHERE ticket = ? AND attacker = ?', String(body.ticket || ''), me.id).first();
+    const a = body.attack != null
+      ? await q(env, 'SELECT * FROM attacks WHERE id = ? AND defender = ?', Math.floor(Number(body.attack)) || 0, me.id).first()
+      : await q(env, 'SELECT * FROM attacks WHERE ticket = ? AND attacker = ?', String(body.ticket || ''), me.id).first();
     if (!a || a.ended != null) return err('that battle is over');
     if (now - a.started > TICKET_MS) { await q(env, "UPDATE attacks SET ended = ?, result = 'late' WHERE id = ?", now, a.id).run(); return err('that battle took too long') }
-    const win = !!body.win;
-    if (win && now - a.started < MIN_BATTLE_MS) return err('that was too quick', 400);
+    const f = await fighter(env, a, now);
+    let win = !!body.win;
+    if (f) {                         // played live: the match server knows who won, the phones don't get a say
+      const m = await q(env, 'SELECT winner FROM matches WHERE ((p0 = ? AND p1 = ?) OR (p0 = ? AND p1 = ?)) AND ended > ? ORDER BY id DESC LIMIT 1',
+        a.attacker, a.defender, a.defender, a.attacker, a.started).first();
+      if (!m) return err('the battle is not over yet', 409);
+      win = m.winner === a.attacker;
+    } else if (f == null) return err('the owner may still jump in', 409);
+    else if (body.attack != null) return err('your CPU worms are defending that one');
+    else if (win && now - a.started < MIN_BATTLE_MS) return err('that was too quick', 400);
+    const isAttacker = me.id === a.attacker, mine = x => full({ ...x, won: isAttacker ? x.won : !x.won, held: !isAttacker && !x.won });
     if (!win) {
-      await env.DB.batch([q(env, "UPDATE attacks SET ended = ?, result = 'lost' WHERE id = ?", now, a.id), q(env, 'UPDATE landlords SET lost = lost + 1 WHERE player = ?', me.id),
+      await env.DB.batch([q(env, "UPDATE attacks SET ended = ?, result = 'lost' WHERE id = ?", now, a.id), q(env, 'UPDATE landlords SET lost = lost + 1 WHERE player = ?', a.attacker),
         ...(a.defender ? [q(env, 'UPDATE landlords SET held = held + 1 WHERE player = ?', a.defender)] : [])]);
-      return full({ won: false });
+      return mine({ won: false });
     }
     const prev = await q(env, 'SELECT owner FROM land WHERE tile = ?', a.tile).first();
     await env.DB.batch([
       q(env, "UPDATE attacks SET ended = ?, result = 'won' WHERE id = ?", now, a.id),
-      q(env, 'UPDATE landlords SET won = won + 1 WHERE player = ?', me.id),
+      q(env, 'UPDATE landlords SET won = won + 1 WHERE player = ?', a.attacker),
       q(env, `INSERT INTO land (tile, owner, since, def, truce) VALUES (?, ?, ?, '0000', ?)
-        ON CONFLICT(tile) DO UPDATE SET owner = excluded.owner, since = excluded.since, def = excluded.def, truce = excluded.truce`, a.tile, me.id, now, now + TRUCE_MS),
+        ON CONFLICT(tile) DO UPDATE SET owner = excluded.owner, since = excluded.since, def = excluded.def, truce = excluded.truce`, a.tile, a.attacker, now, now + TRUCE_MS),
     ]);
-    if (prev && prev.owner !== me.id) {
+    if (prev && prev.owner !== a.attacker && isAttacker) {   // an owner who fought it live already knows
       const left = (await q(env, 'SELECT COUNT(*) AS n FROM land WHERE owner = ?', prev.owner).first()).n, cc = countryOf(a.tile);
       const text = `⚔️ ${me.name} took your land in ${flag(cc)} ${countryName(cc)}!\n\n` +
         (left ? `You have ${left} tile${left === 1 ? '' : 's'} left. Win it back, and buy defenses to keep it.` : 'That was your last tile. Buy a new plot and take your revenge!') +
@@ -189,7 +269,7 @@ export async function handle(path, req, env, me, body, cors, ctx, now = Date.now
       const n = notify(env, prev.owner, text, now).catch(() => { });
       if (ctx && ctx.waitUntil) ctx.waitUntil(n); else await n;
     }
-    return full({ won: true, tile: a.tile });
+    return mine({ won: true, tile: a.tile });
   }
 
   if (path === '/map/defend') {

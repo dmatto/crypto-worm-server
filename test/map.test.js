@@ -110,3 +110,46 @@ test('map: land follows an account that is merged into another', async () => {
   const m = await call(env, '/map', undefined, t.token);
   assert.equal(m.me.tiles, 7); assert.equal(m.me.cc, 'FR');
 });
+
+test('map: the owner gets a bot alert, can jump in within 30 s and play the defense live; the match server decides', async () => {
+  const env = makeEnv(); calls.length = 0;
+  const a = await call(env, '/auth/telegram', { initData: tgInit(52, 'Ann') });
+  const b = await call(env, '/auth/telegram', { initData: tgInit(53, 'Ben') });
+  const ma = await call(env, '/map/join', { cc: 'UY' }, a.token);
+  // give b a tile right next to a's plot, past b's new-player shield
+  const target = ma.plot.flatMap(neighbours).find(t => !ma.plot.includes(t));
+  await call(env, '/map/join', { cc: 'AR' }, b.token);
+  env.sql.prepare("INSERT OR REPLACE INTO land (tile, owner, since, def, truce) VALUES (?, ?, 0, '0000', 0)").run(target, b.player.id);
+  env.sql.prepare('UPDATE landlords SET shield = 0').run();
+
+  let at = await call(env, '/map/attack', { tile: target }, a.token);
+  assert.equal(at.wait, 30000);
+  const alert = calls.find(([meth, body]) => meth === 'sendMessage' && body.chat_id === 53 && /is attacking your land/.test(body.text));
+  assert.ok(alert); assert.match(JSON.stringify(alert[1].reply_markup), /startapp=d_\d+/);
+  assert.equal((await call(env, `/map/attack/${at.ticket}`, undefined, a.token)).state, 'wait');
+  assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 409);   // still waiting for the owner
+  const al = (await call(env, '/map/alert', undefined, b.token)).alert;
+  assert.equal(al.name, 'Ann'); assert.equal(al.tile, target);
+  assert.equal((await call(env, '/map/defend-live', { attack: al.id }, a.token)).status, 404);           // only the owner
+  const d = await call(env, '/map/defend-live', { attack: al.id }, b.token);
+  assert.match(d.code, /^[A-Z2-9]{6}$/);
+  const s = await call(env, `/map/attack/${at.ticket}`, undefined, a.token);
+  assert.equal(s.state, 'live'); assert.equal(s.code, d.code);
+  assert.equal((await call(env, '/map/alert', undefined, b.token)).alert, null);
+  assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 409);   // match not over yet
+  // the match server records b winning: the attacker's "win" is ignored
+  env.sql.prepare("INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, 'played', ?)").run(b.player.id, a.player.id, b.player.id, Date.now() + 1);
+  let r = await call(env, '/map/result', { attack: al.id }, b.token);
+  assert.equal(r.held, true); assert.ok(r.tiles.some(x => x[0] === target && x[1] === b.player.id));
+  assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 400);   // closed once
+
+  // the attacker can skip the wait; after that the owner is too late
+  at = await call(env, '/map/attack', { tile: target }, a.token);
+  assert.equal((await call(env, '/map/cpu', { ticket: at.ticket }, a.token)).state, 'cpu');
+  const id = env.sql.prepare('SELECT id FROM attacks WHERE ticket = ?').get(at.ticket).id;
+  assert.equal((await call(env, '/map/defend-live', { attack: id }, b.token)).status, 409);
+  assert.ok(calls.filter(([meth, body]) => meth === 'sendMessage' && body.chat_id === 53 && /is attacking/.test(body.text)).length === 1);   // alerts are spaced out
+  age(env, 60e3);
+  r = await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token);
+  assert.equal(r.won, true);
+});

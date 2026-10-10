@@ -146,3 +146,13 @@ CREATE TABLE IF NOT EXISTS attacks (       -- World Map battles: a ticket from /
   result   TEXT                            -- won | lost | dropped | late
 );
 CREATE INDEX IF NOT EXISTS attacks_attacker ON attacks (attacker, ended);
+CREATE INDEX IF NOT EXISTS attacks_defender ON attacks (defender, ended);
+CREATE TABLE IF NOT EXISTS live_fights (   -- World Map: an owner who answered the alert and plays the defense, or '' when the CPU took it
+  attack   INTEGER PRIMARY KEY,            -- attacks.id
+  code     TEXT NOT NULL,                  -- online match code both players join; '' = the CPU defends
+  at       INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS map_alerts (    -- last "you are under attack" bot message per owner
+  player   INTEGER PRIMARY KEY,
+  at       INTEGER NOT NULL
+);
