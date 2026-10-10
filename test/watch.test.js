@@ -36,7 +36,7 @@ test('watch: a viewer waits, then follows the match, cheers, and the match shows
   const w = v1.out.find(x => x.t === 'watch');
   assert.equal(w.start.seed, 5); assert.deepEqual(w.names, ['Alice', 'Bob']);
   let live = await (await e.lobby.fetch(new Request('https://lobby/live'))).json();
-  assert.equal(live.live.length, 1); assert.equal(live.live[0].code, 'ABCDEF'); assert.deepEqual(live.live[0].names, ['Alice', 'Bob']);
+  assert.equal(live.live.length, 1); assert.equal(live.live[0].code, 'ABCDEF'); assert.deepEqual(live.live[0].names, ['Alice', 'Bob']); assert.deepEqual(live.live[0].ids, [11, 22]);
 
   await m.webSocketMessage(sock(c, '0'), JSON.stringify({ t: 'f', n: 3, e: [['carve', [1, 2, 3]]], s: { a: 1 } }));
   assert.equal(v1.out.at(-1).t, 'f');

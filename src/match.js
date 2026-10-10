@@ -46,7 +46,7 @@ export class Match {
   // The lobby's Live now list: add (or update) this match when it starts, take it off when it ends.
   live(extra, gone) {
     const m = this.mem, code = this.code || (m && m.code); if (!this.env.LOBBY || !code) return;
-    const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], at: m.start && m.start.at, ...extra };
+    const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], ids: m.players, at: m.start && m.start.at, ...extra };
     const p = this.env.LOBBY.get(this.env.LOBBY.idFromName('lobby')).fetch('https://lobby/live', { method: 'POST', body: JSON.stringify(body) }).catch(() => { });
     if (this.ctx.waitUntil) this.ctx.waitUntil(p); return p;
   }

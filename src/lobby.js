@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing, live: [{code, names, cc, viewers, at}]}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing, live: [{code, names, cc, viewers, at, ids}]}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}
 //
 // It also keeps the Live now list: matches in progress, which each match adds itself to when it starts and takes itself
@@ -56,7 +56,8 @@ export class Lobby {
     if (b.gone) delete all[code];
     else { const old = all[code] || {}, s = v => (v == null ? null : String(v).slice(0, 40));
       all[code] = { code, names: (Array.isArray(b.names) ? b.names : [null, null]).slice(0, 2).map(s), cc: (Array.isArray(b.cc) ? b.cc : [null, null]).slice(0, 2).map(country),
-        viewers: Math.max(0, Number(b.viewers) || 0), at: Number(b.at) || old.at || now } }
+        viewers: Math.max(0, Number(b.viewers) || 0), at: Number(b.at) || old.at || now,
+        ids: (Array.isArray(b.ids) ? b.ids : old.ids || []).slice(0, 2).map(v => (Number.isInteger(v) ? v : null)) } }   // who is playing, so the player list can offer Watch
     await this.ctx.storage.put('live', all);
     const was = (this.liveList || []).length, codes = new Set((this.liveList || []).map(l => l.code));
     this.liveList = await this.live();
