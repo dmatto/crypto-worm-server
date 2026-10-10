@@ -4,6 +4,8 @@
 //
 // Messages are the ones the game already speaks (see NET in crypto-worm.html):
 //   host / join {hat}           a seat is ready            start {seed,theme,count,hats}   seat 0 starts the match
+//   start {..., bot:{name,cc,team}}  a match against one of the game's bots: seat 0's phone runs both teams and streams
+//                               it so it can be watched; no second seat, nothing is recorded
 //   f {e,s}                     effects and state, ~20/s   auth {e,s}                      turn over, other phone takes over
 //   bye                         a player left
 //   skip                        the waiting phone asks to take over because the phone running the turn went quiet
@@ -57,9 +59,9 @@ export class Match {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   async names(m) {                                                    // the players' nicknames, for viewers and the Live now list
-    if (!this.env.DB || m.players[0] == null || m.players[1] == null) return;
+    if (!this.env.DB || m.players[0] == null) return;
     try { const r = await this.env.DB.prepare('SELECT id, name FROM players WHERE id IN (?, ?)').bind(m.players[0], m.players[1]).all();
-      const by = new Map((r.results || []).map(p => [p.id, p.name])); m.names = m.players.map(id => by.get(id) || null) } catch { }
+      const by = new Map((r.results || []).map(p => [p.id, p.name])); m.names = m.players.map(id => id == null ? null : by.get(id) || null) } catch { }
   }
 
   async fetch(req) {
@@ -69,6 +71,7 @@ export class Match {
     if (m.done) return new Response('match is over', { status: 410 });
     if (url.pathname.endsWith('/watch')) return this.watch(m);
     let side = m.players.indexOf(player);
+    if (side < 0 && m.bot) return new Response('match is full', { status: 409 });   // a match against a bot has one seat
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
     m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; await this.save();
@@ -99,7 +102,14 @@ export class Match {
       case 'start':
         if (side !== 0 || m.start) return;
         m.start = { seed: msg.seed | 0, theme: String(msg.theme).slice(0, 20), count: Math.min(3, Math.max(1, msg.count | 0)), hats: (msg.hats || []).slice(0, 2).map(h => String(h).slice(0, 20)) };
-        m.holder = 0; await this.names(m); m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
+        m.holder = 0; await this.names(m);
+        if (msg.bot && typeof msg.bot === 'object') {                 // vs a bot: the bot's name and country, on the team it plays
+          const bt = msg.bot.team === 0 ? 0 : 1, cc = String(msg.bot.cc || '').toUpperCase(); m.bot = true;
+          m.names = m.names || [null, null]; m.cc = m.cc || [null, null];
+          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]] }
+          m.names[bt] = String(msg.bot.name || 'Worm').slice(0, 24); m.cc[bt] = /^[A-Z]{2}$/.test(cc) ? cc : null;
+        }
+        m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
         this.spread(this.watchMsg(m)); await this.live({ viewers: this.viewers().length }); break;
       case 'f':
         if (side !== m.holder || !m.start) return;

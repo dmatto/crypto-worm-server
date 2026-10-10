@@ -114,3 +114,17 @@ test('match: the waiting phone takes over a turn only after the other phone has 
   await m.webSocketMessage(s1, JSON.stringify({ t: 'f', e: [], s: {} }));
   assert.equal(s0.out.at(-1).t, 'f');
 });
+
+test('match: a match against a bot streams to viewers with the bot as the opponent and records nothing', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); const s0 = c.socks.get('0');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 7, theme: 'moon', count: 2, hats: ['crown', 'team'], bot: { name: 'TokyoLambo', cc: 'jp', team: 1 } }));
+  assert.equal(m.mem.bot, true); assert.equal(m.mem.names[1], 'TokyoLambo'); assert.equal(m.mem.cc[1], 'JP');
+  assert.equal((await open(m, 22)).code, 409);                                   // nobody else can take the bot's seat
+  const v = await m.fetch(new Request('https://x/match/ABCDEF/watch', { headers: { Upgrade: 'websocket' } }));
+  const vs = c.socks.get('v'); assert.equal(vs.out[0].t, 'watch'); assert.equal(vs.out[0].names[1], 'TokyoLambo');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: { a: 1 } }));
+  assert.equal(vs.out.at(-1).t, 'f');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [['gameOver', [0]]], s: {} }));
+  assert.equal(m.mem.done.reason, 'played');
+});
