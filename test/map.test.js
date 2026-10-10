@@ -28,10 +28,10 @@ function tgInit(id, name) {
 }
 const age = (env, ms) => env.sql.prepare('UPDATE attacks SET started = started - ?').run(ms);
 
-test('world: about 5,000 tiles, every country has land, and Uruguay has a few', () => {
-  assert.ok(TILES.length > 4800 && TILES.length < 5300);
+test('world: about 50,000 tiles, every country has land, and Uruguay has plenty', () => {
+  assert.ok(TILES.length > 48000 && TILES.length < 52000);
   const uy = TILES.filter(t => COUNTRIES[t[2]] === 'UY').length;
-  assert.ok(uy >= 4, 'Uruguay ' + uy);
+  assert.ok(uy >= 40, 'Uruguay ' + uy);
   for (const c of ['US', 'BR', 'AR', 'ES', 'FR', 'DE', 'RU', 'CN', 'IN', 'JP', 'GB', 'NG', 'AU', 'SG', 'LU']) assert.ok(TILES.some(t => COUNTRIES[t[2]] === c), c);
 });
 
@@ -43,7 +43,7 @@ test('map: a free home plot in your country, attacks on land next to it, a win t
   assert.equal(m.me.joined, false); assert.deepEqual(m.tiles, []);
   assert.equal((await call(env, '/map/attack', { tile: 0 }, a.token)).status, 409);          // home plot first
   m = await call(env, '/map/join', { cc: 'UY' }, a.token);
-  assert.equal(m.plot.length, 3); assert.equal(m.me.tiles, 3); assert.ok(m.me.shield > Date.now());
+  assert.equal(m.plot.length, 7); assert.equal(m.me.tiles, 7); assert.ok(m.me.shield > Date.now());
   assert.ok(m.plot.every(t => COUNTRIES[TILES[t][2]] === 'UY' || m.plot.some(o => neighbours(o).includes(t))));
   assert.equal((await call(env, '/map/join', { cc: 'UY' }, a.token)).status, 400);           // once
   const mb = await call(env, '/map/join', { cc: 'UY' }, b.token);
@@ -59,7 +59,7 @@ test('map: a free home plot in your country, attacks on land next to it, a win t
   assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 400);   // too quick
   age(env, 60e3);
   let r = await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token);
-  assert.equal(r.won, true); assert.equal(r.me.tiles, 4);
+  assert.equal(r.won, true); assert.equal(r.me.tiles, 8);
   assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 400);  // once
 
   // b's land is shielded while b is new; when the shield is gone a can take it and b hears about it
@@ -99,7 +99,7 @@ test('map: defenses and upgrades have levels and prices; attacks per day are cap
   assert.equal((await call(env, '/map/buy', {}, a.token)).status, 400);                      // still has land
   env.sql.prepare('DELETE FROM land').run();
   const b1 = await call(env, '/map/buy', {}, a.token);
-  assert.equal(b1.price, 500); assert.equal(b1.me.tiles, 3); assert.equal(b1.me.buyPrice, 750);
+  assert.equal(b1.price, 500); assert.equal(b1.me.tiles, 7); assert.equal(b1.me.buyPrice, 750);
 });
 
 test('map: land follows an account that is merged into another', async () => {
@@ -108,5 +108,5 @@ test('map: land follows an account that is merged into another', async () => {
   await call(env, '/map/join', { cc: 'FR' }, g.token);
   const t = await call(env, '/auth/telegram', { initData: tgInit(77, 'Zed') }, g.token);
   const m = await call(env, '/map', undefined, t.token);
-  assert.equal(m.me.tiles, 3); assert.equal(m.me.cc, 'FR');
+  assert.equal(m.me.tiles, 7); assert.equal(m.me.cc, 'FR');
 });

@@ -1,4 +1,4 @@
-// World Map: the real world cut into ~5,000 hex tiles (src/world.js). Every player starts with a free home plot of 3 tiles
+// World Map: the real world cut into ~5,000 hex tiles (src/world.js). Every player starts with a free home plot of 7 tiles
 // in their own country and wins more by beating the land next to theirs in a battle. The owner's team is played by the
 // CPU, made tougher by what the owner bought: defenses on that tile (mines, a bunker, an arsenal, an extra worm) and
 // worm upgrades for all their land (accuracy, resistance). Land nobody owns is held by CPU worms. Everything is play
@@ -16,8 +16,8 @@ import { HEX, TERRAIN, COUNTRIES, TILES } from './world.js';
 import { tg } from './bot.js';
 import { flag, gameLink } from './growth.js';
 
-export const ATTACKS_PER_DAY = 10, HOME_TILES = 3, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
-  INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 3;
+export const ATTACKS_PER_DAY = 10, HOME_TILES = 7, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
+  INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8;
 // defenses, one digit each in a tile's `def`: mines, bunker, arsenal, garrison. PRICES[item][level - 1]
 export const DEFENSES = ['mines', 'bunker', 'arsenal', 'garrison'];
 export const DEF_PRICES = { mines: [150, 300, 600], bunker: [400], arsenal: [200, 400, 800], garrison: [1000] };
@@ -65,19 +65,30 @@ export async function state(env, me, now = Date.now()) {
 
 // the home plot: a free seed tile in the country with free tiles next to it, a few tiles from other players when there
 // are some (so there is somebody to challenge), else anywhere in the country; small countries spill over the border
-async function pickHome(env, cc, now) {
+// tiles within `r` steps of tile i (a hex ring walk over the axial grid), not counting i
+function around(i, r) {
+  const [q0, r0] = TILES[i], out = [];
+  for (let dq = -r; dq <= r; dq++) for (let dr = Math.max(-r, -dq - r); dr <= Math.min(r, -dq + r); dr++) {
+    if (!dq && !dr) continue; const n = AT.get(key(q0 + dq, r0 + dr)); if (n != null) out.push(n) }
+  return out;
+}
+const BY_COUNTRY = new Map(); TILES.forEach((t, i) => { const c = COUNTRIES[t[2]]; if (!BY_COUNTRY.has(c)) BY_COUNTRY.set(c, []); BY_COUNTRY.get(c).push(i) });
+// the home plot: a free seed tile in the country with free tiles round it, a few tiles from other players when there are
+// some (so there is somebody to challenge), else anywhere in the country; small or full countries spill over the border
+export async function pickHome(env, cc, now) {
   const owned = new Set((await env.DB.prepare('SELECT tile FROM land').all()).results.map(r => r.tile));
-  const free = i => !owned.has(i);
-  let pool = TILES.map((t, i) => i).filter(i => COUNTRIES[TILES[i][2]] === cc && free(i));
-  if (!pool.length) {                                                   // the country is full: the nearest free land
-    const mine = TILES.map((t, i) => i).filter(i => COUNTRIES[TILES[i][2]] === cc);
-    pool = TILES.map((t, i) => i).filter(free).sort((a, b) => Math.min(...mine.map(m => dist(a, m))) - Math.min(...mine.map(m => dist(b, m)))).slice(0, 40);
+  const free = i => !owned.has(i), home = BY_COUNTRY.get(cc) || [];
+  let pool = home.filter(free);
+  if (!pool.length && home.length) {                                    // the country is full: the nearest free land
+    const seen = new Set(home); let ring = home;
+    while (ring.length && !pool.length) { const next = []; for (const t of ring) for (const n of neighbours(t)) if (!seen.has(n)) { seen.add(n); next.push(n) } pool = next.filter(free); ring = next }
   }
   if (!pool.length) return null;
-  const others = [...owned];
-  const score = i => { const n = neighbours(i).filter(free).length, d = others.length ? Math.min(...others.map(o => dist(i, o))) : 5;
-    return (n >= 2 ? 10 : n) + (d >= 2 && d <= 6 ? 6 : d > 6 ? 3 : 0) + Math.random() * 3 };
-  const seed = pool.map(i => [i, score(i)]).sort((a, b) => b[1] - a[1])[0][0];
+  const sample = pool.length > 400 ? [...Array(400)].map(() => pool[Math.floor(Math.random() * pool.length)]) : pool;
+  const score = i => { const ring = around(i, 2), n = ring.filter(free).length, near = owned.size ? around(i, 10).filter(t => owned.has(t)).length : 0;
+    const d = near ? Math.min(...around(i, 10).filter(t => owned.has(t)).map(t => dist(i, t))) : 99;
+    return (n >= 15 ? 10 : n / 2) + (d >= 3 && d <= 8 ? 6 : d > 8 ? 3 : 0) + Math.random() * 3 };
+  const seed = sample.map(i => [i, score(i)]).sort((a, b) => b[1] - a[1])[0][0];
   const plot = [seed], seen = new Set(plot);
   for (let k = 0; k < plot.length && plot.length < HOME_TILES; k++)                     // grow outward, same country first
     for (const n of neighbours(plot[k]).sort((a, b) => (countryOf(b) === cc) - (countryOf(a) === cc)))

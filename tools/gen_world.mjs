@@ -72,8 +72,8 @@ function grid(s) {
   return tiles;
 }
 // find the hex size that gives about TARGET land tiles
-let lo = 0.005, hi = 0.05, tiles, s;
-for (let i = 0; i < 14; i++) { s = (lo + hi) / 2; tiles = grid(s); if (tiles.length > TARGET) lo = s; else hi = s; if (Math.abs(tiles.length - TARGET) < TARGET * .01) break }
+let lo = 0.0162 * Math.sqrt(5000 / TARGET) * .85, hi = 0.0162 * Math.sqrt(5000 / TARGET) * 1.15, tiles, s;
+for (let i = 0; i < 10; i++) { s = (lo + hi) / 2; tiles = grid(s); if (tiles.length > TARGET) lo = s; else hi = s; if (Math.abs(tiles.length - TARGET) < TARGET * .01) break }
 console.log('hex size', s.toFixed(5), 'tiles', tiles.length);
 
 // every country gets at least one tile: tiny ones take the hex over their label point (even out at sea)
