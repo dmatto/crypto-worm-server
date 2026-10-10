@@ -1,0 +1,169 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, createHmac, generateKeyPairSync, sign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+
+// Stand-ins: node:sqlite for D1, a lobby with nobody in it.
+class FakeWS { constructor() { this.out = [] } send(m) { this.out.push(JSON.parse(m)) } close() { this.closed = true } serializeAttachment(v) { this.att = structuredClone(v) } deserializeAttachment() { return this.att } }
+globalThis.WebSocketPair = class { constructor() { this[0] = new FakeWS(); this[1] = new FakeWS() } };
+const RealResponse = globalThis.Response;
+globalThis.Response = class extends RealResponse { constructor(b, i = {}) { super(b, i.status === 101 ? { status: 200 } : i); this.ws = i.webSocket } static json(b, i) { return new globalThis.Response(JSON.stringify(b), { ...i, headers: { 'content-type': 'application/json' } }) } };
+const { default: worker } = await import('../src/index.js');
+
+function makeEnv() {
+  const sql = new DatabaseSync(':memory:'); sql.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  const stmt = (q, a = []) => ({ bind: (...b) => stmt(q, b), first: async () => sql.prepare(q).get(...a) ?? null, run: async () => sql.prepare(q).run(...a), all: async () => ({ results: sql.prepare(q).all(...a) }) });
+  const DB = { prepare: q => stmt(q), batch: async l => { sql.exec('BEGIN'); try { const r = []; for (const s of l) r.push(await s.run()); sql.exec('COMMIT'); return r } catch (e) { sql.exec('ROLLBACK'); throw e } } };
+  const LOBBY = { idFromName: n => n, get: () => ({ fetch: async () => Response.json({ online: [] }) }) };
+  return { DB, sql, LOBBY, SESSION_SECRET: 'test-secret', BOT_TOKEN: '123:BOT', SIGNIN_DOMAIN: 'example.test' };
+}
+const call = async (env, path, body, token, method = body === undefined ? 'GET' : 'POST') => {
+  const r = await worker.fetch(new Request('https://api.test' + path, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, ...(method === 'POST' ? { body: JSON.stringify(body || {}) } : {}) }), env);
+  return { status: r.status, ...(await r.json()) };
+};
+function tgInit(id, name) {
+  const fields = { auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id, first_name: name }) };
+  const check = Object.keys(fields).sort().map(k => `${k}=${fields[k]}`).join('\n'), secret = createHmac('sha256', 'WebAppData').update('123:BOT').digest();
+  return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+}
+function tgWidget(id, name) {
+  const d = { id: String(id), first_name: name, auth_date: String(Math.floor(Date.now() / 1000)) };
+  const check = Object.keys(d).sort().map(k => `${k}=${d[k]}`).join('\n');
+  return { ...d, hash: createHmac('sha256', createHash('sha256').update('123:BOT').digest()).update(check).digest('hex') };
+}
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function b58(bytes) { let n = 0n; for (const b of bytes) n = n * 256n + BigInt(b); let s = ''; while (n > 0n) { s = B58[Number(n % 58n)] + s; n /= 58n } for (const b of bytes) { if (b) break; s = '1' + s } return s }
+async function walletSignIn(env, token) {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519'), address = b58(publicKey.export({ format: 'der', type: 'spki' }).subarray(-32));
+  const { message } = await call(env, '/auth/solana/nonce', { address });
+  return call(env, '/auth/solana', { address, message, signature: b58(sign(null, Buffer.from(message), privateKey)) }, token);
+}
+
+test('accounts: a login code moves a device onto the same account, and a guest on it is folded in', async () => {
+  const env = makeEnv();
+  const tg = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
+  assert.equal(tg.player.name, 'Dami'); assert.equal(tg.player.tg, true);
+  const guest = await call(env, '/auth/guest', {});
+  env.sql.prepare('UPDATE players SET wins = 3 WHERE id = ?').run(guest.player.id);
+  const { code } = await call(env, '/auth/code', {}, tg.token);
+  const web = await call(env, '/auth/code/redeem', { code }, guest.token);
+  assert.equal(web.player.id, tg.player.id); assert.equal(web.player.wins, 3);
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM players').get().n, 1);
+  assert.equal((await call(env, '/auth/code/redeem', { code })).status, 404);    // codes work once
+});
+
+test('accounts: telegram on the web and a wallet end up on one account', async () => {
+  const env = makeEnv();
+  const mini = await call(env, '/auth/telegram', { initData: tgInit(7, 'Ana') });
+  const w = await walletSignIn(env);                                               // wallet first, on its own account
+  assert.notEqual(w.player.id, mini.player.id);
+  const both = await call(env, '/auth/telegram/web', tgWidget(7, 'Ana'), w.token);  // then Telegram on the same page
+  assert.equal(both.player.id, mini.player.id); assert.equal(both.player.wallet, w.player.wallet); assert.equal(both.player.tg, true);
+  assert.equal((await call(env, '/auth/telegram/web', { ...tgWidget(7, 'Ana'), first_name: 'Eve' })).status, 401);
+  const again = await walletSignIn(env, mini.token);                               // a second wallet can't join an account that has one
+  assert.notEqual(again.player.id, mini.player.id);
+});
+
+test('friends: a friend code adds both ways, an id one way, and remove works', async () => {
+  const env = makeEnv();
+  const a = await call(env, '/auth/guest', {}), b = await call(env, '/auth/guest', {}), c = await call(env, '/auth/guest', {});
+  assert.equal((await call(env, '/friends/add', { code: 'NOPE1234' }, a.token)).status, 404);
+  assert.equal((await call(env, '/friends/add', { code: b.friendCode.toLowerCase() }, a.token)).friend.id, b.player.id);
+  assert.deepEqual((await call(env, '/friends', undefined, b.token)).friends.map(f => f.id), [a.player.id]);
+  await call(env, '/friends/add', { id: c.player.id }, a.token);
+  assert.equal((await call(env, '/friends', undefined, a.token)).friends.length, 2);
+  assert.equal((await call(env, '/friends', undefined, c.token)).friends.length, 0);
+  await call(env, '/friends/remove', { id: b.player.id }, a.token);
+  assert.deepEqual((await call(env, '/friends', undefined, a.token)).friends.map(f => f.id), [c.player.id]);
+});
+
+test('feedback: stored with the linked wallet, checked, limited per day, and sent to the admins', async () => {
+  const env = { ...makeEnv(), ADMIN_PLAYERS: '1' }, sent = [], realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { sent.push([String(url).split('/').pop(), init.body instanceof FormData ? init.body : JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
+  try {
+    const boss = await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') });   // player 1, the admin
+    const w = await walletSignIn(env);
+    assert.equal((await call(env, '/feedback', { text: 'hi' })).status, 401);
+    assert.equal((await call(env, '/feedback', { text: '   ' }, w.token)).status, 400);
+    assert.equal((await call(env, '/feedback', { text: 'hi', wallet: 'not a wallet' }, w.token)).status, 400);
+    assert.equal((await call(env, '/feedback', { text: 'Love the <vulture>!', rating: 5, info: 'web en L3' }, w.token)).ok, true);
+    const row = env.sql.prepare('SELECT * FROM feedback').get();
+    assert.equal(row.wallet, w.player.wallet); assert.equal(row.wallet_ok, 1); assert.equal(row.rating, 5);
+    assert.equal(sent.length, 1); assert.equal(sent[0][1].chat_id, 42); assert.match(sent[0][1].text, /Love the &lt;vulture&gt;!/); assert.match(sent[0][1].text, /★★★★★/);
+    const g = await call(env, '/auth/guest', {}), typed = w.player.wallet;
+    assert.equal((await call(env, '/feedback', { text: 'ok', rating: 9, wallet: typed }, g.token)).ok, true);
+    const r2 = env.sql.prepare('SELECT * FROM feedback WHERE player = ?').get(g.player.id);
+    assert.equal(r2.wallet_ok, 0); assert.equal(r2.rating, null);
+    for (let i = 1; i < 10; i++) await call(env, '/feedback', { text: 'more ' + i }, g.token);
+    assert.equal((await call(env, '/feedback', { text: 'too many' }, g.token)).status, 429);
+    const { feedbackCsv } = await import('../src/bot.js');
+    const csv = await feedbackCsv(env);
+    assert.equal(csv.messages, 11); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
+    assert.match(csv.csv, /"Love the <vulture>!"|Love the <vulture>!/); assert.ok(boss.player.id === 1);
+  } finally { globalThis.fetch = realFetch }
+});
+
+test('nicknames: checked, unique, kept through Telegram sign-in and account linking', async () => {
+  const env = makeEnv();
+  const a = await call(env, '/auth/telegram', { initData: tgInit(5, 'Ana') }), b = await call(env, '/auth/guest', {});
+  assert.equal(a.player.nick, false);
+  for (const bad of ['ab', 'x'.repeat(17), ' -ab', 'Guest 77', 'fuckworm', 'f.u.c.k', 'Crypto Worm']) assert.equal((await call(env, '/me/name', { name: bad }, a.token)).status, 400, bad);
+  const ok = await call(env, '/me/name', { name: '  Moon   Boy ' }, a.token);
+  assert.equal(ok.player.name, 'Moon Boy'); assert.equal(ok.player.nick, true);
+  assert.equal((await call(env, '/me/name', { name: 'moon boy' }, b.token)).status, 409);          // taken, whatever the case
+  assert.equal((await call(env, '/me/name', { name: 'Worm King' }, a.token)).status, 429);         // not again right away
+  const again = await call(env, '/auth/telegram', { initData: tgInit(5, 'Ana') });                 // Telegram doesn't overwrite it
+  assert.equal(again.player.name, 'Moon Boy');
+  assert.equal((await call(env, '/me/name', { name: 'Señor_Gusano' }, b.token)).player.name, 'Señor_Gusano');
+  const linked = await call(env, '/auth/telegram', { initData: tgInit(6, 'Bo') }, b.token);       // the guest's nickname comes along
+  assert.equal(linked.player.name, 'Señor_Gusano'); assert.equal(linked.player.nick, true);
+});
+
+test('ranking: $CWORM gained this week and all time, capped, and merged with a linked account', async () => {
+  const env = makeEnv(), realNow = Date.now;
+  let now = realNow(); Date.now = () => now;
+  try {
+    const a = await call(env, '/auth/guest', {}), b = await call(env, '/auth/guest', {}), c = await call(env, '/auth/telegram', { initData: tgInit(9, 'Cy') });
+    assert.equal((await call(env, '/score', { amount: 0 }, a.token)).status, 400);
+    assert.equal((await call(env, '/score', { amount: 120 }, a.token)).added, 120);
+    assert.equal((await call(env, '/score', { amount: 50 }, a.token)).status, 429);          // too soon after the last one
+    now += 9000; assert.equal((await call(env, '/score', { amount: 5000 }, a.token)).added, 600);   // capped per match
+    assert.equal((await call(env, '/score', { import: 99999 }, a.token)).added, 3000);       // the old wallet total, once, capped, all time only
+    assert.equal((await call(env, '/score', { import: 500 }, a.token)).added, 0);
+    await call(env, '/score', { amount: 300 }, b.token); await call(env, '/score', { amount: 200 }, c.token);
+    let week = await call(env, '/ranking?period=week', undefined, b.token), all = await call(env, '/ranking?period=all', undefined, b.token);
+    assert.deepEqual(week.top.map(r => [r.id, r.cworm]), [[a.player.id, 720], [b.player.id, 300], [c.player.id, 200]]);
+    assert.deepEqual(all.top.map(r => [r.id, r.cworm]), [[a.player.id, 3720], [b.player.id, 300], [c.player.id, 200]]);
+    assert.deepEqual(week.me, { rank: 2, id: b.player.id, name: b.player.name, cworm: 300 });
+    for (let i = 0; i < 12; i++) { now += 9000; await call(env, '/score', { amount: 600 }, b.token) }   // daily cap
+    assert.equal((await call(env, '/ranking?period=week', undefined, b.token)).me.cworm, 6000);
+    now += 8 * 864e5; await call(env, '/score', { amount: 10 }, c.token);                    // a new week starts from zero
+    week = await call(env, '/ranking?period=week', undefined, c.token);
+    assert.deepEqual(week.top.map(r => [r.id, r.cworm]), [[c.player.id, 10]]);
+    const merged = await call(env, '/auth/telegram', { initData: tgInit(9, 'Cy') }, a.token);   // the guest's score joins the Telegram account
+    all = await call(env, '/ranking?period=all', undefined, merged.token);
+    assert.deepEqual(all.top.map(r => [r.id, r.cworm]), [[c.player.id, 3930], [b.player.id, 6000]].sort((x, y) => y[1] - x[1]));
+  } finally { Date.now = realNow }
+});
+
+test('airdrop list: one row per tester, with a wallet linked after the feedback and across account merges', async () => {
+  const env = { ...makeEnv(), ADMIN_PLAYERS: '1' }, realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ ok: true, result: {} });
+  try {
+    const tgUser = await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') });
+    const g = await call(env, '/auth/guest', {});
+    await call(env, '/feedback', { text: 'first' }, g.token); await call(env, '/feedback', { text: 'second' }, g.token);
+    const w = await walletSignIn(env, g.token);                       // links a wallet after the feedback
+    const h = await call(env, '/auth/guest', {});
+    await call(env, '/feedback', { text: 'from a guest phone' }, h.token);
+    await call(env, '/auth/telegram', { initData: tgInit(42, 'Damian') }, h.token);   // the guest signs in to the Telegram account
+    const { feedbackCsv } = await import('../src/bot.js');
+    const r = await feedbackCsv(env), lines = r.airdropCsv.replace('﻿', '').trim().split('\r\n');
+    assert.equal(r.testers, 2); assert.equal(r.withWallet, 1); assert.equal(lines.length, 3);
+    const mine = lines.find(l => l.includes(w.player.wallet));
+    assert.ok(mine, 'the wallet linked later is on the airdrop list'); assert.match(mine, /,yes,2,/);
+    assert.ok(lines.some(l => l.startsWith(tgUser.player.id + ',') && l.includes(',42,')), 'merged guest feedback moves to the Telegram account');
+    assert.ok(env.sql.prepare('SELECT COUNT(*) AS n FROM feedback').get().n === 3);
+  } finally { globalThis.fetch = realFetch }
+});
