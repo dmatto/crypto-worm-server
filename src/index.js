@@ -22,6 +22,7 @@
 //   GET  /match/<code>/ws?token=...                             websocket into the match
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
+//   GET  /stats                                                 -> {players}  everyone who has been in the game (no sign-in)
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?}], me, players}
@@ -96,6 +97,16 @@ function signDomain(req, env) {
   const origin = req.headers.get('Origin') || '', allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim());
   if (origin && allowed.includes(origin)) try { return new URL(origin).host } catch (e) { }
   return env.SIGNIN_DOMAIN;
+}
+
+// Everyone who has been in the game: signed in with Telegram or a wallet, or played at least one match as a guest (so a
+// web visitor who never played, or a page preview, doesn't count). Kept for 5 minutes per Worker instance.
+let counted = { at: 0, n: 0 };
+async function playerCount(env, now = Date.now()) {
+  if (now - counted.at < 300000) return counted.n;
+  const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM players p LEFT JOIN player_meta m ON m.player = p.id
+    WHERE p.tg_id IS NOT NULL OR p.wallet IS NOT NULL OR p.wins + p.losses > 0 OR m.played > 0`).first();
+  counted = { at: now, n: r ? r.n : 0 }; return counted.n;
 }
 
 const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wallet: p.wallet || null, wins: p.wins, losses: p.losses };
@@ -173,6 +184,7 @@ export default {
     if (path === '/telegram/setup') return setup(req, env, url.origin);
     if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
     if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
+    if (path === '/stats' && req.method === 'GET') return json({ players: await playerCount(env) }, 200, cors);
     const watch = path.match(/^\/match\/([A-Z2-9]{6})\/watch$/);
     if (watch) return env.MATCH.get(env.MATCH.idFromName(watch[1])).fetch(new Request(req.url, { headers: req.headers }));
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};

@@ -29,6 +29,7 @@ server never sends tokens or anything of value.
 | `GET /me` | | `{player, friendCode}` |
 | `POST /me/wallet/unlink` | | `{player}` without the wallet; only for accounts that also have Telegram |
 | `GET /friends` | | `{friends}` with `online` |
+| `GET /stats` | | `{players}`: everyone who has been in the game (Telegram or wallet accounts, and guests who played a match); no sign-in |
 | `POST /friends/add` | `{code}` (both ways) or `{id}` (one way) | `{friend}` |
 | `POST /friends/remove` | `{id}` | |
 | `GET /lobby/ws?token=…` | WebSocket | the lobby: who is online, challenges (see `src/lobby.js`) |
