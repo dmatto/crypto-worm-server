@@ -91,6 +91,10 @@ test('feedback: stored with the linked wallet, checked, limited per day, and sen
     const row = env.sql.prepare('SELECT * FROM feedback').get();
     assert.equal(row.wallet, w.player.wallet); assert.equal(row.wallet_ok, 1); assert.equal(row.rating, 5);
     assert.equal(sent.length, 1); assert.equal(sent[0][1].chat_id, 42); assert.match(sent[0][1].text, /Love the &lt;vulture&gt;!/); assert.match(sent[0][1].text, /★★★★★/);
+    assert.equal((await call(env, '/feedback', { text: 'FIRE stopped working', kind: 'bug', info: 'web android en L1 · battle · ' + 'x'.repeat(700) }, w.token)).ok, true);   // a bug report keeps longer details
+    const bug = env.sql.prepare('SELECT * FROM feedback ORDER BY id DESC').get();
+    assert.match(bug.info, /^BUG · web android/); assert.equal(bug.info.length, 6 + 600);
+    assert.equal(sent.length, 2); assert.match(sent[1][1].text, /^🐞 Bug report from/); assert.doesNotMatch(sent[1][1].text, /no rating/);
     const g = await call(env, '/auth/guest', {}), typed = w.player.wallet;
     assert.equal((await call(env, '/feedback', { text: 'ok', rating: 9, wallet: typed }, g.token)).ok, true);
     const r2 = env.sql.prepare('SELECT * FROM feedback WHERE player = ?').get(g.player.id);
@@ -99,7 +103,7 @@ test('feedback: stored with the linked wallet, checked, limited per day, and sen
     assert.equal((await call(env, '/feedback', { text: 'too many' }, g.token)).status, 429);
     const { feedbackCsv } = await import('../src/bot.js');
     const csv = await feedbackCsv(env);
-    assert.equal(csv.messages, 11); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
+    assert.equal(csv.messages, 12); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
     assert.match(csv.csv, /"Love the <vulture>!"|Love the <vulture>!/); assert.ok(boss.player.id === 1);
   } finally { globalThis.fetch = realFetch }
 });

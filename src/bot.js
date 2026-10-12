@@ -70,7 +70,8 @@ const stars = r => r ? '★'.repeat(r) + '☆'.repeat(5 - r) : 'no rating';
 export async function tellAdmins(env, f) {
   if (!env.BOT_TOKEN) return;
   const who = f.tg_id != null ? `<a href="tg://user?id=${f.tg_id}">${esc(f.name)}</a>` : esc(f.name);
-  const text = `📝 Feedback from ${who} (player ${f.player})\n${stars(f.rating)}\n` +
+  const bug = /^BUG · /.test(f.info || '');
+  const text = (bug ? `🐞 Bug report from ${who} (player ${f.player})\n` : `📝 Feedback from ${who} (player ${f.player})\n${stars(f.rating)}\n`) +
     (f.wallet ? `Wallet: <code>${esc(f.wallet)}</code>${f.wallet_ok ? ' ✅ signed in' : ' (typed)'}\n` : 'No wallet\n') +
     (f.info ? `<i>${esc(f.info)}</i>\n` : '') + '\n' + esc(f.text);
   for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });

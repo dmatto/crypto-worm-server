@@ -25,7 +25,7 @@
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
-//   POST /feedback           {text, rating?, wallet?, info?}    -> {ok}   beta feedback; the bot passes it on to the admins
+//   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /played, /rewards, /share/prepare, /me/remind           finished matches, invite rewards, share cards, reminders (see growth.js)
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
@@ -278,7 +278,8 @@ export default {
       if (typed && !SOLANA.test(typed)) return json({ error: 'that does not look like a Solana address' }, 400, cors);
       const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM feedback WHERE player = ? AND created > ?').bind(me.id, Date.now() - 864e5).first();
       if (n.n >= FEEDBACK_PER_DAY) return json({ error: 'thanks! that is plenty for today' }, 429, cors);
-      const wallet = typed || me.wallet || null, rating = Math.round(Number(body.rating)), info = String(body.info || '').slice(0, 120);
+      const bug = body.kind === 'bug', wallet = typed || me.wallet || null, rating = Math.round(Number(body.rating));
+      const info = (bug ? 'BUG · ' : '') + String(body.info || '').slice(0, bug ? 600 : 120);   // a bug report carries the phone and game details
       const row = { player: me.id, name: me.name, tg_id: me.tg_id ?? null, wallet, wallet_ok: wallet && wallet === me.wallet ? 1 : 0, rating: rating >= 1 && rating <= 5 ? rating : null, text, info, created: Date.now() };
       await env.DB.prepare('INSERT INTO feedback (player, name, tg_id, wallet, wallet_ok, rating, text, info, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(row.player, row.name, row.tg_id, row.wallet, row.wallet_ok, row.rating, row.text, row.info, row.created).run();
