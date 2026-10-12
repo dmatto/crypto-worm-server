@@ -34,10 +34,18 @@ server never sends tokens or anything of value.
 | `POST /match/new` | | `{code}` to share as `t.me/CryptoWormWarsBot/play?startapp=m_<code>` |
 | `POST /match/quick` | | `{code, side}` |
 | `GET /match/<code>/ws?token=…` | WebSocket | the match |
+| `GET /holder` | | $CWORM holder status: tier, title, hold stars, daily chest (see `src/holders.js`) |
+| `POST /holder/refresh` | | reads the linked wallet now (at most every 5 minutes) |
+| `POST /holder/chest` | | `{amount}`: the daily holder chest, play money claimed through `/rewards` |
+| `POST /holder/toast` | `{on}` | Whales: announce me to players online when I come online |
 
 Signed-in calls send `Authorization: Bearer <token>`. Signing in with Telegram, a wallet or a login code while
 already signed in links it to the same account; two accounts are merged when they don't both have a Telegram account
 or both have a wallet. Offline friends get challenges as a Telegram message from the bot.
+
+Holder rewards read the real $CWORM balance of linked wallets through a Solana RPC: `SOLANA_RPC` (a secret, for example a
+Helius URL with its key) when set, else the free public hosts. `HOLDER_EXCLUDE` lists team wallets (comma separated)
+that don't count for the top 10 holders. Holding never pays out tokens: holders get titles, badges and play money.
 
 ## Deploy
 

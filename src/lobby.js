@@ -4,8 +4,11 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc}], online, playing, live: [{code, names, cc, viewers, at, ids}]}    sent {code, to, online, notified}    none    challenged {code, from}
-//                     declined {code, by}    cancelled {code}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st}], online, playing, live: [{code, names, cc, viewers, at, ids}]}    sent {code, to, online, notified}    none    challenged {code, from}
+//                     declined {code, by}    cancelled {code}    whale {name, tier}
+//
+// tier and st are the player's $CWORM holder tier (0-5) and hold stars (0-4), from the server (see holders.js). A Whale or Big
+// Whale who opted in is announced to everyone else as they come online: once a UTC day per whale, one every WHALE_GAP_MS at most.
 //
 // It also keeps the Live now list: matches in progress, which each match adds itself to when it starts and takes itself
 // off when it ends (see match.js). Entries older than LIVE_MAX_MS are dropped in case an end never arrived.
@@ -18,7 +21,7 @@ import { announce } from './growth.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
-const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000;
+const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000;
 
 export class Lobby {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.recent = new Map() }
@@ -73,16 +76,25 @@ export class Lobby {
     return Response.json({ code, side: 0 });
   }
 
-  enter(req) {
-    const h = req.headers, id = Number(h.get('x-player'));
+  async enter(req) {
+    const h = req.headers, id = Number(h.get('x-player')), n = (k, max) => Math.max(0, Math.min(max, Number(h.get(k)) || 0));
     const me = { id, name: decodeURIComponent(h.get('x-name') || 'Worm').slice(0, 40), wins: Number(h.get('x-wins')) || 0, losses: Number(h.get('x-losses')) || 0,
-      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')) };
+      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')), tier: n('x-tier', 5), st: n('x-stars', 4) };
     for (const old of this.ctx.getWebSockets(String(id))) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(id)]);
     pair[1].serializeAttachment(me);
     this.broadcast();
+    if (me.tier >= 4 && h.get('x-toast') === '1' && !me.hidden) await this.whale(me, pair[1]);
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+  async whale(me, mine) {
+    const now = Date.now(), day = Math.floor(now / 864e5), seen = (await this.ctx.storage.get('whales')) || {};
+    if (seen.day !== day) { seen.day = day; seen.ids = {} }
+    if (seen.ids[me.id] || now - (seen.at || 0) < WHALE_GAP_MS) return;
+    seen.ids[me.id] = 1; seen.at = now; await this.ctx.storage.put('whales', seen);
+    const out = JSON.stringify({ t: 'whale', name: me.name, tier: me.tier });   // never the wallet or the amount
+    for (const ws of this.ctx.getWebSockets()) if (ws !== mine) try { ws.send(out) } catch { }
   }
 
   // Everyone connected and visible, one entry per player.
@@ -107,7 +119,7 @@ export class Lobby {
   sock(id) { return this.ctx.getWebSockets(String(id))[0] || null }
   tell(id, msg) { const ws = this.sock(id); if (ws) try { ws.send(JSON.stringify(msg)) } catch { } return !!ws }
   broadcast(except) {
-    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc }) => ({ id, name, wins, losses, busy, cc }));
+    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0 }));
     const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [] });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except) try { ws.send(out) } catch { }
   }
@@ -117,7 +129,7 @@ export class Lobby {
     let msg; try { msg = JSON.parse(raw) } catch { return }
     const me = ws.deserializeAttachment(); if (!me || !msg || typeof msg.t !== 'string') return;
     const send = m => { try { ws.send(JSON.stringify(m)) } catch { } };
-    const who = ({ id, name, wins, losses, cc }) => ({ id, name, wins, losses, cc });
+    const who = ({ id, name, wins, losses, cc, tier }) => ({ id, name, wins, losses, cc, tier: tier || 0 });
     switch (msg.t) {
       case 'busy':
         if (me.busy !== !!msg.on) { me.busy = !!msg.on; ws.serializeAttachment(me); this.broadcast() }

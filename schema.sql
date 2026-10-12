@@ -156,3 +156,16 @@ CREATE TABLE IF NOT EXISTS map_alerts (    -- last "you are under attack" bot me
   player   INTEGER PRIMARY KEY,
   at       INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS holders (       -- $CWORM holder rewards: what each linked wallet held at the last reading (see holders.js)
+  player     INTEGER PRIMARY KEY,
+  wallet     TEXT NOT NULL,                -- the wallet read; a different one on the account starts over
+  balance    REAL,                         -- whole $CWORM tokens
+  tier       INTEGER NOT NULL DEFAULT 0,   -- 0 none, 1 Holder, 2 Dolphin, 3 Shark, 4 Whale, 5 Big Whale
+  tier_day   INTEGER,                      -- UTC day number the tier was reached
+  streak_day INTEGER,                      -- first day of the current hold streak (hold stars)
+  below_day  INTEGER,                      -- first day below the tier (grace), NULL when not below
+  checked    INTEGER NOT NULL DEFAULT 0,   -- last reading (ms)
+  snap_day   INTEGER NOT NULL DEFAULT 0,   -- last daily reading
+  toast      INTEGER,                      -- whales: announce when online (NULL = default: on for Big Whales)
+  chest_day  INTEGER NOT NULL DEFAULT 0    -- last daily chest
+);

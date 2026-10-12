@@ -90,9 +90,9 @@ test('match: both phones get each player\'s country for the flag, unknown ones a
   const at = (player, cc) => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-country': cc } }));
   await at(11, 'br'); await at(22, 'XX');
   const s0 = c.socks.get('0'), s1 = c.socks.get('1');
-  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null] }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null] });
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0] }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0] });
   await at(22, 'UY');                                                              // rejoining from somewhere else updates it
-  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'] });
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'], tier: [0, 0] });
 });
 
 test('match: the waiting phone takes over a turn only after the other phone has been quiet for a while', async () => {

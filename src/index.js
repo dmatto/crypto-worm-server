@@ -23,11 +23,12 @@
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
-//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm}], me, players}
+//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /played, /rewards, /share/prepare, /me/remind           finished matches, invite rewards, share cards, reminders (see growth.js)
+//   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
@@ -40,6 +41,7 @@ import { Lobby } from './lobby.js';
 import { webhook, setup, cron, tellAdmins } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, played, claim, prepareShare, setRemind } from './growth.js';
+import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -66,19 +68,20 @@ async function addScore(env, me, amount, imported) {
 }
 const NICK = /^[\p{L}\p{N}][\p{L}\p{N} _.\-]{1,14}[\p{L}\p{N}]$/u, RANK_TOP = 50, NICK_GAP_MS = 60 * 1000;
 // A short list of words a nickname can't contain, and names that would pass for the team or the game.
-const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm)/i;
+const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm|whale|cwormteam|support)/i;   // whale: holder titles are shown by badge, not by name
 
 // The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC) or all time. The game reports what each
 // match banked; the server caps each report and each day so a tampered phone can't run away with it.
 async function ranking(env, period, me) {
   const since = weekStart();
   const rows = period === 'week'
-    ? (await env.DB.prepare('SELECT p.id, p.name, s.week AS cworm FROM cworm_scores s JOIN players p ON p.id = s.player WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC').bind(since).all()).results
-    : (await env.DB.prepare('SELECT p.id, p.name, s.total AS cworm FROM cworm_scores s JOIN players p ON p.id = s.player WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC').all()).results;
+    ? (await env.DB.prepare(`SELECT p.id, p.name, s.week AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC`).bind(since).all()).results
+    : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
   return { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me) };
 }
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier', TIER_JOIN = 'LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet';   // holder badge next to the name
 function place(rows, me) {
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0 }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -107,7 +110,8 @@ async function signedIn(req, env) {
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const holder = await holderGet(env, p).catch(() => null);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -140,6 +144,7 @@ async function link(env, me, target) {
     q('UPDATE land SET owner = ? WHERE owner = ?', b, a),                                // World Map land and upgrades follow the account
     q('UPDATE OR IGNORE landlords SET player = ? WHERE player = ?', b, a), q('DELETE FROM landlords WHERE player = ?', a),
     q('UPDATE attacks SET attacker = ? WHERE attacker = ?', b, a),
+    q('UPDATE OR IGNORE holders SET player = ? WHERE player = ?', b, a), q('DELETE FROM holders WHERE player = ?', a),   // holder status follows the wallet
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -247,6 +252,7 @@ export default {
       const h = new Headers(req.headers);
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
       h.set('x-country', String((req.cf && req.cf.country) || ''));
+      const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier)); h.set('x-stars', String(hb.stars)); h.set('x-toast', hb.toast ? '1' : '0');   // holder badge, vouched for by the server
       return lobbyOf(env).fetch(new Request(req.url, { headers: h }));
     }
     if (path === '/me/name' && req.method === 'POST') {
@@ -291,12 +297,16 @@ export default {
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
+    if (path === '/holder' || path.startsWith('/holder/')) {
+      try { const r = await holderHandle(path, req, env, me, body); if (r) return json(r, r.error ? 400 : 200, cors) } catch (e) { return json({ error: e && e.message || 'try again later' }, 502, cors) }
+    }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
     if (ws) {
       const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', String((req.cf && req.cf.country) || ''));   // country only, from Cloudflare, for the opponent's flag
+      h.set('x-tier', String((await badge(env, me.id)).tier));                                // holder tier, for the opponent's badge
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }
     return json({ error: 'not found' }, 404, cors);

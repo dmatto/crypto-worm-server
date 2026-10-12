@@ -11,7 +11,8 @@
 //   skip                        the waiting phone asks to take over because the phone running the turn went quiet
 //                               (closed or minimised app): allowed after SKIP_MS of silence from it
 // The server adds: took {} to the phone that took over and lost {} to the quiet one, seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
-// flags {cc:[country,country]} (two-letter codes from Cloudflare, null when unknown) to both phones whenever one connects.
+// flags {cc:[country,country], tier:[0-5,0-5]} (two-letter codes from Cloudflare, null when unknown; $CWORM holder tiers from the
+// server, for the badge and the whale entrance) to both phones whenever one connects.
 //
 // Viewers (GET /match/<code>/watch) watch a match live without playing. They get watch {start,s,carves,names,cc,viewers}
 // (or wait {} until the match starts, then watch), every f and auth the players send, chat {id,side}, over, and
@@ -74,13 +75,13 @@ export class Match {
     if (side < 0 && m.bot) return new Response('match is full', { status: 409 });   // a match against a bot has one seat
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
-    m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; await this.save();
+    m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0)); await this.save();
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);
     pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state, carves: m.carves } : { t: 'seat', side }));
     if (m.start) this.tell(1 - side, { t: 'back', side });
-    this.tell(0, { t: 'flags', cc: m.cc }); this.tell(1, { t: 'flags', cc: m.cc });
+    this.tell(0, { t: 'flags', cc: m.cc, tier: m.tier }); this.tell(1, { t: 'flags', cc: m.cc, tier: m.tier });
     m.last = Date.now(); await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -106,7 +107,8 @@ export class Match {
         if (msg.bot && typeof msg.bot === 'object') {                 // vs a bot: the bot's name and country, on the team it plays
           const bt = msg.bot.team === 0 ? 0 : 1, cc = String(msg.bot.cc || '').toUpperCase(); m.bot = true;
           m.names = m.names || [null, null]; m.cc = m.cc || [null, null];
-          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]] }
+          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]]; m.tier = [(m.tier || [0, 0])[1], (m.tier || [0, 0])[0]] }
+          (m.tier = m.tier || [0, 0])[bt] = 0;
           m.names[bt] = String(msg.bot.name || 'Worm').slice(0, 24); m.cc[bt] = /^[A-Z]{2}$/.test(cc) ? cc : null;
         }
         m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
