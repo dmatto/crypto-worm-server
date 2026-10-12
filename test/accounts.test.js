@@ -69,6 +69,9 @@ test('accounts: telegram on the web and a wallet end up on one account', async (
   const sw = await signIn(mini.token);
   assert.equal(sw.player.id, own.player.id); assert.notEqual(sw.player.id, mini.player.id);
   assert.equal((await call(env, '/me', undefined, mini.token)).player.wallet, again.player.wallet);
+  const off = await call(env, '/me/wallet/unlink', {}, mini.token);              // disconnect: Telegram stays, the wallet is free again
+  assert.equal(off.player.wallet, null); assert.equal(off.player.tg, true); assert.equal(off.player.id, mini.player.id);
+  assert.equal((await call(env, '/me/wallet/unlink', {}, own.token)).status, 400);  // a wallet-only account can't drop its only sign-in
 });
 
 test('friends: a friend code adds both ways, an id one way, and remove works', async () => {

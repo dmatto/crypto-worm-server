@@ -23,6 +23,7 @@
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
+//   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
@@ -270,6 +271,15 @@ export default {
         env.DB.prepare('INSERT INTO nicknames (player, nick, changed) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET nick = excluded.nick, changed = excluded.changed').bind(me.id, nick, Date.now()),
         env.DB.prepare('UPDATE players SET name = ? WHERE id = ?').bind(nick, me.id),
       ]);
+      return session(env, await playerById(env, me.id), cors, false);
+    }
+    // Disconnect the wallet. Only for accounts that also sign in with Telegram: for a wallet-only account the wallet is the
+    // way back in, so the game logs that device out instead.
+    if (path === '/me/wallet/unlink' && req.method === 'POST') {
+      if (!me.wallet) return session(env, me, cors, false);
+      if (me.tg_id == null) return json({ error: 'this wallet is how you sign in: log out of this device instead' }, 400, cors);
+      const short = me.wallet.slice(0, 4) + '…' + me.wallet.slice(-4);
+      await env.DB.prepare('UPDATE players SET wallet = NULL, name = CASE WHEN name = ? THEN ? ELSE name END WHERE id = ?').bind(short, 'Guest ' + Math.floor(1000 + Math.random() * 9000), me.id).run();
       return session(env, await playerById(env, me.id), cors, false);
     }
     if (path === '/score' && req.method === 'POST') {

@@ -27,6 +27,7 @@ server never sends tokens or anything of value.
 | `POST /auth/code` | | `{code, expires}`: a 10 minute login code for another device |
 | `POST /auth/code/redeem` | `{code}` | `{token, player}` for that account |
 | `GET /me` | | `{player, friendCode}` |
+| `POST /me/wallet/unlink` | | `{player}` without the wallet; only for accounts that also have Telegram |
 | `GET /friends` | | `{friends}` with `online` |
 | `POST /friends/add` | `{code}` (both ways) or `{id}` (one way) | `{friend}` |
 | `POST /friends/remove` | `{id}` | |
