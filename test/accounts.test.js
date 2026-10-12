@@ -61,8 +61,14 @@ test('accounts: telegram on the web and a wallet end up on one account', async (
   const both = await call(env, '/auth/telegram/web', tgWidget(7, 'Ana'), w.token);  // then Telegram on the same page
   assert.equal(both.player.id, mini.player.id); assert.equal(both.player.wallet, w.player.wallet); assert.equal(both.player.tg, true);
   assert.equal((await call(env, '/auth/telegram/web', { ...tgWidget(7, 'Ana'), first_name: 'Eve' })).status, 401);
-  const again = await walletSignIn(env, mini.token);                               // a second wallet can't join an account that has one
-  assert.notEqual(again.player.id, mini.player.id);
+  const again = await walletSignIn(env, mini.token);                               // a new wallet takes the old one's place
+  assert.equal(again.player.id, mini.player.id); assert.notEqual(again.player.wallet, w.player.wallet); assert.equal(again.player.tg, true);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519'), address = b58(publicKey.export({ format: 'der', type: 'spki' }).subarray(-32));
+  const signIn = async token => { const { message } = await call(env, '/auth/solana/nonce', { address }); return call(env, '/auth/solana', { address, message, signature: b58(sign(null, Buffer.from(message), privateKey)) }, token) };
+  const own = await signIn();                                                      // a wallet with its own account switches the device to it
+  const sw = await signIn(mini.token);
+  assert.equal(sw.player.id, own.player.id); assert.notEqual(sw.player.id, mini.player.id);
+  assert.equal((await call(env, '/me', undefined, mini.token)).player.wallet, again.player.wallet);
 });
 
 test('friends: a friend code adds both ways, an id one way, and remove works', async () => {

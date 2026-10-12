@@ -41,11 +41,14 @@ server never sends tokens or anything of value.
 
 Signed-in calls send `Authorization: Bearer <token>`. Signing in with Telegram, a wallet or a login code while
 already signed in links it to the same account; two accounts are merged when they don't both have a Telegram account
-or both have a wallet. Offline friends get challenges as a Telegram message from the bot.
+or both have a wallet. A new wallet (one with no account of its own) signed while signed in takes the place of the
+account's old wallet. Offline friends get challenges as a Telegram message from the bot.
 
 Holder rewards read the real $CWORM balance of linked wallets through a Solana RPC: `SOLANA_RPC` (a secret, for example a
 Helius URL with its key) when set, else the free public hosts. `HOLDER_EXCLUDE` lists team wallets (comma separated)
 that don't count for the top 10 holders. Holding never pays out tokens: holders get titles, badges and play money.
+To check the hosts, set `bot_kv` `holders_probe` to `1` (or `{"owner": "<wallet>"}` for one wallet's token accounts);
+the next cron run writes the results to `bot_log`.
 
 ## Deploy
 

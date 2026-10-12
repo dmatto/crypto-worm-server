@@ -216,8 +216,18 @@ export async function holderCron(env, now = Date.now()) {
   const log = note => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
   try {
     const probe = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'holders_probe' RETURNING v").first();
-    if (probe) {                                                      // v: '1' for the usual hosts, or a JSON list of hosts to try
-      const out = []; let list = null; try { list = JSON.parse(probe.v) } catch { }
+    let list = null; try { list = probe && JSON.parse(probe.v) } catch { }
+    if (list && list.owner) {                                         // v: {"owner": wallet}: every $CWORM account of one wallet, and its ATA
+      const out = [], prog = await tokenProgram(env).catch(e => 'error ' + e.message), mine = await ata(list.owner, prog).catch(e => 'error ' + e.message);
+      for (const body of [{ jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: [list.owner, { mint: MINT }, { encoding: 'jsonParsed' }] },
+        { jsonrpc: '2.0', id: 2, method: 'getMultipleAccounts', params: [[mine], { encoding: 'jsonParsed', commitment: 'confirmed' }] }])
+        try { out.push(JSON.stringify((await rpc(env, body)).result).slice(0, 1500)) } catch (e) { out.push('error ' + e.message) }
+      for (const programId of ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'])     // which classic tokens it does hold ($CWORM is one)
+        try { out.push(programId.slice(0, 6) + ' ' + (await rpc(env, { jsonrpc: '2.0', id: 3, method: 'getTokenAccountsByOwner', params: [list.owner, { programId }, { encoding: 'jsonParsed' }] })).result.value
+          .map(a => { const i = a.account.data.parsed.info; return i.mint + ':' + i.tokenAmount.uiAmountString }).join(',').slice(0, 1500)) } catch (e) { out.push('error ' + e.message) }
+      await log('holders owner ' + list.owner.slice(0, 6) + ' ata ' + mine + ' | ' + out.join(' | ') + ' | read ' + (await balances(env, [list.owner]).then(m => m.get(list.owner), e => 'error ' + e.message)));
+    } else if (probe) {                                               // v: '1' for the usual hosts, or a JSON list of hosts to try
+      const out = [];
       for (const url of Array.isArray(list) ? list : hosts(env)) {
         const w = (await env.DB.prepare('SELECT wallet FROM players WHERE wallet IS NOT NULL ORDER BY id LIMIT 1').first() || {}).wallet || BURN;
         for (const body of [{ jsonrpc: '2.0', id: 0, method: 'getTokenSupply', params: [MINT] }, { jsonrpc: '2.0', id: 1, method: 'getTokenLargestAccounts', params: [MINT] },

@@ -194,7 +194,9 @@ export default {
       if (!(await verifySolana(body, signDomain(req, env), env.SESSION_SECRET))) return json({ error: 'wallet sign-in failed' }, 401, cors);
       const me = await signedIn(req, env);
       let p = await env.DB.prepare('SELECT * FROM players WHERE wallet = ?').bind(body.address).first();
-      if (!p && me && !me.wallet) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' THEN ? ELSE name END WHERE id = ?").bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
+      // A new wallet joins the signed-in account, or takes the place of its old one (still one wallet per account, one account
+      // per wallet; holder status starts over with the new wallet). A wallet that has its own account switches the device to it.
+      if (!p && me) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' OR name = ? THEN ? ELSE name END WHERE id = ?").bind(body.address, me.wallet ? me.wallet.slice(0, 4) + '…' + me.wallet.slice(-4) : '', body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
       else if (!p) { p = await env.DB.prepare('INSERT INTO players (wallet, name, created) VALUES (?, ?, ?) RETURNING *').bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), Date.now()).first(); await newPlayer(env, p.id, body.src) }
       return session(env, await link(env, me, p), cors);
     }
