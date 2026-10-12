@@ -2,6 +2,7 @@
 // and gentle bot reminders. Every reward here is play-money $CWORM for the game's own wallet: never real tokens, never
 // part of the ranking or the airdrop list.
 //
+//   POST /started  {mode}                -> {ok}        the game started a match or a mini game (counted once per player)
 //   POST /played   {mode}                -> {played, rewards: [{amount, reason, note}]}   the game finished a match (any mode)
 //   POST /rewards                        -> {rewards}   play money the server owes this player (invite rewards), claimed once
 //   POST /share/prepare {kind, hp}       -> {id}        a prepared challenge card for Telegram.WebApp.shareMessage
@@ -63,6 +64,15 @@ async function payInvite(env, me, m) {
   if (inviter.tg_id != null && env.BOT_TOKEN) await tg(env, 'sendMessage', { chat_id: inviter.tg_id, text:
     `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n+${INVITE_REWARD} $CWORM for each of you. It lands in your game wallet next time you open the game. (Play money, not real tokens.)`,
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } }).catch(() => { });
+}
+
+// The game started a match or a mini game. The first start puts the player in the players count on Home (GET /stats),
+// even if they never finish one.
+export async function started(env, me) {
+  const now = Date.now();
+  await env.DB.prepare('INSERT INTO player_meta (player, last_seen, started) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET last_seen = excluded.last_seen, started = CASE WHEN started = 0 THEN excluded.started ELSE started END')
+    .bind(me.id, now, now).run();
+  return { ok: true };
 }
 
 // The game finished a match. Counts it (at most one every 20 s), pays a pending invite reward on a first match, and

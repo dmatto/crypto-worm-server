@@ -22,14 +22,14 @@
 //   GET  /match/<code>/ws?token=...                             websocket into the match
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
-//   GET  /stats                                                 -> {players}  everyone who has been in the game (no sign-in)
+//   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?}], me, players}
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
-//   POST /played, /rewards, /share/prepare, /me/remind           finished matches, invite rewards, share cards, reminders (see growth.js)
+//   POST /started, /played, /rewards, /share/prepare, /me/remind  started and finished matches, invite rewards, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
@@ -42,7 +42,7 @@ import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { webhook, setup, cron, tellAdmins } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, newPlayer, seen, noteInvite, played, claim, prepareShare, setRemind } from './growth.js';
+import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 export { Match, Lobby };
 
@@ -99,13 +99,13 @@ function signDomain(req, env) {
   return env.SIGNIN_DOMAIN;
 }
 
-// Everyone who has been in the game: signed in with Telegram or a wallet, or played at least one match as a guest (so a
-// web visitor who never played, or a page preview, doesn't count). Kept for 5 minutes per Worker instance.
+// Everyone who has been in the game: signed in with Telegram or a wallet, or started at least one match or mini game as a
+// guest, finished or not (so a web visitor who never played, or a page preview, doesn't count). Kept for 5 minutes per Worker instance.
 let counted = { at: 0, n: 0 };
 async function playerCount(env, now = Date.now()) {
   if (now - counted.at < 300000) return counted.n;
   const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM players p LEFT JOIN player_meta m ON m.player = p.id
-    WHERE p.tg_id IS NOT NULL OR p.wallet IS NOT NULL OR p.wins + p.losses > 0 OR m.played > 0`).first();
+    WHERE p.tg_id IS NOT NULL OR p.wallet IS NOT NULL OR p.wins + p.losses > 0 OR m.played > 0 OR m.started > 0`).first();
   counted = { at: now, n: r ? r.n : 0 }; return counted.n;
 }
 
@@ -317,6 +317,7 @@ export default {
       if (ctx && ctx.waitUntil) ctx.waitUntil(note); else await note;
       return json({ ok: true }, 200, cors);
     }
+    if (path === '/started' && req.method === 'POST') return json(await started(env, me), 200, cors);
     if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), req.cf && req.cf.country), 200, cors);
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);

@@ -74,14 +74,15 @@ test('accounts: telegram on the web and a wallet end up on one account', async (
   assert.equal((await call(env, '/me/wallet/unlink', {}, own.token)).status, 400);  // a wallet-only account can't drop its only sign-in
 });
 
-test('stats: counts Telegram and wallet players and guests who played, not guests who only looked', async () => {
+test('stats: counts Telegram and wallet players and guests who started a game, not guests who only looked', async () => {
   const env = makeEnv();
   await call(env, '/auth/telegram', { initData: tgInit(70, 'Tg') });
   await walletSignIn(env);
-  const g = await call(env, '/auth/guest', {}); await call(env, '/auth/guest', {});
+  const g = await call(env, '/auth/guest', {}), s = await call(env, '/auth/guest', {}); await call(env, '/auth/guest', {});
   env.sql.prepare('INSERT INTO player_meta (player, played) VALUES (?, 1) ON CONFLICT(player) DO UPDATE SET played = 1').run(g.player.id);
+  assert.equal((await call(env, '/started', { mode: 'cpu' }, s.token)).ok, true);          // started, never finished
   const r = await call(env, '/stats');
-  assert.equal(r.players, 3);
+  assert.equal(r.players, 4);
 });
 
 test('friends: a friend code adds both ways, an id one way, and remove works', async () => {

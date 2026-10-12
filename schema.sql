@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS player_meta (   -- growth tracking: where a player ca
   invited_by INTEGER,                      -- the player whose friend link brought this brand-new account
   invite_paid INTEGER,                     -- when the invite reward was paid (or 0 when the inviter's daily cap was hit)
   played     INTEGER NOT NULL DEFAULT 0,   -- finished matches, any mode, as the game reports them
+  started    INTEGER NOT NULL DEFAULT 0,   -- when the game first reported a started match or mini game (the players count on Home)
   last_played INTEGER NOT NULL DEFAULT 0,
   last_seen  INTEGER NOT NULL DEFAULT 0,
   daily      INTEGER NOT NULL DEFAULT 0,   -- 1 once they played a Daily island
