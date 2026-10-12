@@ -40,6 +40,8 @@ test('solana: verifies a wallet signature over the sign-in message', async () =>
   const other = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
   const bad = b58(new Uint8Array(await crypto.subtle.sign('Ed25519', other.privateKey, new TextEncoder().encode(message))));
   assert.equal(await verifySolana({ address, message, signature: bad }, 'example.app', 'S'), false);
+  assert.doesNotMatch(message, /wants you to sign in/);                                            // Phantom would check it as a SIWS request
+  assert.match(message, /example\.app/);
 });
 
 test('session tokens', async () => {
