@@ -3,7 +3,7 @@
 // CPU, made tougher by what the owner bought: defenses on that tile (mines, a bunker, an arsenal, an extra worm) and
 // worm upgrades for all their land (accuracy, resistance). Land nobody owns is held by CPU worms. Everything is play
 // money: land, defenses and upgrades are bought with in-game $CWORM, which is not a real token.
-//   GET  /map                          -> the whole map: owned tiles, owners and this player's state
+//   GET  /map                          -> the whole map: owned tiles, owners, battles on now or just ended, and this player's state
 //   POST /map/join     {cc}            -> free home plot (first time only), in country cc or the one Cloudflare sees
 //   POST /map/buy                      -> buy a new plot after losing all land: {price} is what the game takes from the wallet
 //   POST /map/attack   {tile}          -> {ticket, def, acc, res, owner}: start a battle for a tile next to this player's land
@@ -24,7 +24,8 @@ import { flag, gameLink } from './growth.js';
 
 export const ATTACKS_PER_DAY = 10, HOME_TILES = 7, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
   INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8,
-  LIVE_WAIT_MS = 30e3, ALERT_GAP_MS = 3 * 60e3;   // how long an attacker waits for the owner to jump in; bot alerts at most this often
+  LIVE_WAIT_MS = 30e3, ALERT_GAP_MS = 3 * 60e3,   // how long an attacker waits for the owner to jump in; bot alerts at most this often
+  BATTLE_LIVE_MS = 20 * 60e3, BATTLE_AFTER_MS = 30 * 60e3;   // the map shows battles still running (younger than this) and ones that ended this recently
 // defenses, one digit each in a tile's `def`: mines, bunker, arsenal, garrison. PRICES[item][level - 1]
 export const DEFENSES = ['mines', 'bunker', 'arsenal', 'garrison'];
 export const DEF_PRICES = { mines: [150, 300, 600], bunker: [400], arsenal: [200, 400, 800], garrison: [1000] };
@@ -66,7 +67,13 @@ export async function state(env, me, now = Date.now()) {
   const owners = {};
   for (const r of rows) if (!owners[r.owner]) owners[r.owner] = [r.name || 'Worm', r.cc || '', r.shield > now ? r.shield : 0, r.acc, r.res];
   const l = me && await lord(env, me.id);
-  return { now, tiles: rows.map(r => [r.tile, r.owner, r.def, r.truce > now ? r.truce : 0]), owners,
+  // battles for every phone to draw on the map: [tile, attacker, defender (0: CPU land), started, ended (0: still on), result (0 on, 1 won, 2 lost)].
+  // Only the newest attacks are looked at (an id window, so the query stays small as the table grows); dropped and late ones are left out
+  const battles = (await env.DB.prepare(`SELECT tile, attacker, defender, started, ended, result FROM attacks
+    WHERE id > (SELECT IFNULL(MAX(id), 0) - 300 FROM attacks) AND ((ended IS NULL AND started > ?) OR (ended > ? AND result IN ('won', 'lost')))
+    ORDER BY id DESC LIMIT 40`).bind(now - BATTLE_LIVE_MS, now - BATTLE_AFTER_MS).all()).results
+    .map(b => [b.tile, b.attacker, b.defender || 0, b.started, b.ended || 0, b.result === 'won' ? 1 : b.result === 'lost' ? 2 : 0]);
+  return { now, tiles: rows.map(r => [r.tile, r.owner, r.def, r.truce > now ? r.truce : 0]), owners, battles,
     me: me ? { id: me.id, ...meOut(l, rows.filter(r => r.owner === me.id).map(r => r.tile), now) } : null };
 }
 

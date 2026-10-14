@@ -56,11 +56,17 @@ test('map: a free home plot in your country, attacks on land next to it, a win t
   assert.equal((await call(env, '/map/attack', { tile: far }, a.token)).status, 400);
   let at = await call(env, '/map/attack', { tile: target }, a.token);
   assert.equal(at.status, 200); assert.equal(at.owner, null); assert.equal(at.me.attacksLeft, ATTACKS_PER_DAY - 1);
+  let seen = await call(env, '/map', undefined, b.token);                                     // everyone sees the battle on the map
+  assert.deepEqual(seen.battles.map(x => [x[0], x[1], x[2], x[4], x[5]]), [[target, a.player.id, 0, 0, 0]]);
   assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 400);   // too quick
   age(env, 60e3);
   let r = await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token);
   assert.equal(r.won, true); assert.equal(r.me.tiles, 8);
   assert.equal((await call(env, '/map/result', { ticket: at.ticket, win: true }, a.token)).status, 400);  // once
+  seen = await call(env, '/map', undefined, b.token);
+  assert.equal(seen.battles.length, 1); assert.equal(seen.battles[0][5], 1); assert.ok(seen.battles[0][4] > 0);   // ended, won
+  env.sql.prepare('UPDATE attacks SET ended = ended - ?').run(31 * 60e3);
+  assert.equal((await call(env, '/map', undefined, b.token)).battles.length, 0);              // half an hour later it's gone
 
   // b's land is shielded while b is new; when the shield is gone a can take it and b hears about it
   const bt = mb.plot.find(t => reachable(t, [...mine, target]));
