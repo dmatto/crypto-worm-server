@@ -1,7 +1,8 @@
 // The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play, /invite
 // (your invite link and friends so far), /help, /top, /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
 // /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
-// "Duel me" card. Admins also get /feedback and /sources.
+// "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
+// the week that ended, with the payout lines and the score logs as files).
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -13,6 +14,7 @@ function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.le
 import { friendCode } from './auth.js';
 import { cleanup as mapCleanup } from './map.js';
 import { holderCron } from './holders.js';
+import { adminList, cleanup as prizeCleanup, weekOf, prizeWeek, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
@@ -179,11 +181,29 @@ export async function webhook(req, env) {
       await tg(env, 'sendMessage', { chat_id, text: today ? '📣 Queued. A note already went out today, so this one goes to the group and every player tomorrow (one note a day).' : '📣 Sending now to the group and every Telegram player (except those who sent /stop).' }) }
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
+  else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) await sendPrize(env, chat_id, /last/i.test(arg));
   else if (cmd === '/feedback') {
     if (await isAdmin(env, m.from)) await sendCsv(env, chat_id);
     else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
   }
   return new Response('ok');
+}
+
+// /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and
+// the wallet balances are for the admin to check by hand before sending the tokens.
+async function sendPrize(env, chat_id, last) {
+  const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
+  if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
+  const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
+  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} · ${fmt(x.pts)} pts · ${fmt(x.prize)} $CWORM\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n    <code>${esc(x.wallet)}</code>`);
+  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} players did all 5 steps.\n\n` +
+    (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
+    '\n\nBefore paying: check each X username follows @CryptoWorm72, and the wallet still holds 100K. The group was checked just now.';
+  await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  if (!r.winners.length) return;
+  await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');
+  await sendDoc(env, chat_id, r.log, `weekly-prize-${d(w)}-score-log.csv`, 'Every score report of these players this week.');
+  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,amount) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
 }
 
 export async function setup(req, env, origin) {
@@ -211,7 +231,7 @@ export async function cron(env, now = Date.now()) {
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
-  for (const job of quarter ? [weekly, reminders, mapCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }

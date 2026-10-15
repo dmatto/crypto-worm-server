@@ -143,6 +143,7 @@ async function save(env, r, h, bal, now, snap) {
     ON CONFLICT(player) DO UPDATE SET wallet = excluded.wallet, balance = excluded.balance, tier = excluded.tier, tier_day = excluded.tier_day, streak_day = excluded.streak_day,
     below_day = excluded.below_day, checked = excluded.checked, snap_day = CASE WHEN ? THEN excluded.snap_day ELSE holders.snap_day END`)
     .bind(r.pid, r.pw, bal, h.tier, h.tier_day, h.streak_day, h.below_day, now, snap ? today(now) : 0, snap ? 1 : 0).run();
+  if (bal != null && bal < TIERS[1]) await env.DB.prepare('INSERT OR IGNORE INTO hold_dips (player, day) VALUES (?, ?)').bind(r.pid, today(now)).run();   // the weekly prize's "hold all week"
 }
 const fresh = r => (r.hw && r.hw !== r.pw ? {} : r);                  // a different wallet on the account starts over
 

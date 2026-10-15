@@ -25,7 +25,8 @@
 //   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
-//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?}], me, players}
+//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}
+//   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
@@ -44,6 +45,7 @@ import { webhook, setup, cron, tellAdmins } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
+import { handle as prizeHandle, logScore, tickets } from './prize.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -62,6 +64,7 @@ async function addScore(env, me, amount, imported) {
       s.week_start = week; s.week = 0 }
     amount = Math.min(amount, SCORE_MAX, Math.max(0, SCORE_DAY - s.day));
     s.total += amount; s.week += amount; s.day += amount; s.last = now;
+    await logScore(env, me.id, amount, now);                      // the weekly prize chart and its fair-play log
   }
   await env.DB.prepare(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(player) DO UPDATE SET total = excluded.total, week_start = excluded.week_start, week = excluded.week, day_start = excluded.day_start, day = excluded.day, last = excluded.last, imported = excluded.imported`)
@@ -79,7 +82,12 @@ async function ranking(env, period, me) {
   const rows = period === 'week'
     ? (await env.DB.prepare(`SELECT p.id, p.name, s.week AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC`).bind(since).all()).results
     : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
-  return { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me) };
+  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me) };
+  if (period === 'week') {                                        // 🎟️ next to players who did every weekly prize step
+    const t = await tickets(env, [...out.top.map(r => r.id), ...(out.me ? [out.me.id] : [])]).catch(() => new Set());
+    for (const r of [...out.top, ...(out.me ? [out.me] : [])]) if (t.has(r.id)) r.ticket = true;
+  }
+  return out;
 }
 const TIER_COL = 'COALESCE(h.tier, 0) AS tier', TIER_JOIN = 'LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet';   // holder badge next to the name
 function place(rows, me) {
@@ -152,12 +160,16 @@ async function link(env, me, target) {
     q('DELETE FROM cworm_scores WHERE player = ?', a),
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
     q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
+    q('UPDATE score_log SET player = ? WHERE player = ?', b, a),                        // weekly prize: points, play days, steps
+    q('UPDATE OR IGNORE play_days SET player = ? WHERE player = ?', b, a), q('DELETE FROM play_days WHERE player = ?', a),
+    q('UPDATE OR IGNORE prize_entry SET player = ? WHERE player = ?', b, a), q('DELETE FROM prize_entry WHERE player = ?', a),
     q('UPDATE OR IGNORE player_meta SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_meta WHERE player = ?', a),
     q('UPDATE player_meta SET invited_by = ? WHERE invited_by = ?', b, a),
     q('UPDATE land SET owner = ? WHERE owner = ?', b, a),                                // World Map land and upgrades follow the account
     q('UPDATE OR IGNORE landlords SET player = ? WHERE player = ?', b, a), q('DELETE FROM landlords WHERE player = ?', a),
     q('UPDATE attacks SET attacker = ? WHERE attacker = ?', b, a),
     q('UPDATE OR IGNORE holders SET player = ? WHERE player = ?', b, a), q('DELETE FROM holders WHERE player = ?', a),   // holder status follows the wallet
+    q('UPDATE OR IGNORE hold_dips SET player = ? WHERE player = ?', b, a), q('DELETE FROM hold_dips WHERE player = ?', a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -322,6 +334,10 @@ export default {
     if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), req.cf && req.cf.country), 200, cors);
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
+    if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
+      const r = await prizeHandle(path, env, me, body); if (!r) return json({ error: 'not found' }, 404, cors);
+      return json(r.error ? { error: r.error } : r, r.status || 200, cors);
+    }
     if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }

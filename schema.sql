@@ -91,6 +91,31 @@ CREATE TABLE IF NOT EXISTS rewards (       -- play-money $CWORM the server owes 
   claimed INTEGER
 );
 CREATE INDEX IF NOT EXISTS rewards_player ON rewards (player, claimed);
+CREATE TABLE IF NOT EXISTS score_log (     -- every score report (play-money $CWORM a match banked), for the weekly prize chart and its fair-play review; kept 5 weeks
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  amount  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS score_log_at ON score_log (at);
+CREATE INDEX IF NOT EXISTS score_log_player ON score_log (player, at);
+CREATE TABLE IF NOT EXISTS play_days (     -- UTC days a player finished a match (the prize's "play on 3 days")
+  player  INTEGER NOT NULL,
+  day     INTEGER NOT NULL,                -- UTC day number
+  PRIMARY KEY (player, day)
+);
+CREATE TABLE IF NOT EXISTS hold_dips (     -- days a wallet reading found less than 100K $CWORM (the prize's "hold all week")
+  player  INTEGER NOT NULL,
+  day     INTEGER NOT NULL,
+  PRIMARY KEY (player, day)
+);
+CREATE TABLE IF NOT EXISTS prize_entry (   -- the weekly prize steps a player did: X username typed, Telegram group membership as Telegram last said
+  player   INTEGER PRIMARY KEY,
+  x        TEXT,                           -- X username without @
+  x_at     INTEGER NOT NULL DEFAULT 0,
+  group_ok INTEGER NOT NULL DEFAULT 0,
+  group_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS reward_once (   -- invite bonuses paid at most once: 'loyal:<friend id>', 'mile:<friends>', 'share:<UTC day>'
   player  INTEGER NOT NULL,
   k       TEXT NOT NULL,

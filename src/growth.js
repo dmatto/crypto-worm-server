@@ -17,6 +17,7 @@
 import { tg } from './bot.js';
 import { friendCode } from './auth.js';
 import { newCode } from './match.js';
+import { logPlayDay } from './prize.js';
 
 export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
 // Invite & earn: on top of +200 for both when a friend finishes a first match, the inviter gets +300 when that friend has
@@ -122,6 +123,7 @@ export async function played(env, me, mode, cc) {
       daily = MAX(daily, ?), daily_day = CASE WHEN ? = 1 THEN ? ELSE daily_day END WHERE player = ? AND last_played < ? RETURNING *`)
     .bind(now, now, country(cc), daily, daily, day, me.id, now - PLAYED_GAP_MS).first();
   const m = r || await meta(env, me.id);
+  await logPlayDay(env, me.id, now);                                             // the weekly prize's "play on 3 days"
   if (r && r.played === 1 && r.invited_by && r.invite_paid == null) await payInvite(env, me, r);
   if (r && r.played === LOYAL_MATCHES && r.invited_by) await payLoyal(env, me, r);
   return { played: m ? m.played : 0, rewards: await claim(env, me.id) };
