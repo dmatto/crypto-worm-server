@@ -1,5 +1,5 @@
-// The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play, /help, /top,
-// /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
+// The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot, plus /play, /invite
+// (your invite link and friends so far), /help, /top, /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
 // /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
 // "Duel me" card. Admins also get /feedback and /sources.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
@@ -13,13 +13,14 @@ function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.le
 import { friendCode } from './auth.js';
 import { cleanup as mapCleanup } from './map.js';
 import { holderCron } from './holders.js';
-import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay } from './growth.js';
+import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
+  INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears in a Worms-style artillery game. Free to play right here in Telegram: ' +
   'battle the CPU, a friend or players online, smash Bear forts in the campaign, and unlock hats and special weapons. Tap Start, then Play!';
 export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 A free Worms-style game right inside Telegram. Tap Play!';
-export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
+export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn $CWORM' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
   { command: 'privacy', description: 'Privacy policy' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
 export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
 export const UPDATES = ['message', 'inline_query'];
@@ -33,6 +34,7 @@ export function welcomeText(name) {
     '🎯 Play the CPU, a friend on the same phone, or people online\n' +
     '🏰 A 24-level campaign against Bear forts\n' +
     '🗺️ 100+ maps, special weapons, hats and daily missions\n\n' +
+    `🎁 Invite friends: +${INVITE_REWARD} $CWORM for you and for them (send /invite)\n\n` +
     'It\'s free. The $CWORM coins in the game are play money, not real tokens.\n\n' +
     '💬 Join the Crypto Worm group and follow us on X with the buttons below.\n\nTap Play to start!';
 }
@@ -42,13 +44,16 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Pick weapons from the bar at the bottom. Blast the coins in the dirt to buy bigger ones.\n' +
   '• The market chart sets the wind: green blows right, red blows left.\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
+  '🎁 /invite gives you your invite link: +200 $CWORM for you and each friend who joins (play money).\n\n' +   // 200: INVITE_REWARD (growth.js loads after this file)
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
 // The Play button carries a source tag from the /start link (t.me/<bot>?start=s_<tag>), and the invite button the player's friend code.
+const shareUrl = (link, text) => 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text);
+export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and we both get +200 $CWORM in the game (play money).';
 function buttons(env, src, invite) {
   const play = gameLink(env, src ? 's_' + src : null), share = invite || env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play';
   return { inline_keyboard: [[{ text: '🎮 Play now', url: play }],
-    [{ text: '👥 Invite a friend (+200 for both)', url: 'https://t.me/share/url?url=' + encodeURIComponent(share) + '&text=' + encodeURIComponent('Fight me in Crypto Worm Wars! 🪱') }],
+    [{ text: `👥 Invite friends: +${INVITE_REWARD} $CWORM each`, url: shareUrl(share, invite ? SHARE_TEXT : 'Fight me in Crypto Worm Wars! 🪱') }],
     [{ text: '💬 Telegram group', url: COMMUNITY.group }, { text: '𝕏 Follow on X', url: COMMUNITY.x }]] };
 }
 
@@ -119,6 +124,20 @@ async function inviteLink(env, from) {
   const p = from && env.DB && await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
   return p ? gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)) : null;
 }
+// /invite: the player's invite link, what each friend pays and how many came so far.
+async function inviteMessage(env, from) {
+  const p = from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
+  const ladder = MILESTONES.map(x => `${x.n} friends: +${x.amount.toLocaleString('en-US')}${x.skin ? ' + ' + x.skin + ' skin' : ''}`).join('\n');
+  const how = `🎁 Invite friends, earn $CWORM\n\nFor every friend who opens your link and finishes a first match:\n• +${INVITE_REWARD} $CWORM for you\n• +${INVITE_REWARD} $CWORM for your friend\n` +
+    `• +${LOYAL_REWARD} more for you when they have played ${LOYAL_MATCHES} matches\n\nBonuses:\n${ladder}\n\n`;
+  if (!p) return { text: how + 'Open the game once to get your own invite link, then send /invite again.\n\n(Play money in the game, not real tokens.)',
+    reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } };
+  const link = gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)), r = await invites(env, p);
+  const so = r.joined ? `Your friends so far: ${r.counted} played${r.joined > r.counted ? `, ${r.joined - r.counted} still to finish a first match` : ''}. You earned ${r.earned.toLocaleString('en-US')} $CWORM from invites.` : 'No friends joined yet. Be the first to bring your crew!';
+  return { text: how + so + (r.next ? `\nNext bonus at ${r.next.n} friends.` : '') + `\n\nYour invite link:\n${link}\n\n(Play money in the game, not real tokens.)`,
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [[{ text: '📤 Share my invite link', url: shareUrl(link, SHARE_TEXT) }], [{ text: '🎮 Play', url: gameLink(env, 'invite') }]] } };
+}
 
 export async function webhook(req, env) {
   if (!same(req.headers.get('X-Telegram-Bot-Api-Secret-Token') || '', await webhookSecret(env))) return new Response('forbidden', { status: 403 });
@@ -146,6 +165,7 @@ export async function webhook(req, env) {
     if (!sent.ok) await tg(env, 'sendMessage', { chat_id, text: caption, reply_markup: kb });
   } else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from)) });
   else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from)) });
+  else if ((cmd === '/invite' || cmd === '/ref') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await inviteMessage(env, m.from) });
   else if (cmd === '/top' && env.DB) await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
   else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
   else if (cmd === '/stop') {

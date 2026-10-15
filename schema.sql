@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS rewards (       -- play-money $CWORM the server owes 
   claimed INTEGER
 );
 CREATE INDEX IF NOT EXISTS rewards_player ON rewards (player, claimed);
+CREATE TABLE IF NOT EXISTS reward_once (   -- invite bonuses paid at most once: 'loyal:<friend id>', 'mile:<friends>', 'share:<UTC day>'
+  player  INTEGER NOT NULL,
+  k       TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (player, k)
+);
 CREATE TABLE IF NOT EXISTS week_scores (   -- last week's play-money $CWORM gained, kept when a player's week rolls over (for the Monday top 10)
   week_start INTEGER NOT NULL,
   player     INTEGER NOT NULL,

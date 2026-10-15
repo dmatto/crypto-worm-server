@@ -29,7 +29,7 @@
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
-//   POST /started, /played, /rewards, /share/prepare, /me/remind  started and finished matches, invite rewards, share cards, reminders (see growth.js)
+//   POST /started, /played, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
@@ -42,7 +42,7 @@ import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { webhook, setup, cron, tellAdmins } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind } from './growth.js';
+import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 export { Match, Lobby };
 
@@ -151,6 +151,7 @@ async function link(env, me, target) {
        week_start = MAX(week_start, excluded.week_start), imported = MAX(imported, excluded.imported), last = MAX(last, excluded.last)`, b, a),
     q('DELETE FROM cworm_scores WHERE player = ?', a),
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
+    q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
     q('UPDATE OR IGNORE player_meta SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_meta WHERE player = ?', a),
     q('UPDATE player_meta SET invited_by = ? WHERE invited_by = ?', b, a),
     q('UPDATE land SET owner = ? WHERE owner = ?', b, a),                                // World Map land and upgrades follow the account
@@ -320,6 +321,8 @@ export default {
     if (path === '/started' && req.method === 'POST') return json(await started(env, me), 200, cors);
     if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), req.cf && req.cf.country), 200, cors);
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
+    if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
+    if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
     if (path === '/holder' || path.startsWith('/holder/')) {

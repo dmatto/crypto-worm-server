@@ -5,6 +5,8 @@
 //   POST /started  {mode}                -> {ok}        the game started a match or a mini game (counted once per player)
 //   POST /played   {mode}                -> {played, rewards: [{amount, reason, note}]}   the game finished a match (any mode)
 //   POST /rewards                        -> {rewards}   play money the server owes this player (invite rewards), claimed once
+//   GET  /invites                        -> {joined, counted, loyal, earned, next, milestones, friends, shared}   the Invite page
+//   POST /share/done {via}               -> {bonus, rewards}   the player shared their invite link: +30 once per UTC day
 //   POST /share/prepare {kind, hp}       -> {id}        a prepared challenge card for Telegram.WebApp.shareMessage
 //   POST /me/remind {on}                 -> {remind}    bot reminders on or off (Settings)
 //
@@ -17,6 +19,12 @@ import { friendCode } from './auth.js';
 import { newCode } from './match.js';
 
 export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
+// Invite & earn: on top of +200 for both when a friend finishes a first match, the inviter gets +300 when that friend has
+// played 5 matches, and a bonus at 3, 5, 10, 25 and 50 friends (friends who finished a first match). Three of the bonuses
+// unlock invite-only skins in the game's store. Sharing the invite link pays +30 once a day. All play money.
+export const LOYAL_REWARD = 300, LOYAL_MATCHES = 5, SHARE_BONUS = 30;
+export const MILESTONES = [{ n: 3, amount: 500, skin: 'Coral crew' }, { n: 5, amount: 1000 }, { n: 10, amount: 2500, skin: 'Ambassador' },
+  { n: 25, amount: 5000, skin: 'Influencer' }, { n: 50, amount: 10000 }];
 const DAY = 864e5, REMIND_GAP = 20 * 3600e3, ACTIVE_MS = 7 * DAY, RECENT_MS = 2 * 3600e3, REMIND_MAX = 100, DAILY_HOUR = 16;
 
 // Monday 00:00 UTC of this week: the weekly ranking starts over then.
@@ -53,17 +61,47 @@ export async function claim(env, id) {
   return results || [];
 }
 
+const addReward = (env, p, amount, reason, note, now = Date.now()) => env.DB.prepare('INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, ?, ?, ?)').bind(p, amount, reason, note, now);
+// A bonus that may be paid once per player and key: true when this call paid it.
+async function once(env, player, k, amount, reason, note) {
+  const r = await env.DB.prepare('INSERT OR IGNORE INTO reward_once (player, k, created) VALUES (?, ?, ?)').bind(player, k, Date.now()).run();
+  if (!(r && (r.meta ? r.meta.changes : r.changes))) return false;
+  await addReward(env, player, amount, reason, note).run(); return true;
+}
+// Friends who joined with this player's link and finished a first match (and got the reward: not the ones past the daily cap).
+const counted = (env, id) => env.DB.prepare('SELECT COUNT(*) AS n FROM player_meta WHERE invited_by = ? AND invite_paid > 0').bind(id).first().then(r => r ? r.n : 0);
+const nextMilestone = n => MILESTONES.find(x => x.n > n) || null;
+// Pays every friend-count bonus reached so far that wasn't paid yet; returns the ones paid now.
+async function payMilestones(env, id) {
+  const n = await counted(env, id), paid = [];
+  for (const x of MILESTONES) if (x.n <= n && await once(env, id, 'mile:' + x.n, x.amount, 'milestone', String(x.n))) paid.push(x);
+  return { n, paid };
+}
+const dm = (env, p, text) => p && p.tg_id != null && env.BOT_TOKEN ? tg(env, 'sendMessage', { chat_id: p.tg_id, text,
+  reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }, { text: '🎁 Invite more friends', url: gameLink(env, 'invite') }]] } }).catch(() => { }) : null;
+const fmt = n => n.toLocaleString('en-US');
+const mileLine = x => `🏅 ${x.n} friends! Bonus +${fmt(x.amount)} $CWORM${x.skin ? ` and the invite-only ${x.skin} skin` : ''}.`;
+const nextLine = n => { const x = nextMilestone(n); return x ? `Next bonus: +${fmt(x.amount)} $CWORM at ${x.n} friends (${x.n - n} to go).` : 'You reached every invite bonus. Legend! 👑' };
+
 async function payInvite(env, me, m) {
   const inviter = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(m.invited_by).first();
   if (!inviter) return;
   const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM rewards WHERE player = ? AND reason = 'invite' AND created > ?").bind(inviter.id, Date.now() - DAY).first();
   if (n.n >= INVITES_PER_DAY) { await env.DB.prepare('UPDATE player_meta SET invite_paid = 0 WHERE player = ?').bind(me.id).run(); return }
-  const now = Date.now(), add = (p, reason, note) => env.DB.prepare('INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, ?, ?, ?)').bind(p, INVITE_REWARD, reason, note, now);
-  await env.DB.batch([add(inviter.id, 'invite', me.name), add(me.id, 'invited', inviter.name),
+  const now = Date.now();
+  await env.DB.batch([addReward(env, inviter.id, INVITE_REWARD, 'invite', me.name, now), addReward(env, me.id, INVITE_REWARD, 'invited', inviter.name, now),
     env.DB.prepare('UPDATE player_meta SET invite_paid = ? WHERE player = ?').bind(now, me.id)]);
-  if (inviter.tg_id != null && env.BOT_TOKEN) await tg(env, 'sendMessage', { chat_id: inviter.tg_id, text:
-    `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n+${INVITE_REWARD} $CWORM for each of you. It lands in your game wallet next time you open the game. (Play money, not real tokens.)`,
-    reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } }).catch(() => { });
+  const ms = await payMilestones(env, inviter.id);
+  await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n+${INVITE_REWARD} $CWORM for each of you. ` +
+    `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${LOYAL_REWARD} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
+    `Friends so far: ${ms.n}. ${nextLine(ms.n)}\n\nIt all lands in your game wallet next time you open the game. (Play money, not real tokens.)`);
+}
+// A friend who came through an invite kept playing: +300 for the inviter, once per friend.
+async function payLoyal(env, me, m) {
+  if (!(m.invite_paid > 0)) return;
+  const inviter = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(m.invited_by).first();
+  if (!inviter || !await once(env, inviter.id, 'loyal:' + me.id, LOYAL_REWARD, 'loyal', me.name)) return;
+  await dm(env, inviter, `🔥 ${me.name} has played ${LOYAL_MATCHES} matches since joining with your invite! +${LOYAL_REWARD} $CWORM for you. (Play money, not real tokens.)`);
 }
 
 // The game started a match or a mini game. The first start puts the player in the players count on Home (GET /stats),
@@ -85,6 +123,7 @@ export async function played(env, me, mode, cc) {
     .bind(now, now, country(cc), daily, daily, day, me.id, now - PLAYED_GAP_MS).first();
   const m = r || await meta(env, me.id);
   if (r && r.played === 1 && r.invited_by && r.invite_paid == null) await payInvite(env, me, r);
+  if (r && r.played === LOYAL_MATCHES && r.invited_by) await payLoyal(env, me, r);
   return { played: m ? m.played : 0, rewards: await claim(env, me.id) };
 }
 
@@ -94,25 +133,55 @@ export async function setRemind(env, me, on) {
   return { remind: !!on };
 }
 
+// ---- Invite & earn ----
+// The game's Invite page: how many friends joined, what they earned this player, the bonus ladder and the friends list.
+// Opening it also pays any bonus already earned but not paid yet (friends from before the bonuses existed), and hands back
+// the rewards waiting for this player.
+export async function invites(env, me) {
+  const { results } = await env.DB.prepare(`SELECT p.id, p.name, p.created, m.played, m.invite_paid FROM player_meta m JOIN players p ON p.id = m.player
+      WHERE m.invited_by = ? ORDER BY p.created DESC LIMIT 200`).bind(me.id).all();
+  const owed = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES);
+  if (owed.length) { const { results: got } = await env.DB.prepare("SELECT k FROM reward_once WHERE player = ? AND k LIKE 'loyal:%'").bind(me.id).all(), have = new Set(got.map(g => g.k));
+    for (const r of owed) if (!have.has('loyal:' + r.id)) await once(env, me.id, 'loyal:' + r.id, LOYAL_REWARD, 'loyal', r.name) }
+  await payMilestones(env, me.id);
+  const n = results.filter(r => r.invite_paid > 0).length, loyal = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES).length;
+  const e = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM rewards WHERE player = ? AND reason IN ('invite', 'loyal', 'milestone')").bind(me.id).first();
+  const shared = !!await env.DB.prepare('SELECT 1 FROM reward_once WHERE player = ? AND k = ?').bind(me.id, 'share:' + utcDay()).first();
+  return { reward: INVITE_REWARD, loyalReward: LOYAL_REWARD, loyalAt: LOYAL_MATCHES, shareBonus: SHARE_BONUS, perDay: INVITES_PER_DAY,
+    joined: results.length, counted: n, loyal, earned: e ? e.s : 0, shared, next: nextMilestone(n), rewards: await claim(env, me.id),
+    milestones: MILESTONES.map(x => ({ ...x, got: n >= x.n })),
+    friends: results.slice(0, 50).map(r => ({ name: r.name, at: r.created, played: Math.min(r.played, LOYAL_MATCHES),
+      state: r.invite_paid > 0 ? (r.played >= LOYAL_MATCHES ? 'loyal' : 'played') : r.invite_paid === 0 ? 'capped' : 'waiting' })) };
+}
+// The player shared their invite link (the game says so when Telegram or the phone's share sheet reports it went out).
+export async function shareDone(env, me) {
+  const bonus = await once(env, me.id, 'share:' + utcDay(), SHARE_BONUS, 'share', null);
+  return { bonus, rewards: await claim(env, me.id) };
+}
+
 // ---- share cards ----
-const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg' };
+const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg' };
 export const cardUrl = (env, k) => site(env) + '/cards/' + CARDS[k];
+export const INVITE_LINE = `🎁 Join with my link and we both get +${INVITE_REWARD} $CWORM in the game (play money).`;
 export function challengeCaption(kind, hp) {
   hp = Math.max(0, Math.min(300, Math.round(Number(hp) || 0)));
   if (kind === 'win') return `🏆 I just won a Crypto Worm Wars battle${hp ? ` with ${hp} HP left` : ''}. Think you can beat me? Tap Play and fight me! 🪱`;
   if (kind === 'loss') return '😤 I just lost a Crypto Worm Wars battle. Bet you can\'t do better. Tap Play and show me! 🪱';
+  if (kind === 'invite') return '🪱 Come play Crypto Worm Wars with me! Bulls vs Bears worm battles right here in Telegram, free, no download.';
   return '⚔️ Fight me in Crypto Worm Wars! Worms-style battles right here in Telegram, free, no download. Tap Play 🪱';
 }
 async function cardResult(env, player, kind, hp, id) {
-  const code = player ? await friendCode(player.id, env.SESSION_SECRET) : null, img = cardUrl(env, kind === 'win' ? 'win' : 'duel');
+  const code = player ? await friendCode(player.id, env.SESSION_SECRET) : null, img = cardUrl(env, kind === 'win' ? 'win' : kind === 'invite' ? 'invite' : 'duel');
+  const inv = kind === 'invite';
   return { type: 'photo', id: id || crypto.randomUUID().slice(0, 32), photo_url: img, thumbnail_url: img, photo_width: 1280, photo_height: 720,
-    title: 'Duel me', description: 'Send a challenge card with a Play button', caption: challengeCaption(kind, hp),
-    reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env, code ? 'f_' + code : null) }]] } };
+    title: inv ? 'Invite a friend' : 'Duel me', description: inv ? `You both get +${INVITE_REWARD} $CWORM in the game` : 'Send a challenge card with a Play button',
+    caption: challengeCaption(kind, hp) + (code ? '\n\n' + INVITE_LINE : ''),
+    reply_markup: { inline_keyboard: [[{ text: inv ? '🎮 Play with me' : '🎮 Play', url: gameLink(env, code ? 'f_' + code : null) }]] } };
 }
 // The end screen's "Challenge a friend": Telegram keeps the card for us, the game opens the share dialog with its id.
 export async function prepareShare(env, me, body) {
   if (me.tg_id == null) return { error: 'sign in with Telegram first', status: 400 };
-  const kind = ['win', 'loss', 'duel'].includes(body.kind) ? body.kind : 'duel';
+  const kind = ['win', 'loss', 'duel', 'invite'].includes(body.kind) ? body.kind : 'duel';
   const r = await tg(env, 'savePreparedInlineMessage', { user_id: me.tg_id, result: await cardResult(env, me, kind, body.hp),
     allow_user_chats: true, allow_bot_chats: false, allow_group_chats: true, allow_channel_chats: true });
   return r && r.ok && r.result ? { id: r.result.id } : { error: 'Telegram did not prepare the card', status: 502 };
@@ -122,7 +191,7 @@ export async function prepareShare(env, me, body) {
 export async function inlineQuery(env, q) {
   const p = await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(q.from.id).first();
   const code = p ? await friendCode(p.id, env.SESSION_SECRET) : null;
-  const results = [await cardResult(env, p, 'duel', 0, 'duel'),
+  const results = [...(code ? [await cardResult(env, p, 'invite', 0, 'invite')] : []), await cardResult(env, p, 'duel', 0, 'duel'),
     { type: 'article', id: 'play', title: 'Play Crypto Worm Wars', description: 'Bulls vs Bears worm battles, free in Telegram', thumbnail_url: cardUrl(env, 'win'),
       input_message_content: { message_text: '🪱 Crypto Worm Wars: Bulls vs Bears in a Worms-style battle, free right here in Telegram. Come play with me!' },
       reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env, code ? 'f_' + code : null) }]] } }];
