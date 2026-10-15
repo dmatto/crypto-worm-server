@@ -16,7 +16,7 @@ globalThis.fetch = async (url, init) => {
   return Response.json({ ok: true, result: {} });
 };
 const { default: worker } = await import('../src/index.js');
-const { webhook } = await import('../src/bot.js');
+const { webhook, cron } = await import('../src/bot.js');
 const P = await import('../src/prize.js');
 
 const DAY = 864e5, MON = P.FIRST_WEEK, at = (d, h = 10) => MON + d * DAY + h * 3600e3;   // d days after Monday 19 Oct, at h:00 UTC
@@ -119,7 +119,7 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   let s = (await call(env, '/prize', undefined, none.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.linked, false);
   s = (await call(env, '/prize', undefined, low.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.low, true);
   s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);
-  s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 5);
+  s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 5); assert.equal(s.age.from, MON + 7 * DAY);
   // an account made Friday 16 Oct is 10 days old at the first payout (too young) and 17 at the next one
   assert.equal(P.steps({ created: MON - 3 * DAY }, MON, MON).age.ok, false);
   assert.equal(P.steps({ created: MON - 3 * DAY }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
@@ -159,10 +159,17 @@ test('prize: /prize gives admins the eligible top 10 with the group asked again,
   calls.length = 0;
   await hook(env, { message: { chat: { id: 100, type: 'private' }, from: { id: 100, first_name: 'Worm0' }, text: '/prize' } });
   assert.ok(!calls.some(([m]) => m === 'sendDocument'));
+  const tip = calls.find(([m]) => m === 'sendMessage')[1].text;                      // a pointer to the game, with no token name or amounts
+  assert.match(tip, /Weekly prizes/); assert.match(tip, /prize\.html/); assert.doesNotMatch(tip, /CWORM|000/);
   // this week has nothing yet; before the first week, /prize last says so
   clock = at(-3); calls.length = 0;
   await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
   assert.match(calls.find(([m]) => m === 'sendMessage')[1].text, /No prize week has ended yet/);
+  // once a day the cron asks Telegram about the first admin, so a bot that can't see members shows up in bot_kv
+  members.set(7, 'administrator'); env.LOBBY = { idFromName: n => n, get: () => ({ fetch: async () => Response.json({}) }) };
+  const q = Math.floor(at(9) / 9e5) * 9e5; calls.length = 0; await cron(env, q); await cron(env, q + 9e5);
+  assert.equal(calls.filter(([m, b]) => m === 'getChatMember' && b.chat_id === -1002191131055 && b.user_id === 7).length, 1);
+  assert.deepEqual(JSON.parse(env.sql.prepare("SELECT v FROM bot_kv WHERE k = 'prize_probe'").get().v), { day: Math.floor(q / DAY), at: q, ok: true, status: 'administrator', error: null });
   // cleanup keeps 35 days
   env.sql.prepare('INSERT INTO score_log (player, at, amount) VALUES (?, ?, ?)').run(ps[0].id, at(39), 10);
   await P.cleanup(env, at(40));

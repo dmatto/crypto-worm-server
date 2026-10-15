@@ -63,9 +63,11 @@ export function steps(r, w, now = Date.now()) {
     wallet: { done: holder, linked: !!r.wallet, checking: !!r.wallet && !holder && !(r.checked > 0 && r.hw === r.wallet), low: wallet && r.checked > 0 && !holder },
     hold: { done: onTrack, days: started ? held : 0, nextWeek: holder && !onTrack },
     days: { done: (r.days || 0) >= PLAY_DAYS, n: Math.min(PLAY_DAYS, r.days || 0) },
-    age: { ok: r.created <= w + WEEK - MIN_AGE_DAYS * DAY, days: Math.floor((now - r.created) / DAY) },
+    age: { ok: r.created <= w + WEEK - MIN_AGE_DAYS * DAY, days: Math.floor((now - r.created) / DAY), from: firstWeek(r.created) },
   };
 }
+// The first prize week an account is old enough for: 14 days old by that week's Monday payout.
+const firstWeek = created => { const t = created + MIN_AGE_DAYS * DAY - WEEK, m = weekOf(t); return Math.max(FIRST_WEEK, m < t ? m + WEEK : m) };
 const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && s.days.done;
 
 // The prize chart of week `w`: players who did all five steps (and are old enough), by prize points.
@@ -81,10 +83,14 @@ export async function tickets(env, ids, now = Date.now()) {
   return out;
 }
 
-// Telegram: is this player in the community group? null when Telegram didn't answer.
-export async function inGroup(env, tgId) {
+// Telegram's answer about a player in the community group (the bot must be an admin there to see members).
+export async function member(env, tgId) {
   const group = env.PRIZE_GROUP || await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'group'").first().then(r => r && r.v).catch(() => null) || '@CryptoWorm_Group';
-  const r = await tg(env, 'getChatMember', { chat_id: /^-?\d+$/.test(group) ? Number(group) : group, user_id: tgId }).catch(() => null);
+  return tg(env, 'getChatMember', { chat_id: /^-?\d+$/.test(group) ? Number(group) : group, user_id: tgId }).catch(() => null);
+}
+// Is this player in the community group? null when Telegram didn't answer.
+export async function inGroup(env, tgId) {
+  const r = await member(env, tgId);
   if (!r || !r.ok || !r.result) return r && r.error_code === 400 ? false : null;            // 400: not a member Telegram knows of
   const st = r.result.status;
   return st === 'creator' || st === 'administrator' || st === 'member' || (st === 'restricted' && !!r.result.is_member);

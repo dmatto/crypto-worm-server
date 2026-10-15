@@ -14,7 +14,7 @@ function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.le
 import { friendCode } from './auth.js';
 import { cleanup as mapCleanup } from './map.js';
 import { holderCron } from './holders.js';
-import { adminList, cleanup as prizeCleanup, weekOf, prizeWeek, FIRST_WEEK } from './prize.js';
+import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
@@ -182,6 +182,8 @@ export async function webhook(req, env) {
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) await sendPrize(env, chat_id, /last/i.test(arg));
+  else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
+    text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });
   else if (cmd === '/feedback') {
     if (await isAdmin(env, m.from)) await sendCsv(env, chat_id);
     else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
@@ -204,6 +206,17 @@ async function sendPrize(env, chat_id, last) {
   await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');
   await sendDoc(env, chat_id, r.log, `weekly-prize-${d(w)}-score-log.csv`, 'Every score report of these players this week.');
   await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,amount) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+}
+
+// Once a day the bot asks Telegram about the first admin's place in the group, the same question the weekly prize's group
+// step asks for every player, and keeps the answer in bot_kv 'prize_probe': a bot that can't see members shows up there.
+async function prizeProbe(env, now) {
+  const day = Math.floor(now / 864e5), last = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'prize_probe'").first().catch(() => null);
+  if (last && JSON.parse(last.v).day === day) return;
+  const [id] = await adminTgIds(env); if (id == null) return;
+  const r = await member(env, id) || {};
+  await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('prize_probe', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .bind(JSON.stringify({ day, at: now, ok: !!r.ok, status: r.result ? r.result.status : null, error: r.ok ? null : r.description || 'no answer' })).run();
 }
 
 export async function setup(req, env, origin) {
@@ -231,7 +244,7 @@ export async function cron(env, now = Date.now()) {
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
-  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }
