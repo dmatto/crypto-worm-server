@@ -1,14 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 // Stand-ins: node:sqlite for D1, a clock the test moves, and Telegram's Bot API recorded in `calls` (group members in `members`).
 const RealResponse = globalThis.Response, realNow = Date.now;
 globalThis.Response = class extends RealResponse { constructor(b, i = {}) { super(b, i.status === 101 ? { status: 200 } : i); this.ws = i.webSocket } static json(b, i) { return new globalThis.Response(JSON.stringify(b), { ...i, headers: { 'content-type': 'application/json' } }) } };
-const calls = [], members = new Map();
+const calls = [], members = new Map(), bal = new Map(), ataOf = new Map(), TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 globalThis.fetch = async (url, init) => {
+  if (String(url).startsWith('https://rpc.test')) {                                  // Solana: the $CWORM in each wallet (`bal`)
+    const body = JSON.parse(init.body), one = r => r.method === 'getAccountInfo' ? { id: r.id, result: { value: { owner: TOKEN } } }
+      : r.method === 'getMultipleAccounts' && r.params[1].encoding === 'jsonParsed' && r.params[0].every(a => ataOf.has(a)) ? { id: r.id, result: { value: r.params[0].map(a => { const n = bal.get(ataOf.get(a));
+          return n == null ? null : { owner: TOKEN, data: { parsed: { info: { tokenAmount: { uiAmountString: String(n) } } } } } }) } } : { id: r.id, error: { message: 'no' } };
+    return Response.json(Array.isArray(body) ? body.map(one) : one(body));
+  }
   const method = String(url).split('/').pop();
   if (init.body instanceof FormData) { const doc = init.body.get('document'), bytes = Buffer.from(await doc.arrayBuffer()); calls.push([method, { chat_id: init.body.get('chat_id'), file: doc.name, bytes, csv: bytes.toString('utf8') }]); return Response.json({ ok: true, result: {} }) }
   const body = JSON.parse(init.body); calls.push([method, body]);
@@ -18,6 +24,7 @@ globalThis.fetch = async (url, init) => {
 const { default: worker } = await import('../src/index.js');
 const { webhook, cron } = await import('../src/bot.js');
 const P = await import('../src/prize.js');
+const H = await import('../src/holders.js');
 
 const DAY = 864e5, MON = P.FIRST_WEEK, at = (d, h = 10) => MON + d * DAY + h * 3600e3;   // d days after Monday 19 Oct, at h:00 UTC
 let clock = realNow(); Date.now = () => clock;
@@ -111,7 +118,7 @@ test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ran
 
 test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from mid-week, a new account, someone who left the group', async () => {
   clock = at(0, 8);
-  const env = makeEnv();
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
   const none = await player(env, 50, 'NoWallet'), low = await player(env, 51, 'Low', { wallet: 'LowWa11et1111111111111111111111111', bal: 5000 });
   const late = await player(env, 52, 'Late', { wallet: 'LateWa11et111111111111111111111111', since: Math.floor(at(2) / DAY) });
   const young = await player(env, 53, 'Young', { age: 3, wallet: 'YoungWa11et11111111111111111111111' });
@@ -120,6 +127,13 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   s = (await call(env, '/prize', undefined, low.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.low, true);
   s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);
   s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 5); assert.equal(s.age.from, MON + 7 * DAY);
+  // without SOLANA_RPC the free hosts rarely answer: a linked wallet never read counts until Monday's live check, a holder
+  // from mid-week counts too, and a wallet read under 100K still doesn't
+  delete env.SOLANA_RPC;
+  const unread = await player(env, 54, 'Unread'); env.sql.prepare('UPDATE players SET wallet = ? WHERE id = ?').run('UnreadWa11et111111111111111111111', unread.id);
+  s = (await call(env, '/prize', undefined, unread.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.wallet.pending, true); assert.equal(s.hold.done, true); assert.equal(s.hold.days, 3);
+  assert.equal((await call(env, '/prize', undefined, late.token)).steps.hold.done, true);
+  assert.equal((await call(env, '/prize', undefined, low.token)).steps.wallet.done, false);
   // an account made Friday 16 Oct is 10 days old at the first payout (too young) and 17 at the next one
   assert.equal(P.steps({ created: MON - 3 * DAY }, MON, MON).age.ok, false);
   assert.equal(P.steps({ created: MON - 3 * DAY }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
@@ -132,9 +146,10 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
 
 test('prize: /prize gives admins the eligible top 10 with the group asked again, the CSVs and the payout lines; logs are kept 5 weeks', async () => {
   clock = at(0, 8); calls.length = 0;
-  const env = makeEnv({ PRIZE_GROUP: '-1002191131055' }), ps = [];
+  const env = makeEnv({ PRIZE_GROUP: '-1002191131055', SOLANA_RPC: 'https://rpc.test/' }), ps = [], wal = [];
   for (let i = 0; i < 12; i++) {
-    const p = await player(env, 100 + i, 'Worm' + i, { wallet: ('Wal' + String(i).padStart(2, '0')).padEnd(32, '1') });
+    const w = H.b58(randomBytes(32)); wal.push(w); ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, i === 9 ? 50000 : 150000);   // Worm9 sold
+    const p = await player(env, 100 + i, 'Worm' + i, { wallet: w });
     members.set(100 + i, 'member'); env.sql.prepare('INSERT INTO prize_entry (player, x, group_ok, group_at) VALUES (?, ?, 1, ?)').run(p.id, 'worm' + i, clock);
     for (const d of [0, 1, 2]) { await play(env, p, at(d, 10) + i * 1e3); await score(env, p, 100 + i * 10, at(d, 11) + i * 1e3) }
     ps.push(p);
@@ -146,15 +161,17 @@ test('prize: /prize gives admins the eligible top 10 with the group asked again,
   await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
   const text = calls.find(([m]) => m === 'sendMessage')[1].text;
   assert.match(text, /Weekly prize 2026-10-19 to 2026-10-25/); assert.match(text, /12 players did all 5 steps/);
-  assert.match(text, /1\. Worm10 · 600 pts · 250,000 \$CWORM/); assert.doesNotMatch(text, /Worm11/); assert.match(text, /Next in line: Worm0/);
+  assert.match(text, /1\. Worm10 · 600 pts · 250,000 \$CWORM/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line/);
+  assert.match(text, /Dropped just now: Worm11 \(left the group\), Worm9 \(holds 50,000\)/);
   assert.match(text, /X @worm3 · 4 reports, max 130\/hour, 1 at night/);
   const docs = calls.filter(([m]) => m === 'sendDocument').map(([, b]) => b);
   assert.deepEqual(docs.map(d => d.file), ['weekly-prize-2026-10-19.csv', 'weekly-prize-2026-10-19-score-log.csv']);
   for (const d of docs) { assert.equal(d.bytes.subarray(0, 3).toString('hex'), 'efbbbf'); assert.notEqual(d.bytes.subarray(3, 6).toString('hex'), 'efbbbf') }   // one BOM, so Excel reads the names
   const rows = docs[0].csv.slice(1).trim().split('\r\n');
-  assert.equal(rows.length, 11); assert.match(rows[1], /^1,250000,Worm10,/); assert.match(rows[10], /^10,65000,Worm1,/);
+  assert.equal(rows.length, 11); assert.match(rows[1], /^1,250000,Worm10,/); assert.match(rows[2], /^2,170000,Worm8,/); assert.match(rows[10], /^10,65000,Worm0,/);
+  assert.ok(rows[1].includes(',150000,150000,'));                                   // the balance now and the last daily reading
   const pay = calls.filter(([m]) => m === 'sendMessage').pop()[1].text;
-  assert.match(pay, new RegExp(('Wal10').padEnd(32, '1') + ',250000')); assert.equal((pay.match(/,65000/g) || []).length, 6); assert.equal((pay.match(/,70000/g) || []).length, 1);
+  assert.ok(pay.includes(wal[10] + ',250000\n' + wal[8] + ',170000')); assert.equal((pay.match(/,65000/g) || []).length, 6); assert.equal((pay.match(/,70000/g) || []).length, 1);
   // everyone else gets nothing from /prize
   calls.length = 0;
   await hook(env, { message: { chat: { id: 100, type: 'private' }, from: { id: 100, first_name: 'Worm0' }, text: '/prize' } });

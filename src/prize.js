@@ -11,6 +11,7 @@
 //   POST /prize/x {handle}     -> same, with the X username saved ('' clears it)
 
 import { tg } from './bot.js';
+import { balances } from './holders.js';
 
 export const PRIZES = [250000, 170000, 120000, 70000, 65000, 65000, 65000, 65000, 65000, 65000];   // 1,000,000 (the table in the plan added up to 995,000; 4th gets the 5,000)
 export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, MIN_AGE_DAYS = 14;
@@ -52,16 +53,20 @@ async function rows(env, ids, w) {
   const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Set(dips.results.map(r => r.player));
   return new Map(p.results.map(r => [r.id, { ...r, days: days.get(r.id) || 0, dipped: dipped.has(r.id) }]));
 }
+// Without SOLANA_RPC the daily wallet reading mostly fails on the free public hosts. Then (loose) a linked wallet that was
+// never read counts for now, holding is "no reading under 100K this week", and /prize reads the top wallets live on Monday.
+export const loose = env => !env.SOLANA_RPC;
 // The five steps (and the account age) for one player row; `now` decides how far into the week the hold counter is.
-export function steps(r, w, now = Date.now()) {
-  const W = day(w), wallet = !!(r.wallet && r.hw === r.wallet), holder = wallet && r.tier >= 1, started = now >= w;
-  const onTrack = holder && r.streak_day != null && r.streak_day <= W && !r.dipped;
+export function steps(r, w, now = Date.now(), lax = false) {
+  const W = day(w), wallet = !!(r.wallet && r.hw === r.wallet), read = wallet && r.checked > 0, holder = wallet && r.tier >= 1, started = now >= w;
+  const pending = lax && !!r.wallet && !holder && !read;
+  const onTrack = (holder || pending) && !r.dipped && (lax || r.streak_day != null && r.streak_day <= W);
   const held = onTrack ? Math.max(0, Math.min(7, day(now) - W + 1)) : 0;
   return {
     group: { done: !!r.group_ok, tg: r.tg_id != null },
     x: { done: !!r.x, handle: r.x ? '@' + r.x : null },
-    wallet: { done: holder, linked: !!r.wallet, checking: !!r.wallet && !holder && !(r.checked > 0 && r.hw === r.wallet), low: wallet && r.checked > 0 && !holder },
-    hold: { done: onTrack, days: started ? held : 0, nextWeek: holder && !onTrack },
+    wallet: { done: holder || pending, linked: !!r.wallet, checking: !!r.wallet && !holder && !read && !pending, low: read && !holder, pending },
+    hold: { done: onTrack, days: started ? held : 0, nextWeek: (holder || pending) && !onTrack },
     days: { done: (r.days || 0) >= PLAY_DAYS, n: Math.min(PLAY_DAYS, r.days || 0) },
     age: { ok: r.created <= w + WEEK - MIN_AGE_DAYS * DAY, days: Math.floor((now - r.created) / DAY), from: firstWeek(r.created) },
   };
@@ -73,13 +78,13 @@ const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && 
 // The prize chart of week `w`: players who did all five steps (and are old enough), by prize points.
 export async function chart(env, w, now = Date.now()) {
   const pts = await points(env, w), info = await rows(env, pts.map(p => p.player), w), out = [];
-  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw }) }
+  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw }) }
   return out;
 }
 export async function tickets(env, ids, now = Date.now()) {
   const w = prizeWeek(now); if (now < w) return new Set();
   const info = await rows(env, ids, w), out = new Set();
-  for (const [id, r] of info) { const s = steps(r, w, now); if (doneOf(s) && s.age.ok) out.add(id) }
+  for (const [id, r] of info) { const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.add(id) }
   return out;
 }
 
@@ -106,7 +111,7 @@ async function checkGroup(env, me, force, now = Date.now()) {
 
 export async function card(env, me, now = Date.now()) {
   if (!prizeOn(env, me, now)) return { on: false };
-  const w = prizeWeek(now), r = (await rows(env, [me.id], w)).get(me.id), s = steps(r, w, now), done = doneOf(s);
+  const w = prizeWeek(now), r = (await rows(env, [me.id], w)).get(me.id), s = steps(r, w, now, loose(env)), done = doneOf(s);
   const pts = now >= w ? await points(env, w) : [], mine = pts.find(p => p.player === me.id);
   let rank = null, entrants = 0;
   if (done && s.age.ok) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
@@ -130,12 +135,16 @@ export async function handle(path, env, me, body, now = Date.now()) {
 const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
 const toCsv = rs => '\ufeff' + rs.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 const iso = t => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
-// The eligible top of week `w`, with Telegram asked again about the group, and how each player's points came in.
+// The eligible top of week `w`, with Telegram asked again about the group and the wallets read now (a wallet under 100K
+// drops out; one the RPC didn't answer for stays, for the admin to check by hand), and how each player's points came in.
 export async function adminList(env, w, now = Date.now()) {
-  const c = await chart(env, w, now), top = [];
+  const c = await chart(env, w, now), top = [], dropped = [];
+  const live = await balances(env, c.slice(0, PRIZES.length + 20).map(r => r.wallet)).catch(() => new Map());
   for (const r of c) {
     if (top.length >= PRIZES.length + 5) break;
-    if (r.tg_id != null && env.BOT_TOKEN) { const ok = await inGroup(env, r.tg_id); if (ok === false) { r.steps.group.done = false; continue } }
+    r.now = live.has(r.wallet) ? live.get(r.wallet) : null;
+    if (r.now != null && r.now < HOLD_MIN) { dropped.push({ ...r, why: 'balance' }); continue }
+    if (r.tg_id != null && env.BOT_TOKEN) { const ok = await inGroup(env, r.tg_id); if (ok === false) { r.steps.group.done = false; dropped.push({ ...r, why: 'group' }); continue } }
     top.push(r);
   }
   const ids = top.map(r => r.id), logs = ids.length ? (await env.DB.prepare(`SELECT player, at, amount FROM score_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? ORDER BY player, at`)
@@ -143,9 +152,9 @@ export async function adminList(env, w, now = Date.now()) {
   const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0 }])), hours = new Map();
   for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++ }
   const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], fair: fair.get(r.id) }));
-  const head = ['place', 'prize_cworm', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc'];
-  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night])]);
+  const head = ['place', 'prize_cworm', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc'];
+  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night])]);
   const pay = winners.map(r => r.wallet + ',' + r.prize).join('\n');
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
-  return { week: w, winners, reserves: top.slice(PRIZES.length), list, pay, log, entrants: c.length };
+  return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length };
 }
