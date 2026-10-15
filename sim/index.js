@@ -60,7 +60,7 @@ canvas{width:100%;height:220px;display:block}
   <div class="tile big"><div class="k">Players online now (game server count)</div><div class="v" id="online">–</div><div class="s" id="online2"></div></div>
   <div class="tile"><div class="k">Simulated players online</div><div class="v" id="bots">–</div><div class="s" id="bots2"></div></div>
   <div class="tile"><div class="k">Server requests per minute</div><div class="v" id="rpm">–</div><div class="s" id="rpm2"></div></div>
-  <div class="tile"><div class="k">Answer time</div><div class="v" id="p50">–</div><div class="s" id="p95"></div></div>
+  <div class="tile"><div class="k">Server answer time</div><div class="v" id="p50">–</div><div class="s" id="p95"></div></div>
   <div class="tile"><div class="k">Errors</div><div class="v" id="err">–</div><div class="s" id="err2"></div></div>
   <div class="tile"><div class="k">Live match messages</div><div class="v" id="msgs">–</div><div class="s" id="msgs2"></div></div>
   <div class="tile"><div class="k">Match message delivery</div><div class="v" id="relay">–</div><div class="s" id="relay2"></div></div>
@@ -71,7 +71,7 @@ canvas{width:100%;height:220px;display:block}
 <div class="chart"><h2>Last hour</h2>
   <div class="legend"><span><i style="background:var(--gold)"></i>players online</span><span><i style="background:var(--ice)"></i>requests per minute</span><span><i style="background:var(--bad)"></i>slowest 5% answer time (ms)</span></div>
   <canvas id="c"></canvas></div>
-<p class="note">Simulated players are test accounts the Crypto Worm team runs on Cloudflare to load-test the live game. They sign in, sit in the lobby, play offline and online matches (about 20 updates a second while a turn runs) and fight World Map battles, like the game on a phone does. They count in the game's numbers, but never in the weekly prize, never attack real players' land, and their matches aren't in Live now. Answer times are measured inside Cloudflare, without the phone's own internet.</p>
+<p class="note">Simulated players are test accounts the Crypto Worm team runs on Cloudflare to load-test the live game. They sign in, sit in the lobby, play offline and online matches (about 20 updates a second while a turn runs) and fight World Map battles, like the game on a phone does. They count in the game's numbers, but never in the weekly prize, never attack real players' land, and their matches aren't in Live now. Answer times are the game server's own time to answer (its work and its database), without the phone's own internet.</p>
 </main>
 <script>
 const $=id=>document.getElementById(id), fmt=n=>n==null?'–':Number(n).toLocaleString('en-US');

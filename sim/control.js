@@ -83,6 +83,7 @@ export class Control {
     else if (cmd === 'rush') { c.mode = 'rush'; c.rushFrom = now; c.rushUntil = now + Math.max(5, Math.min(180, n || 30)) * MIN }
     else if (cmd === 'bots') { if (n > 0) c.bots = Math.min(TOTAL, n) }
     else if (cmd === 'probe' || cmd === 'check') { this.probe = { cmd, n: n || 20 }; return }
+    else if (cmd === 'time') { this.probe = { cmd, n: n || 0 }; return }
     else return;
     c.brake = brake ? { why: brake, at: now } : null; c.v++; c.since = now;
   }
@@ -109,7 +110,7 @@ export class Control {
       relay50: avg('relay50'), relay95: max('relay95'), msgsPerSec: Math.round(sum('msgs') / 60), kbPerSec: Math.round(sum('kb') / 60),
       matchesPerMin: sum('matches'), attacksPerMin: sum('attacks'), signups: sum('signups'), by, errors: last.flatMap(p => p.errors || []).slice(-3),
       diag: { boots: this.boots, age: now - this.born, gap: this.bootGap, got: this.got || 0, gotAgo: this.gotAt ? now - this.gotAt : null, hist: this.hist.length, histAgo: this.hist.length ? now - this.hist[this.hist.length - 1].t : null, open: this.open.size,
-        f: Object.entries(this.fleets).filter(([k, f]) => f.snap && f.snap.bots).slice(0, 3).map(([k, f]) => [k, f.snap.reports, f.snap.steps, f.snap.reportAt ? now - f.snap.reportAt : null, f.snap.age, f.snap.gap, (f.snap.slow || []).slice(-3)]) },
+        f: Object.entries(this.fleets).filter(([k, f]) => f.snap && f.snap.bots).slice(0, 5).map(([k, f]) => [k, f.snap.reports, f.snap.steps, f.snap.reportAt ? now - f.snap.reportAt : null, f.snap.colo, f.snap.age, (f.snap.slow || []).slice(-3)]) },
       fleetErrors: Object.entries(this.fleets).filter(([k, f]) => f.snap && (f.snap.reportErr || (f.snap.recent || []).length)).slice(0, 3).map(([k, f]) => ({ k, reports: f.snap.reports, reportErr: f.snap.reportErr, recent: (f.snap.recent || []).slice(-2) })) };
   }
   state() { return { at: Date.now(), cfg: { mode: this.cfg.mode, bots: this.cfg.bots, rushUntil: this.cfg.rushUntil, ramp: this.cfg.ramp, brake: this.cfg.brake, since: this.cfg.since }, now: this.summary(), hist: this.hist.slice(-360) } }
@@ -123,7 +124,7 @@ export class Control {
     } catch (e) { }
     if (this.cfg.mode === 'rush' && now >= this.cfg.rushUntil) { this.order('life', null, 'rush over'); changed = true }
     if (this.cfg.mode !== 'off' || changed || Object.values(this.fleets).some(f => now - f.at < 3 * POINT && (f.snap.online || f.snap.sockets))) await this.push();
-    if (this.probe) { const p = this.probe; this.probe = null; const r = await this.stub('probe').fetch('https://fleet/probe', { method: 'POST', body: JSON.stringify({ n: p.n, check: p.cmd === 'check' }) }).then(r => r.json()).catch(e => ({ error: String(e) })); this.lastProbe = r;
+    if (this.probe) { const p = this.probe; this.probe = null; const r = await this.stub('probe').fetch('https://fleet/probe', { method: 'POST', body: JSON.stringify(p.cmd === 'time' ? { time: p.n } : { n: p.n, check: p.cmd === 'check' }) }).then(r => r.json()).catch(e => ({ error: String(e) })); this.lastProbe = r;
       await env.DB.prepare('INSERT OR REPLACE INTO sim_stats (at, data) VALUES (?, ?)').bind(now - 1, JSON.stringify({ probe: r })).run().catch(() => { }) }
     await this.peek(true);
     const row = this.summary(now);

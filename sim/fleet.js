@@ -64,6 +64,7 @@ export class Fleet {
     if (this.bots) return;
     this.cfg = (await this.ctx.storage.get('cfg')) || null; this.born = Date.now();
     const alive = await this.ctx.storage.get('alive'); this.gap = alive ? this.born - alive : null;
+    if (!this.env.SIM_SPEED) fetch('https://www.cloudflare.com/cdn-cgi/trace').then(r => r.text()).then(t => { this.colo = (t.match(/colo=(\w+)/) || [])[1] }).catch(() => { });   // where this fleet runs
     this.saved = (await this.ctx.storage.get('bots')) || {};
     this.bots = new Map(); if (this.cfg) this.fill();
   }
@@ -148,13 +149,14 @@ export class Fleet {
 
   // ---- talking to the game server
   async api(b, method, path, body, extra = {}) {
-    const t0 = Date.now(); let status = 0, data = null;
+    const t0 = Date.now(); let status = 0, data = null, took = null;
     try {
       const r = await this.env.GAME.fetch(BASE + path, { method, headers: { 'content-type': 'application/json', ...(b && b.token ? { authorization: 'Bearer ' + b.token } : {}), ...this.who(b), ...extra },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      status = r.status; data = await r.json().catch(() => null);
+      status = r.status; took = r.headers.get('x-took'); data = await r.json().catch(() => null);
     } catch (e) { noteError(this.win, path + ': ' + (e && e.message || e)) }
-    const ms = Date.now() - t0; noteReq(this.win, groupOf(path), status, ms);
+    // the server's own time when it says (a Durable Object's clock only moves at some events, so its own count can be off by seconds)
+    const ms = took != null && took !== '' && Number.isFinite(Number(took)) ? Number(took) : Date.now() - t0; noteReq(this.win, groupOf(path), status, ms);
     if (ms > 1000) slow = [...slow.slice(-4), new Date(t0).toISOString().slice(14, 19) + ' ' + method + ' ' + path.split('?')[0].slice(0, 30) + ' ' + ms];   // which answers are slow, and when
     if (status >= 500) noteError(this.win, path + ' ' + status + ' ' + JSON.stringify(data || '').slice(0, 80));
     return { status, data };
@@ -347,7 +349,7 @@ export class Fleet {
 
   // ---- numbers for Control
   snap() {
-    const s = { bots: 0, accounts: 0, online: 0, inMatch: 0, inBattle: 0, inGame: 0, sockets: this.open, lag: this.lag, recent, slow, reports: this.reports || 0, reportErr: this.reportErr || null, steps: this.steps || 0, reportAt: this.reported || 0, age: this.born ? Date.now() - this.born : 0, gap: this.gap };
+    const s = { bots: 0, accounts: 0, online: 0, inMatch: 0, inBattle: 0, inGame: 0, sockets: this.open, lag: this.lag, recent, slow, reports: this.reports || 0, reportErr: this.reportErr || null, steps: this.steps || 0, reportAt: this.reported || 0, age: this.born ? Date.now() - this.born : 0, gap: this.gap, colo: this.colo };
     if (!this.bots || !this.cfg) return s;
     for (const b of this.bots.values()) {
       if (this.active(b)) s.bots++; if (b.token) s.accounts++; if (b.lobby && !b.lobby.gone) s.online++;
@@ -368,8 +370,22 @@ export class Fleet {
     } catch (e) { this.reportErr = 'report: ' + String(e && e.message || e).slice(0, 160) }
   }
 
+  // ---- what slows the fleet's own requests: plain, with storage writes in between, with sockets open, or a POST
+  async timing(mode) {
+    const socks = [], out = [];
+    if (mode === 2) for (let i = 0; i < 20; i++) { const w = await this.socket('/match/SIMTS2/watch', () => { }); if (w) socks.push(w) }
+    for (let i = 0; i < 12; i++) {
+      if (mode === 1) this.ctx.storage.put('t', i).catch(() => { });
+      const t0 = Date.now(), r = await this.env.GAME.fetch(BASE + (mode === 3 ? '/match/new' : '/stats'), mode === 3 ? { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } } : {});
+      await r.text(); out.push(Date.now() - t0); await sleep(300);
+    }
+    for (const w of socks) this.shut(w);
+    return { mode, socks: socks.length, ms: out };
+  }
+
   // ---- how many sockets one Durable Object can hold open through the service binding (a one-off check before the real thing)
-  async probe({ n = 20, check = false }) {
+  async probe({ n = 20, check = false, time = null }) {
+    if (time != null) return this.timing(time);
     if (check) { const s = this.probeSocks || []; const open = s.filter(w => !w.gone).length, heard = s.filter(w => w.box.heard).length; for (const w of s) this.shut(w); this.probeSocks = []; return { check: true, kept: open, heard } }
     const t0 = Date.now(), socks = [];
     await Promise.all([...Array(Math.min(200, n))].map(async () => { const box = {}, w = await this.socket('/match/SIMTST/watch', () => { box.heard = true }); if (w) { w.box = box; socks.push(w) } }));

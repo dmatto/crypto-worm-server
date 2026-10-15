@@ -203,9 +203,15 @@ async function telegramUser(env, req, u, cors, src) {
 
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
-export default {
+const app = {
   async scheduled(event, env, ctx) { ctx.waitUntil(cron(env, event && event.scheduledTime || Date.now())); if (env.SIM && env.SIM_KEY) ctx.waitUntil(simTick(env)) },
-  async fetch(req, env, ctx) {
+  async fetch(req, env, ctx) {                                                    // a simulated player also gets the server's own time (x-took)
+    if (!req.headers.has('x-sim-key')) return app.handle(req, env, ctx);
+    const t0 = Date.now(), r = await app.handle(req, env, ctx);
+    try { if (r.status !== 101) r.headers.set('x-took', String(Date.now() - t0)) } catch (e) { }
+    return r;
+  },
+  async handle(req, env, ctx) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, ''), cors = corsFor(req, env);
     const geo = simCountry(req, env) || (req.cf && req.cf.country) || '';        // the player's country, for flags
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
@@ -376,3 +382,4 @@ export default {
     return json({ error: 'not found' }, 404, cors);
   },
 };
+export default app;
