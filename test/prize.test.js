@@ -8,7 +8,13 @@ import { DatabaseSync } from 'node:sqlite';
 const RealResponse = globalThis.Response, realNow = Date.now;
 globalThis.Response = class extends RealResponse { constructor(b, i = {}) { super(b, i.status === 101 ? { status: 200 } : i); this.ws = i.webSocket } static json(b, i) { return new globalThis.Response(JSON.stringify(b), { ...i, headers: { 'content-type': 'application/json' } }) } };
 const calls = [], members = new Map(), bal = new Map(), ataOf = new Map(), TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const price = { dex: '0.000001', jup: null };                                       // $CWORM price answers: DexScreener (in SOL), Jupiter (USD)
 globalThis.fetch = async (url, init) => {
+  if (String(url).startsWith('https://api.dexscreener.com/')) { if (!price.dex) throw new Error('down'); const M = '65V31DT6xGVXY8axRu2QzNf1U7u6ZuQ77sRoBGYYpump';
+    return Response.json({ pairs: [{ chainId: 'solana', baseToken: { address: M }, quoteToken: { symbol: 'USDC' }, priceNative: '0.0002' },
+      { chainId: 'solana', baseToken: { address: M }, quoteToken: { symbol: 'SOL' }, priceNative: '0.000002', liquidity: { usd: 10 } },
+      { chainId: 'solana', baseToken: { address: M }, quoteToken: { symbol: 'SOL' }, priceNative: price.dex, liquidity: { usd: 5000 } }] }) }
+  if (String(url).startsWith('https://lite-api.jup.ag/')) { if (!price.jup) throw new Error('down'); return Response.json(price.jup) }
   if (String(url).startsWith('https://rpc.test')) {                                  // Solana: the $CWORM in each wallet (`bal`)
     const body = JSON.parse(init.body), one = r => r.method === 'getAccountInfo' ? { id: r.id, result: { value: { owner: TOKEN } } }
       : r.method === 'getMultipleAccounts' && r.params[1].encoding === 'jsonParsed' && r.params[0].every(a => ataOf.has(a)) ? { id: r.id, result: { value: r.params[0].map(a => { const n = bal.get(ataOf.get(a));
@@ -69,8 +75,8 @@ test('prize: hidden before Sunday 18 Oct except for admins and the preview switc
   env.ADMIN_PLAYERS = String(a.id);
   const c = await call(env, '/prize', undefined, a.token);
   assert.equal(c.on, true); assert.equal(c.week, MON); assert.equal(c.started, false); assert.equal(c.points, 0);
-  assert.deepEqual(c.prizes, [250000, 170000, 120000, 70000, 65000, 65000, 65000, 65000, 65000, 65000]);
-  assert.equal(P.PRIZES.reduce((s, n) => s + n, 0), 1e6);
+  assert.deepEqual(c.prizes, [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065]); assert.equal(c.prizeUnit, 'SOL');
+  assert.ok(Math.abs(P.PRIZES.reduce((s, n) => s + n, 0) - 1) < 1e-9);   // 1 SOL a week
   env.ADMIN_PLAYERS = '99'; env.PRIZE_PREVIEW = '1';
   assert.equal((await call(env, '/prize', undefined, a.token)).on, true);
   clock = Date.UTC(2026, 9, 18, 0); delete env.PRIZE_PREVIEW;
@@ -161,14 +167,14 @@ test('prize: /prize gives admins the eligible top 10 with the group asked again,
   await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
   const text = calls.find(([m]) => m === 'sendMessage')[1].text;
   assert.match(text, /Weekly prize 2026-10-19 to 2026-10-25/); assert.match(text, /12 players did all 5 steps/);
-  assert.match(text, /1\. Worm10 · 600 pts · 250,000 \$CWORM/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line/);
+  assert.match(text, /Price now: 1 SOL ≈ 1,000,000 \$CWORM \(DexScreener\)/); assert.match(text, /1\. Worm10 · 600 pts · 0\.25 SOL ≈ 250,000 \$CWORM/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line/);
   assert.match(text, /Dropped just now: Worm11 \(left the group\), Worm9 \(holds 50,000\)/);
   assert.match(text, /X @worm3 · 4 reports, max 130\/hour, 1 at night/);
   const docs = calls.filter(([m]) => m === 'sendDocument').map(([, b]) => b);
   assert.deepEqual(docs.map(d => d.file), ['weekly-prize-2026-10-19.csv', 'weekly-prize-2026-10-19-score-log.csv']);
   for (const d of docs) { assert.equal(d.bytes.subarray(0, 3).toString('hex'), 'efbbbf'); assert.notEqual(d.bytes.subarray(3, 6).toString('hex'), 'efbbbf') }   // one BOM, so Excel reads the names
   const rows = docs[0].csv.slice(1).trim().split('\r\n');
-  assert.equal(rows.length, 11); assert.match(rows[1], /^1,250000,Worm10,/); assert.match(rows[2], /^2,170000,Worm8,/); assert.match(rows[10], /^10,65000,Worm0,/);
+  assert.equal(rows.length, 11); assert.match(rows[1], /^1,0\.25,250000,Worm10,/); assert.match(rows[2], /^2,0\.17,170000,Worm8,/); assert.match(rows[10], /^10,0\.065,65000,Worm0,/);
   assert.ok(rows[1].includes(',150000,150000,'));                                   // the balance now and the last daily reading
   const pay = calls.filter(([m]) => m === 'sendMessage').pop()[1].text;
   assert.ok(pay.includes(wal[10] + ',250000\n' + wal[8] + ',170000')); assert.equal((pay.match(/,65000/g) || []).length, 6); assert.equal((pay.match(/,70000/g) || []).length, 1);
@@ -192,4 +198,12 @@ test('prize: /prize gives admins the eligible top 10 with the group asked again,
   await P.cleanup(env, at(40));
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM score_log').get().n, 1);
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM play_days').get().n, 0);
+});
+
+test('weekly prize: the SOL prizes turn into $CWORM at the price now, from DexScreener or else Jupiter', async () => {
+  assert.equal(Math.round((await P.cwormPerSol()).perSol), 1e6);                     // the SOL pair with the most liquidity
+  price.dex = null; price.jup = { '65V31DT6xGVXY8axRu2QzNf1U7u6ZuQ77sRoBGYYpump': { usdPrice: 0.0002 }, So11111111111111111111111111111111111111112: { usdPrice: 200 } };
+  assert.deepEqual(await P.cwormPerSol(), { perSol: 1e6, from: 'Jupiter' });
+  price.jup = null; assert.equal(await P.cwormPerSol(), null);                       // nothing answers: the admin works it out by hand
+  price.dex = '0.000001';
 });

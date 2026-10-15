@@ -217,8 +217,9 @@ async function sendPrize(env, chat_id, last) {
   const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
   if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
   const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
-  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} · ${fmt(x.pts)} pts · ${fmt(x.prize)} $CWORM\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
-  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} players did all 5 steps.\n\n` +
+  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} · ${fmt(x.pts)} pts · ${x.prize} SOL${x.cworm != null ? ' ≈ ' + fmt(x.cworm) + ' $CWORM' : ''}\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
+  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} players did all 5 steps.\n` +
+    (r.price ? `Price now: 1 SOL ≈ ${fmt(Math.round(r.price.perSol))} $CWORM (${r.price.from}). Check it again right before sending.\n\n` : 'The $CWORM price could not be read: work out each SOL amount in $CWORM by hand.\n\n') +
     (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
     (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + (x.why === 'group' ? ' (left the group)' : ' (holds ' + fmt(x.now) + ')')).join(', ')}` : '') +
     '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now.';
@@ -226,7 +227,7 @@ async function sendPrize(env, chat_id, last) {
   if (!r.winners.length) return;
   await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');
   await sendDoc(env, chat_id, r.log, `weekly-prize-${d(w)}-score-log.csv`, 'Every score report of these players this week.');
-  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,amount) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,$CWORM at the price above) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
 }
 
 // Once a day the bot asks Telegram about the first admin's place in the group, the same question the weekly prize's group
