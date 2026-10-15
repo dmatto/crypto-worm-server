@@ -36,13 +36,17 @@ export const cleanup = (env, now = Date.now()) => env.DB.batch([env.DB.prepare('
 // Prize points of week `w` for every player who scored, highest first: each UTC day counts at most DAY_CAP.
 export async function points(env, w) {
   const { results } = await env.DB.prepare(`SELECT player, SUM(MIN(?, d)) AS pts, SUM(d) AS raw, MAX(last) AS last FROM
-      (SELECT player, at / ${DAY} AS dd, SUM(amount) AS d, MAX(at) AS last FROM score_log WHERE at >= ? AND at < ? GROUP BY player, dd) GROUP BY player ORDER BY pts DESC, last ASC`)
+      (SELECT player, at / ${DAY} AS dd, SUM(amount) AS d, MAX(at) AS last FROM score_log WHERE at >= ? AND at < ? AND player NOT IN (SELECT player FROM sim_players)
+      GROUP BY player, dd) GROUP BY player ORDER BY pts DESC, last ASC`)
     .bind(DAY_CAP, w, w + WEEK).all();
   return results;
 }
 
 // What a player has done for week `w`, from what the server knows (the group answer is the last one Telegram gave).
+// D1 takes at most 100 bound values a query, so long lists go in parts.
+const PART = 90;
 async function rows(env, ids, w) {
+  if (ids.length > PART) { const out = new Map(); for (let i = 0; i < ids.length; i += PART) for (const [k, v] of await rows(env, ids.slice(i, i + PART), w)) out.set(k, v); return out }
   if (!ids.length) return new Map();
   const q = ids.map(() => '?').join(','), W = day(w);
   const [p, d, dips] = await Promise.all([
@@ -77,8 +81,10 @@ const firstWeek = created => { const t = created + MIN_AGE_DAYS * DAY - WEEK, m 
 const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && s.days.done;
 
 // The prize chart of week `w`: players who did all five steps (and are old enough), by prize points.
+// Only players who joined the group and gave their X username can have done all five, so only they are looked up.
 export async function chart(env, w, now = Date.now()) {
-  const pts = await points(env, w), info = await rows(env, pts.map(p => p.player), w), out = [];
+  const ready = new Set((await env.DB.prepare('SELECT player FROM prize_entry WHERE group_ok = 1 AND x IS NOT NULL').all()).results.map(r => r.player));
+  const pts = (await points(env, w)).filter(p => ready.has(p.player)), info = await rows(env, pts.map(p => p.player), w), out = [];
   for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw }) }
   return out;
 }

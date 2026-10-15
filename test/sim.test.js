@@ -128,3 +128,20 @@ test('bot: /sim orders go to the load-test Worker, and /sim shows its latest num
   const s = await simCommand(env, '', now);
   assert.match(s, /rush/); assert.match(s, /480 online/); assert.match(s, /492 online/); assert.match(s, /180 ms/);
 });
+
+test('prize: a week with 150 scorers (bots among them) stays under D1\'s 100 bound values, and bots never chart', async () => {
+  const env = makeEnv(), { chart, FIRST_WEEK } = await import('../src/prize.js'), w = FIRST_WEEK, now = w + 3 * 864e5, D = 864e5;
+  const prep = env.DB.prepare; env.DB.prepare = q => { const s = prep(q), b = s.bind; s.bind = (...a) => { if (a.length > 100) throw new Error('too many SQL variables: ' + a.length); return b(...a) }; return s };
+  const add = (i, sim) => {
+    const id = env.sql.prepare("INSERT INTO players (name, created, wallet) VALUES (?, ?, ?) RETURNING id").get('P' + i, w - 30 * D, 'W' + i).id;
+    if (sim) env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(id);
+    env.sql.prepare('INSERT INTO score_log (player, at, amount) VALUES (?, ?, ?)').run(id, w + D, 100 + i);
+    env.sql.prepare("INSERT INTO prize_entry (player, x, group_ok) VALUES (?, 'x' || ?, 1)").run(id, i);
+    for (let d = 0; d < 3; d++) env.sql.prepare('INSERT INTO play_days (player, day) VALUES (?, ?)').run(id, Math.floor((w + d * D) / D));
+    return id;
+  };
+  const ids = [...Array(150)].map((_, i) => add(i, i % 3 === 0));
+  const c = await chart(env, w, now);
+  assert.equal(c.length, 100);                                                                // every real one, no bot
+  assert.ok(c.every(r => ids.indexOf(r.id) % 3 !== 0)); assert.equal(c[0].id, ids[149]);
+});
