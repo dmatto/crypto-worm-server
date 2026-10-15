@@ -23,6 +23,8 @@
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
 //   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
+// Load tests (see sim/): /auth/guest with the header x-sim-key: SIM_KEY makes a simulated player (sim_players). They count and
+// rank like everyone else, but stay hidden in the lobby, out of Live now and the weekly prize, and only fight CPU or bot land.
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}
@@ -116,6 +118,10 @@ async function playerCount(env, now = Date.now()) {
     WHERE p.tg_id IS NOT NULL OR p.wallet IS NOT NULL OR p.wins + p.losses > 0 OR m.played > 0 OR m.started > 0`).first();
   counted = { at: now, n: r ? r.n : 0 }; return counted.n;
 }
+
+// A simulated player from the load test (see sim/)? The key is compared in constant time.
+const sameKey = (a, b) => { a = String(a || ''); b = String(b || ''); if (!a || !b || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 };
+const isSim = (env, id) => env.DB.prepare('SELECT 1 AS y FROM sim_players WHERE player = ?').bind(id).first().then(r => !!r).catch(() => false);
 
 const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wallet: p.wallet || null, wins: p.wins, losses: p.losses };
 
@@ -229,6 +235,7 @@ export default {
 
     if (path === '/auth/guest' && req.method === 'POST') {
       const r = await env.DB.prepare('INSERT INTO players (name, created) VALUES (?, ?) RETURNING *').bind('Guest ' + Math.floor(1000 + Math.random() * 9000), Date.now()).first();
+      if (env.SIM_KEY && sameKey(req.headers.get('x-sim-key'), env.SIM_KEY)) await env.DB.prepare('INSERT OR IGNORE INTO sim_players (player, created) VALUES (?, ?)').bind(r.id, Date.now()).run();
       await newPlayer(env, r.id, body.src);
       return session(env, r, cors);
     }
@@ -281,7 +288,8 @@ export default {
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
       h.set('x-country', String((req.cf && req.cf.country) || ''));
       const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier)); h.set('x-stars', String(hb.stars)); h.set('x-toast', hb.toast ? '1' : '0');   // holder badge, vouched for by the server
-      return lobbyOf(env).fetch(new Request(req.url, { headers: h }));
+      const u = new URL(req.url); if (await isSim(env, me.id)) u.searchParams.set('hidden', '1');   // simulated players count as online but can't be challenged
+      return lobbyOf(env).fetch(new Request(u.toString(), { headers: h }));
     }
     if (path === '/me/name' && req.method === 'POST') {
       const nick = String(body.name || '').normalize('NFC').replace(/\s+/g, ' ').trim();
@@ -335,6 +343,7 @@ export default {
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
+      if (await isSim(env, me.id)) return json({ on: false }, 200, cors);                  // never for simulated players
       const r = await prizeHandle(path, env, me, body); if (!r) return json({ error: 'not found' }, 404, cors);
       return json(r.error ? { error: r.error } : r, r.status || 200, cors);
     }
@@ -351,6 +360,7 @@ export default {
     if (ws) {
       const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', String((req.cf && req.cf.country) || ''));   // country only, from Cloudflare, for the opponent's flag
       h.set('x-tier', String((await badge(env, me.id)).tier));                                // holder tier, for the opponent's badge
+      h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }
     return json({ error: 'not found' }, 404, cors);

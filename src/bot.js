@@ -182,6 +182,7 @@ export async function webhook(req, env) {
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) await sendPrize(env, chat_id, /last/i.test(arg));
+  else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
   else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
     text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });
   else if (cmd === '/feedback') {
@@ -189,6 +190,25 @@ export async function webhook(req, env) {
     else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
   }
   return new Response('ok');
+}
+
+// /sim (admins): the load test's simulated players (see sim/). The order goes into sim_cmd, which the load-test Worker reads
+// every minute: /sim rush 30 puts all of them online for 30 minutes, /sim life goes back to normal days (a few sessions a
+// day each), /sim off stops them. /sim alone shows the latest numbers.
+const SIM_MAX_RUSH = 180;
+export async function simCommand(env, arg, now = Date.now()) {
+  const [what, n] = String(arg || '').trim().toLowerCase().split(/\s+/), url = env.SIM_URL || 'https://crypto-worm-sim.cryptoworm.workers.dev';
+  const order = (cmd, a) => env.DB.prepare('INSERT INTO sim_cmd (cmd, arg, at) VALUES (?, ?, ?)').bind(cmd, a, now).run();
+  if (what === 'rush') { const min = Math.max(5, Math.min(SIM_MAX_RUSH, Math.round(Number(n)) || 30)); await order('rush', min);
+    return `🤖 Rush: within a minute every simulated player comes online, a few more each second over 5 minutes, and they all stay for ${min} minutes. It stops by itself if the server slows down.\n\nLive numbers: ${url}` }
+  if (what === 'life' || what === 'on') { await order('life', null); return `🤖 Normal days: each simulated player plays a few sessions a day, 3 or more games each day.\n\nLive numbers: ${url}` }
+  if (what === 'off' || what === 'stop') { await order('off', null); return '🤖 Stopping: the simulated players log off within a minute.' }
+  const row = await env.DB.prepare('SELECT at, data FROM sim_stats ORDER BY at DESC LIMIT 1').first().catch(() => null);
+  let d = null; try { d = row && JSON.parse(row.data) } catch (e) { }
+  const head = d ? `🤖 Load test: ${d.mode === 'rush' ? 'rush' : d.mode === 'life' ? 'normal days' : 'off'}${d.brake ? ' (stopped by the safety brake: ' + d.brake + ')' : ''}, ${Math.round((now - row.at) / 60000)} min ago\n` +
+    `Simulated players: ${d.bots} (${d.online} online, ${d.inMatch} in online matches)\nGame server: ${d.serverOnline ?? '?'} online, ${d.players ?? '?'} players in all\n` +
+    `Requests: ${d.rpm}/min, answer time ${d.p50} ms typical, ${d.p95} ms slowest 5%, errors ${d.errPct}%\n` : '🤖 Load test: no numbers yet.\n';
+  return head + `\n/sim rush 30: everyone online for 30 minutes\n/sim life: normal days\n/sim off: stop\n\nLive numbers: ${url}`;
 }
 
 // /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and

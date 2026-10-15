@@ -47,7 +47,8 @@ async function rows(env, ids, w) {
   const q = ids.map(() => '?').join(','), W = day(w);
   const [p, d, dips] = await Promise.all([
     env.DB.prepare(`SELECT p.id, p.name, p.tg_id, p.wallet, p.created, e.x, e.group_ok, e.group_at, h.wallet AS hw, h.tier, h.streak_day, h.balance, h.checked
-        FROM players p LEFT JOIN prize_entry e ON e.player = p.id LEFT JOIN holders h ON h.player = p.id WHERE p.id IN (${q})`).bind(...ids).all(),
+        FROM players p LEFT JOIN prize_entry e ON e.player = p.id LEFT JOIN holders h ON h.player = p.id
+        WHERE p.id IN (${q}) AND p.id NOT IN (SELECT player FROM sim_players)`).bind(...ids).all(),   // simulated players from load tests never take part
     env.DB.prepare(`SELECT player, COUNT(*) AS n FROM play_days WHERE player IN (${q}) AND day >= ? AND day < ? GROUP BY player`).bind(...ids, W, W + 7).all(),
     env.DB.prepare(`SELECT DISTINCT player FROM hold_dips WHERE player IN (${q}) AND day >= ? AND day < ?`).bind(...ids, W, W + 7).all()]);
   const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Set(dips.results.map(r => r.player));

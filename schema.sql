@@ -201,3 +201,21 @@ CREATE TABLE IF NOT EXISTS holders (       -- $CWORM holder rewards: what each l
   toast      INTEGER,                      -- whales: announce when online (NULL = default: on for Big Whales)
   chest_day  INTEGER NOT NULL DEFAULT 0    -- last daily chest
 );
+-- Simulated players for load tests (Damian 2026-10-15): accounts the load-test Worker (sim/) signs up with SIM_KEY. They play
+-- like everyone else and count as players, but never in the weekly prize, never attack real players' land, and their
+-- matches stay out of Live now. The list also tells the clean-up which accounts to delete (tools/sim_cleanup.py).
+CREATE TABLE IF NOT EXISTS sim_players (
+  player   INTEGER PRIMARY KEY,
+  created  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sim_cmd (       -- start / stop orders for the load test, from the bot's admin /sim (the load-test Worker reads them)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  cmd      TEXT NOT NULL,                  -- off | life | rush
+  arg      INTEGER,                        -- rush: minutes
+  at       INTEGER NOT NULL,
+  done     INTEGER                         -- when the load-test Worker took it
+);
+CREATE TABLE IF NOT EXISTS sim_stats (     -- the load test's numbers, one row a minute (kept 3 days)
+  at       INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL                   -- JSON
+);

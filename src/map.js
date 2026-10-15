@@ -203,6 +203,10 @@ export async function handle(path, req, env, me, body, cors, ctx, now = Date.now
     const row = await q(env, 'SELECT l.owner, l.def, l.truce, d.shield, d.acc, d.res, p.name FROM land l JOIN landlords d ON d.player = l.owner JOIN players p ON p.id = l.owner WHERE l.tile = ?', t).first();
     if (row && row.shield > now) return err('this player is new and protected for a few days');
     if (row && row.truce > now) return err('this land was just taken. Try again in a few minutes');
+    if (row) {                       // simulated players from a load test only fight CPU land and each other, never a real player's land
+      const sims = (await q(env, 'SELECT player FROM sim_players WHERE player IN (?, ?)', me.id, row.owner).all()).results.map(r => r.player);
+      if (sims.includes(me.id) && !sims.includes(row.owner)) return err('simulated players only attack CPU or simulated land', 403);
+    }
     const ticket = crypto.randomUUID().replace(/-/g, '');
     await env.DB.batch([
       q(env, "UPDATE attacks SET ended = ?, result = 'dropped' WHERE attacker = ? AND ended IS NULL", now, me.id),   // one battle at a time

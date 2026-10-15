@@ -18,7 +18,8 @@
 // (or wait {} until the match starts, then watch), every f and auth the players send, chat {id,side}, over, and
 // viewers {n} whenever someone starts or stops watching (the players get viewers {n} too). The only thing a viewer can send
 // is cheer {id}: one of the game's six cheer emojis, at most one every 0.7 s, shown to everyone in the match.
-// A started match is listed in the lobby's Live now list until it ends.
+// A started match is listed in the lobby's Live now list until it ends, unless a simulated player from a load test is in
+// it (x-sim from index.js): their phones stream made-up frames that nobody could watch.
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
@@ -46,7 +47,7 @@ export class Match {
   }
   // The lobby's Live now list: add (or update) this match when it starts, take it off when it ends.
   live(extra, gone) {
-    const m = this.mem, code = this.code || (m && m.code); if (!this.env.LOBBY || !code) return;
+    const m = this.mem, code = this.code || (m && m.code); if (!this.env.LOBBY || !code || (m && m.sim && m.sim.some(Boolean))) return;
     const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], ids: m.players, at: m.start && m.start.at, ...extra };
     const p = this.env.LOBBY.get(this.env.LOBBY.idFromName('lobby')).fetch('https://lobby/live', { method: 'POST', body: JSON.stringify(body) }).catch(() => { });
     if (this.ctx.waitUntil) this.ctx.waitUntil(p); return p;
@@ -75,7 +76,7 @@ export class Match {
     if (side < 0 && m.bot) return new Response('match is full', { status: 409 });   // a match against a bot has one seat
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
-    m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0)); await this.save();
+    m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; (m.sim = m.sim || [0, 0])[side] = req.headers.get('x-sim') === '1' ? 1 : 0; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0)); await this.save();
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);

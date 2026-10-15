@@ -56,7 +56,7 @@ function namespace(Cls, env) {
 }
 
 const { default: worker, Match, Lobby } = await import('../src/index.js');
-const env = { DB, SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '', SOLANA_RPC: process.env.SOLANA_RPC || '', PRIZE_PREVIEW: process.env.PRIZE_PREVIEW || '' };
+const env = { DB, SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '', SOLANA_RPC: process.env.SOLANA_RPC || '', PRIZE_PREVIEW: process.env.PRIZE_PREVIEW || '', SIM_KEY: process.env.SIM_KEY || '' };
 env.MATCH = namespace(Match, env); env.LOBBY = namespace(Lobby, env);
 
 // ---- tiny WebSocket server (text frames only)

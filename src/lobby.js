@@ -21,7 +21,9 @@ import { announce } from './growth.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
-const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000;
+const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000,
+  BUSY_LOBBY = 40, LIST_GAP_MS = 1000;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
+const open = ws => ws.readyState == null || ws.readyState === 1;   // a closing socket can still be listed until its close event has run
 
 export class Lobby {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.recent = new Map() }
@@ -101,7 +103,7 @@ export class Lobby {
   players(except) {
     const seen = new Map();
     for (const ws of this.ctx.getWebSockets()) {
-      if (ws === except) continue;
+      if (ws === except || !open(ws)) continue;
       const p = ws.deserializeAttachment(); if (p && !p.hidden && !seen.has(p.id)) seen.set(p.id, p);
     }
     return [...seen.values()];
@@ -110,7 +112,7 @@ export class Lobby {
   count(except) {
     const seen = new Map();
     for (const ws of this.ctx.getWebSockets()) {
-      if (ws === except) continue;
+      if (ws === except || !open(ws)) continue;
       const p = ws.deserializeAttachment(); if (p) seen.set(p.id, seen.get(p.id) || p.busy);
     }
     let playing = 0; for (const b of seen.values()) if (b) playing++;
@@ -119,9 +121,14 @@ export class Lobby {
   sock(id) { return this.ctx.getWebSockets(String(id))[0] || null }
   tell(id, msg) { const ws = this.sock(id); if (ws) try { ws.send(JSON.stringify(msg)) } catch { } return !!ws }
   broadcast(except) {
+    if (this.ctx.getWebSockets().length < BUSY_LOBBY) return this.sendList(except);
+    if (this.listTimer) return;                                   // one is on its way: it will carry this change too
+    this.listTimer = setTimeout(() => { this.listTimer = null; this.listAt = Date.now(); this.sendList() }, Math.max(0, (this.listAt || 0) + LIST_GAP_MS - Date.now()));
+  }
+  sendList(except) {
     const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0 }));
     const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [] });
-    for (const ws of this.ctx.getWebSockets()) if (ws !== except) try { ws.send(out) } catch { }
+    for (const ws of this.ctx.getWebSockets()) if (ws !== except && open(ws)) try { ws.send(out) } catch { }
   }
 
   async webSocketMessage(ws, raw) {
