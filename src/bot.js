@@ -193,7 +193,7 @@ export async function webhook(req, env) {
 }
 
 // /sim (admins): the load test's simulated players (see sim/). The order goes into sim_cmd, which the load-test Worker reads
-// every minute: /sim rush 30 puts all of them online for 30 minutes, /sim life goes back to normal days (a few sessions a
+// every minute: /sim rush 30 puts all of them online for 30 minutes, /sim life goes back to normal days (2 to 3 hours online a
 // day each), /sim off stops them. /sim alone shows the latest numbers.
 const SIM_MAX_RUSH = 180;
 export async function simCommand(env, arg, now = Date.now()) {
@@ -201,7 +201,7 @@ export async function simCommand(env, arg, now = Date.now()) {
   const order = (cmd, a) => env.DB.prepare('INSERT INTO sim_cmd (cmd, arg, at) VALUES (?, ?, ?)').bind(cmd, a, now).run();
   if (what === 'rush') { const min = Math.max(5, Math.min(SIM_MAX_RUSH, Math.round(Number(n)) || 30)); await order('rush', min);
     return `🤖 Rush: within a minute every simulated player comes online, a few more each second over 5 minutes, and they all stay for ${min} minutes. It stops by itself if the server slows down.\n\nLive numbers: ${url}` }
-  if (what === 'life' || what === 'on') { await order('life', null); return `🤖 Normal days: each simulated player plays a few sessions a day, 3 or more games each day.\n\nLive numbers: ${url}` }
+  if (what === 'life' || what === 'on') { await order('life', null); return `🤖 Normal days: each simulated player is online 2 to 3 hours a day, at times that change every day, playing game after game.\n\nLive numbers: ${url}` }
   if (what === 'off' || what === 'stop') { await order('off', null); return '🤖 Stopping: the simulated players log off within a minute.' }
   const row = await env.DB.prepare('SELECT at, data FROM sim_stats ORDER BY at DESC LIMIT 1').first().catch(() => null);
   let d = null; try { d = row && JSON.parse(row.data) } catch (e) { }

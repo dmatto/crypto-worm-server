@@ -145,3 +145,13 @@ test('prize: a week with 150 scorers (bots among them) stays under D1\'s 100 bou
   assert.equal(c.length, 100);                                                                // every real one, no bot
   assert.ok(c.every(r => ids.indexOf(r.id) % 3 !== 0)); assert.equal(c[0].id, ids[149]);
 });
+
+test('sim: a simulated player may send its own country (for its flag), nobody else can', async () => {
+  const env = makeEnv();
+  const bot = await call(env, '/auth/guest', {}, null, { 'x-sim-key': KEY });
+  await call(env, '/played', { mode: 'cpu' }, bot.token, { 'x-sim-key': KEY, 'x-sim-cc': 'KE' });
+  const guest = await call(env, '/auth/guest', {});
+  await call(env, '/played', { mode: 'cpu' }, guest.token, { 'x-sim-key': 'wrong'.repeat(8), 'x-sim-cc': 'KE' });
+  const cc = id => env.sql.prepare('SELECT cc FROM player_meta WHERE player = ?').get(id).cc;
+  assert.equal(cc(bot.player.id), 'KE'); assert.equal(cc(guest.player.id), null);
+});

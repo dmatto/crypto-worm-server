@@ -121,7 +121,16 @@ async function playerCount(env, now = Date.now()) {
 
 // A simulated player from the load test (see sim/)? The key is compared in constant time.
 const sameKey = (a, b) => { a = String(a || ''); b = String(b || ''); if (!a || !b || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 };
+// a simulated player's own country (they all run inside Cloudflare, so the connection says nothing)
+const simCountry = (req, env) => { const cc = req.headers.get('x-sim-cc'); return cc && /^[A-Z]{2}$/.test(cc) && env.SIM_KEY && sameKey(req.headers.get('x-sim-key'), env.SIM_KEY) ? cc : null };
 const isSim = (env, id) => env.DB.prepare('SELECT 1 AS y FROM sim_players WHERE player = ?').bind(id).first().then(r => !!r).catch(() => false);
+
+// The load test's minute (see sim/): this Worker's cron also starts it, and keeps its answer in bot_kv for a look from outside.
+async function simTick(env) {
+  let note;
+  try { const r = await env.SIM.fetch('https://sim/tick', { method: 'POST', headers: { 'x-sim-key': env.SIM_KEY } }); note = r.status + ' ' + (await r.text()).slice(0, 1500) } catch (e) { note = 'error ' + String(e && e.message || e).slice(0, 300) }
+  await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('sim_tick', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(new Date().toISOString() + ' ' + note).run().catch(() => { });
+}
 
 const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wallet: p.wallet || null, wins: p.wins, losses: p.losses };
 
@@ -195,9 +204,10 @@ async function telegramUser(env, req, u, cors, src) {
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
 
 export default {
-  async scheduled(event, env, ctx) { ctx.waitUntil(cron(env, event && event.scheduledTime || Date.now())) },
+  async scheduled(event, env, ctx) { ctx.waitUntil(cron(env, event && event.scheduledTime || Date.now())); if (env.SIM && env.SIM_KEY) ctx.waitUntil(simTick(env)) },
   async fetch(req, env, ctx) {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, ''), cors = corsFor(req, env);
+    const geo = simCountry(req, env) || (req.cf && req.cf.country) || '';        // the player's country, for flags
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
     if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
     if (path === '/telegram/setup') return setup(req, env, url.origin);
@@ -286,7 +296,7 @@ export default {
     if (path === '/lobby/ws') {
       const h = new Headers(req.headers);
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
-      h.set('x-country', String((req.cf && req.cf.country) || ''));
+      h.set('x-country', geo);
       const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier)); h.set('x-stars', String(hb.stars)); h.set('x-toast', hb.toast ? '1' : '0');   // holder badge, vouched for by the server
       const u = new URL(req.url); if (await isSim(env, me.id)) u.searchParams.set('hidden', '1');   // simulated players count as online but can't be challenged
       return lobbyOf(env).fetch(new Request(u.toString(), { headers: h }));
@@ -339,7 +349,7 @@ export default {
       return json({ ok: true }, 200, cors);
     }
     if (path === '/started' && req.method === 'POST') return json(await started(env, me), 200, cors);
-    if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), req.cf && req.cf.country), 200, cors);
+    if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), geo), 200, cors);
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
@@ -358,7 +368,7 @@ export default {
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
     if (ws) {
-      const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', String((req.cf && req.cf.country) || ''));   // country only, from Cloudflare, for the opponent's flag
+      const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', geo);   // country only, from Cloudflare, for the opponent's flag
       h.set('x-tier', String((await badge(env, me.id)).tier));                                // holder tier, for the opponent's badge
       h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));

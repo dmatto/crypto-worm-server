@@ -9,6 +9,7 @@ import { Control } from './control.js';
 export { Fleet, Control };
 
 const control = env => env.CONTROL.get(env.CONTROL.idFromName('control'));
+const same = (a, b) => { a = String(a || ''); b = String(b || ''); if (!a || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 };
 
 export default {
   async fetch(req, env) {
@@ -17,10 +18,18 @@ export default {
       const r = await control(env).fetch('https://control/state');
       return new Response(r.body, { headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' } });
     }
+    if (url.pathname === '/tick' && req.method === 'POST') {                         // the game server's cron starts the minute too
+      if (!env.SIM_KEY || !same(req.headers.get('x-sim-key'), env.SIM_KEY)) return new Response('no', { status: 403 });
+      const r = await control(env).fetch('https://control/tick'), d = await r.json().catch(() => ({}));
+      return Response.json({ mode: d.mode, online: d.online, rpm: d.rpm, p95: d.p95, errPct: d.errPct, errors: d.errors, fleets: d.fleetErrors, diag: d.diag });
+    }
     if (url.pathname === '/' || url.pathname === '/index.html') return new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     return new Response('not found', { status: 404 });
   },
-  async scheduled(ev, env, ctx) { ctx.waitUntil(control(env).fetch('https://control/tick').catch(() => { })) },
+  async scheduled(ev, env, ctx) {                                                  // row at = 0: the last minute's tick, or what went wrong
+    const note = d => env.DB.prepare('INSERT OR REPLACE INTO sim_stats (at, data) VALUES (0, ?)').bind(JSON.stringify({ tick: Date.now(), ...d })).run().catch(() => { });
+    ctx.waitUntil(control(env).fetch('https://control/tick').then(async r => note({ status: r.status, mode: r.ok ? (await r.json()).mode : await r.text() })).catch(e => note({ error: String(e && e.stack || e).slice(0, 500) })));
+  },
 };
 
 const PAGE = `<!doctype html>
@@ -72,7 +81,7 @@ async function load(){
   let d; try{ d=await (await fetch('/api/state',{cache:'no-store'})).json() }catch(e){ $('mode').textContent='Can\\'t reach the load test right now'; return }
   const n=d.now, c=d.cfg, t=new Date(c.rushUntil);
   $('dot').className='dot'+(c.mode==='rush'?' rush':c.mode==='life'?' on':'');
-  $('mode').textContent=c.mode==='rush'?'Rush: all '+fmt(c.bots)+' simulated players online until '+t.toUTCString().slice(17,22)+' UTC':c.mode==='life'?'Normal days: '+fmt(c.bots)+' simulated players, a few sessions a day each':'Off: no simulated players playing';
+  $('mode').textContent=c.mode==='rush'?'Rush: all '+fmt(c.bots)+' simulated players online until '+t.toUTCString().slice(17,22)+' UTC':c.mode==='life'?'Normal days: '+fmt(c.bots)+' simulated players, each online 2 to 3 hours a day at changing times':'Off: no simulated players playing';
   if(c.brake) $('mode').textContent+=' · safety brake: '+c.brake.why;
   $('online').textContent=fmt(n.serverOnline); $('online2').textContent=n.serverPlaying!=null?fmt(n.serverPlaying)+' of them in a game':'';
   $('bots').textContent=fmt(n.online); $('bots2').textContent=fmt(n.inMatch)+' in online matches · '+fmt(n.inBattle)+' in map battles · '+fmt(n.inGame)+' in offline games';

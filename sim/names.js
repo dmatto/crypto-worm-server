@@ -32,25 +32,16 @@ export function nameFor(n, again = 0) {
 }
 const BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm|whale|cwormteam|support)/i;
 
-// Countries roughly like the real players' (most from Indonesia), and a spread of others.
-const CC = [['ID', 30], ['PH', 8], ['NG', 7], ['IN', 7], ['VN', 5], ['US', 5], ['BR', 5], ['TR', 4], ['UY', 3], ['AR', 3], ['MX', 3], ['TH', 3], ['MY', 3], ['PK', 2],
-  ['DE', 2], ['GB', 2], ['FR', 2], ['SG', 2], ['KE', 2], ['CA', 2], ['ES', 1], ['IT', 1], ['PL', 1], ['UA', 1], ['EG', 1], ['BD', 1], ['ZA', 1], ['CO', 1], ['VE', 1],
-  ['PE', 1], ['CL', 1], ['JP', 1], ['KR', 1], ['AU', 1]];
-const CC_SUM = CC.reduce((s, c) => s + c[1], 0);
-export function countryFor(n) {
-  let x = rng(n * 31337 + 7)() * CC_SUM;
-  for (const [cc, w] of CC) { if ((x -= w) < 0) return cc }
-  return 'ID';
-}
+// A random country for each one, from a broad list (every one is on the World Map).
+const CC = ('ID PH NG IN VN US BR TR MX TH MY PK BD EG KE ZA AR CO PE CL VE UY DE GB FR ES IT PL UA RU RO NL PT SE NO FI DK BE CH AT CZ GR HU ' +
+  'JP KR CN TW HK SG AU NZ CA SA AE IL IR IQ MA DZ TN GH ET TZ UG LK NP KZ UZ EC BO PY CR GT DO CU').split(' ');
+export const countryFor = n => pick(rng(n * 31337 + 7), CC);
 
-// How a player plays: sessions a day, games a session, how often online, and what a game usually banks (play money).
+// How a player plays: how often online, and what a game usually banks (play money).
 // The weekly budget keeps their ranking like real players': most bank a few hundred a week, a few over a thousand.
 export function profileFor(n) {
   const r = rng(n * 104723 + 3);
-  const keen = r();                                                   // 0 casual .. 1 keen
   return {
-    sessions: 2 + Math.floor(keen * 3),                               // 2-4 a day
-    gmin: 2, gmax: 3 + Math.floor(keen * 2),                          // 2-5 games a session: always more than 3 games a day
     online: .25 + r() * .25,                                          // share of games played online
     per: Math.round(40 + r() * 80),                                   // play money a won game banks
     budget: Math.round(Math.min(1400, 120 * Math.exp(r() * 2.3))),    // play money a week at most (120 to 1,400)

@@ -43,6 +43,7 @@ meta = {
     'bindings': [{'type': 'd1', 'name': 'DB', 'id': db['uuid']},
                  {'type': 'durable_object_namespace', 'name': 'MATCH', 'class_name': 'Match'},
                  {'type': 'durable_object_namespace', 'name': 'LOBBY', 'class_name': 'Lobby'}]
+                + ([{'type': 'service', 'name': 'SIM', 'service': 'crypto-worm-sim'}] if any(s['id'] == 'crypto-worm-sim' for s in existing) else [])   # the load test (sim/), once deployed
                 + [{'type': 'plain_text', 'name': k, 'text': v} for k, v in VARS.items()],
     'keep_bindings': ['secret_text'],
 }

@@ -5,13 +5,14 @@
 // updates a second, then hands the turn over), and World Map battles for land (CPU land or other bots' land only).
 //
 // Two ways to run (set by the Control object, see control.js):
-//   life   every bot has a few sessions a day (2-4), with 2-5 games each, so more than 3 games a day
+//   life   every bot is online 2 to 3 hours each UTC day, in one or two goes at random times that change every day,
+//          playing game after game (so far more than 3 games a day)
 //   rush   every bot comes online, spread over the ramp, and keeps playing until the rush ends; then back to life
-// A bot's long waits between sessions are kept as `next` times, so a fleet with nobody online sleeps until an alarm.
+// A bot's day plan is kept with its account, so a fleet with nobody online sleeps until an alarm.
 // Answer times, errors and messages go to Control every 10 seconds.
 import { TILES } from './world.js';
 import { nameFor, countryFor, profileFor } from './names.js';
-import { newWin, noteReq, noteWs, noteRelay, noteError, groupOf } from './stats.js';
+import { newWin, noteReq, noteWs, noteRelay, noteError as note, groupOf } from './stats.js';
 
 const BASE = 'https://game', MIN = 6e4, HOUR = 36e5, DAY = 864e5, REPORT_MS = 10e3, WATCHDOG_MS = 30e3, FRAME_MS = 50;
 const sleep = ms => new Promise(r => setTimeout(r, Math.max(0, ms)));
@@ -51,6 +52,9 @@ function moveSnap(s, side, frame, end, shooting) {
   s.proj = shooting ? [{ x: w.x + (frame % 40) * 12, y: 300 - (frame % 40) * 4, vx: 6, vy: -2, kind: s.g.weapon, owner: s.active, t: frame % 40 }] : [];
 }
 
+let recent = [], slow = [];                                                                   // the last few errors, shown in the fleet's numbers
+const noteError = (w, text) => { note(w, text); recent = [...recent.slice(-4), new Date().toISOString().slice(11, 19) + ' ' + String(text).slice(0, 160)] };
+
 export class Fleet {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.cfg = null; this.bots = null; this.win = newWin(); this.queue = []; this.timer = null; this.open = 0; this.lag = 0 }
   speed() { return Math.max(1, Number(this.env.SIM_SPEED) || 1) }   // local tries run faster
@@ -58,7 +62,8 @@ export class Fleet {
 
   async boot() {
     if (this.bots) return;
-    this.cfg = (await this.ctx.storage.get('cfg')) || null;
+    this.cfg = (await this.ctx.storage.get('cfg')) || null; this.born = Date.now();
+    const alive = await this.ctx.storage.get('alive'); this.gap = alive ? this.born - alive : null;
     this.saved = (await this.ctx.storage.get('bots')) || {};
     this.bots = new Map(); if (this.cfg) this.fill();
   }
@@ -66,12 +71,14 @@ export class Fleet {
     const c = this.cfg; if (!c || c.per == null) return;
     for (let n = c.first; n < c.first + c.per; n++) if (!this.bots.has(n)) {
       const s = this.saved[n] || {};
-      this.bots.set(n, { n, token: s.token || null, id: s.id || null, name: s.name || nameFor(n), cc: s.cc || countryFor(n), prof: profileFor(n), next: s.next || 0,
+      this.bots.set(n, { n, token: s.token || null, id: s.id || null, name: s.name || nameFor(n), cc: countryFor(n), prof: profileFor(n), next: 0, plan: s.plan || null,
         wk: s.wk || 0, week: s.week || 0, ad: s.ad || 0, attacks: s.attacks || 0, land: !!s.land, run: false, lobby: null });
     }
+    for (const n of this.bots.keys()) if (n < c.first || n >= c.first + c.per) this.bots.delete(n);   // now another fleet's (a running one stops: see active)
+    if (this.fillPer !== c.per) { this.fillPer = c.per; this.idsChanged = true }   // tell Control which accounts are ours
   }
   persist() {
-    const out = {}; for (const b of this.bots.values()) out[b.n] = { token: b.token, id: b.id, name: b.name, cc: b.cc, next: b.next, wk: b.wk, week: b.week, ad: b.ad, attacks: b.attacks, land: b.land };
+    const out = {}; for (const b of this.bots.values()) out[b.n] = { token: b.token, id: b.id, name: b.name, cc: b.cc, next: b.next, plan: b.plan, wk: b.wk, week: b.week, ad: b.ad, attacks: b.attacks, land: b.land };
     this.saved = out; return this.ctx.storage.put('bots', out);
   }
 
@@ -89,24 +96,24 @@ export class Fleet {
     this.fill(); this.wake();
   }
   rushing(now = Date.now()) { const c = this.cfg; return !!c && c.mode === 'rush' && now >= c.rushFrom && now < c.rushUntil }
-  active(b) { const c = this.cfg; return !!c && c.mode !== 'off' && b.n < c.bots }
+  active(b) { const c = this.cfg; return !!c && c.mode !== 'off' && b.n < c.bots && b.n >= c.first && b.n < c.first + c.per }
   keep(b) { return this.active(b) && (!b.rush || this.rushing()) }
   wake() { if (!this.timer) { this.lastStep = Date.now(); this.timer = setInterval(() => this.step(), 1000) } this.step() }
 
   // Once a second: start the bots whose time has come, report every 10 s, and go to sleep when nobody is online.
   step() {
-    const now = Date.now(), c = this.cfg; this.lag = Math.max(this.lag, now - this.lastStep - 1000); this.lastStep = now;
+    const now = Date.now(), c = this.cfg; this.steps = (this.steps || 0) + 1; this.lag = Math.max(this.lag, now - this.lastStep - 1000); this.lastStep = now;
     if (!c) return;
     let running = 0, soonest = Infinity;
     for (const b of this.bots.values()) {
       if (b.run) { running++; continue }
       if (!this.active(b)) continue;
-      let due = b.next;
-      if (this.rushing(now)) due = Math.min(due || Infinity, c.rushFrom + this.t(c.ramp * (b.n / Math.max(1, c.bots)) + (b.n % 7) * 300));   // a rush brings everyone in over the ramp
-      else if (!due) due = b.next = now + this.t(rnd(0, c.spread || 30 * MIN));            // first time: arrive over the first half hour
-      if (due <= now) { running++; this.start(b) } else soonest = Math.min(soonest, due);
+      const go = this.slot(b, now); let due = go[0];
+      if (this.rushing(now)) due = Math.min(due, c.rushFrom + this.t(c.ramp * (b.n / Math.max(1, c.bots)) + (b.n % 7) * 300));   // a rush brings everyone in over the ramp
+      due = Math.max(due, b.next || 0);                                                // a short wait after something went wrong
+      if (due <= now) { running++; this.start(b, go[1]) } else soonest = Math.min(soonest, due);
     }
-    if (now - (this.reported || 0) >= REPORT_MS) this.report(now);
+    if (now - (this.reported || 0) >= REPORT_MS && (this.bots.size || this.open)) this.report(now);
     if (!running && !this.open) {                                                   // nobody online: sleep until the next session
       clearInterval(this.timer); this.timer = null;
       if (this.dirty) { this.dirty = false; this.persist().catch(() => { }) }
@@ -115,29 +122,47 @@ export class Fleet {
     }
     if (!this.alarmAt || this.alarmAt < now || this.alarmAt > now + WATCHDOG_MS * 2) this.alarm2(now + WATCHDOG_MS);   // wakes the fleet again if it was shut down
   }
+  // The bot's time online now or next, [from, until]. Each UTC day: 2 to 3 hours, in one go or two (at least an hour
+  // apart), at random times, so the same bot comes at different times every day.
+  slot(b, now) {
+    const D = this.t(DAY), day = Math.floor(now / D);
+    if (!b.plan || b.plan.day < day) b.plan = this.planDay(day);
+    let s = b.plan.slots.find(s => s[1] > now);
+    if (!s) { b.plan = this.planDay(day + 1); s = b.plan.slots[0] }
+    return s;
+  }
+  planDay(day) {
+    const D = this.t(DAY), H = this.t(HOUR), t0 = day * D, all = rnd(2, 3) * H; let s;
+    if (Math.random() < .5) { const a = rnd(0, D - all); s = [[a, a + all]] }
+    else { const one = all * rnd(.35, .65), two = all - one, a = rnd(0, D - all - H), b = rnd(a + one + H, D - two); s = [[a, a + one], [b, b + two]] }
+    this.dirty = true;
+    return { day, slots: s.map(([a, b]) => [Math.round(t0 + a), Math.round(t0 + b)]) };
+  }
   alarm2(at) { this.alarmAt = at; this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, at)).catch(() => { }) }
 
-  start(b, invited) {
-    b.run = true; b.rush = this.rushing();
-    this.session(b, invited).catch(e => { noteError(this.win, 'session: ' + (e && e.message || e)); b.next = Date.now() + this.t(rnd(1, 4) * MIN) })
-      .finally(() => { b.run = false; b.rush = false; b.inMatch = b.inBattle = b.inGame = false; this.closeLobby(b); this.dirty = true });
+  start(b, until) {
+    b.run = true; b.rush = this.rushing(); b.until = b.rush ? this.cfg.rushUntil : until;
+    this.session(b).catch(e => { noteError(this.win, 'session: ' + (e && e.message || e)); b.next = Date.now() + this.t(rnd(1, 4) * MIN) })
+      .finally(() => { b.run = false; b.rush = false; b.inMatch = b.inBattle = b.inGame = b.inMenu = false; b.invite = null; this.closeLobby(b); this.dirty = true });
   }
 
   // ---- talking to the game server
   async api(b, method, path, body, extra = {}) {
     const t0 = Date.now(); let status = 0, data = null;
     try {
-      const r = await this.env.GAME.fetch(BASE + path, { method, headers: { 'content-type': 'application/json', ...(b && b.token ? { authorization: 'Bearer ' + b.token } : {}), ...extra },
+      const r = await this.env.GAME.fetch(BASE + path, { method, headers: { 'content-type': 'application/json', ...(b && b.token ? { authorization: 'Bearer ' + b.token } : {}), ...this.who(b), ...extra },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       status = r.status; data = await r.json().catch(() => null);
     } catch (e) { noteError(this.win, path + ': ' + (e && e.message || e)) }
-    noteReq(this.win, groupOf(path), status, Date.now() - t0);
+    const ms = Date.now() - t0; noteReq(this.win, groupOf(path), status, ms);
+    if (ms > 1000) slow = [...slow.slice(-4), new Date(t0).toISOString().slice(14, 19) + ' ' + method + ' ' + path.split('?')[0].slice(0, 30) + ' ' + ms];   // which answers are slow, and when
     if (status >= 500) noteError(this.win, path + ' ' + status + ' ' + JSON.stringify(data || '').slice(0, 80));
     return { status, data };
   }
-  async socket(path, onMsg) {
+  who(b) { return b && this.env.SIM_KEY ? { 'x-sim-key': this.env.SIM_KEY, 'x-sim-cc': b.cc } : {} }   // the bot's own country, for its flag
+  async socket(path, onMsg, b) {
     const t0 = Date.now(); let r;
-    try { r = await this.env.GAME.fetch(BASE + path, { headers: { Upgrade: 'websocket' } }) } catch (e) { noteWs(this.win, false); noteError(this.win, 'socket: ' + (e && e.message || e)); return null }
+    try { r = await this.env.GAME.fetch(BASE + path, { headers: { Upgrade: 'websocket', ...this.who(b) } }) } catch (e) { noteWs(this.win, false); noteError(this.win, 'socket: ' + (e && e.message || e)); return null }
     const ws = r.webSocket;
     if (!ws) { noteWs(this.win, false); noteError(this.win, 'socket ' + path.split('?')[0] + ' ' + r.status); return null }
     ws.accept(); noteWs(this.win, true, Date.now() - t0); this.open++;
@@ -149,8 +174,8 @@ export class Fleet {
   send(ws, obj) { if (!ws || ws.gone) return; const s = JSON.stringify(obj); try { ws.send(s); this.win.msgsOut++; this.win.bytesOut += s.length } catch (e) { } }
   shut(ws) { if (ws && !ws.gone) { try { ws.close(1000, 'bye') } catch (e) { } ws.gone = true; this.open-- } }
 
-  // ---- one session: open the game, sit in the lobby, play a few games, leave
-  async session(b, invited) {
+  // ---- one session: open the game, sit in the lobby, play game after game until its time is up, leave
+  async session(b) {
     if (!b.token && !(await this.signup(b))) { b.next = Date.now() + this.t(rnd(2, 6) * MIN); return }
     const me = await this.api(b, 'GET', '/me');
     if (me.status === 401) { b.token = null; b.id = null; b.next = Date.now() + 5000; return }   // the account is gone: sign up again
@@ -159,17 +184,15 @@ export class Fleet {
     if (Math.random() < .15) await this.api(b, 'GET', '/invites');
     if (Math.random() < .2) await this.api(b, 'GET', '/friends');
     await this.openLobby(b);
-    let games = b.rush ? 1e9 : Math.round(rnd(b.prof.gmin, b.prof.gmax));
-    if (invited) { await invited.done.catch(() => { }); games-- }                   // came online for a friend's challenge: that match first
-    while (games-- > 0 && this.keep(b)) {
-      await this.menu(b, rnd(5, 25) * 1000);
-      if (!this.keep(b)) break;
+    while (this.keep(b) && Date.now() < b.until) {
+      await this.menu(b, rnd(8, 60) * 1000);
+      if (b.invite) { const m = b.invite; await m.done.catch(() => { }); b.invite = null; continue }   // another bot challenged this one
+      if (!this.keep(b) || Date.now() >= b.until) break;
       await this.game(b);
     }
     this.closeLobby(b);
-    b.next = Date.now() + (this.rushing() ? 5000 : this.t(this.gap(b)));
+    b.next = Date.now() + this.t(5000);
   }
-  gap(b) { return DAY / b.prof.sessions * rnd(.5, 1.5) }
   async signup(b) {
     const r = await this.api(null, 'POST', '/auth/guest', { src: 'loadtest' }, { 'x-sim-key': this.env.SIM_KEY || '' });
     if (r.status !== 200 || !r.data || !r.data.token) return false;
@@ -187,17 +210,18 @@ export class Fleet {
     b.lobbyAt = Date.now();
     b.lobby = await this.socket(`/lobby/ws?token=${encodeURIComponent(b.token)}&hidden=1`, raw => {
       if (raw.startsWith('{"t":"challenged"')) { try { const m = JSON.parse(raw); this.send(b.lobby, { t: 'decline', code: m.code, from: m.from && m.from.id, busy: true }) } catch (e) { } }
-    });
+    }, b);
   }
   closeLobby(b) { if (b.lobby) { this.shut(b.lobby); b.lobby = null } }
   busy(b, on) { if (b.lobby && !b.lobby.gone) this.send(b.lobby, { t: 'busy', on }) }
   async menu(b, ms) {                                                               // on the menu: the game checks for attacks on its land every 12 s
-    const end = Date.now() + this.t(ms);
-    while (Date.now() < end && this.keep(b)) {
+    const end = Math.min(Date.now() + this.t(ms), b.until); b.inMenu = true;
+    while (Date.now() < end && this.keep(b) && !b.invite) {
       if ((!b.lobby || b.lobby.gone) && Date.now() - (b.lobbyAt || 0) > 5000) await this.openLobby(b);
       if (b.land && Date.now() - (b.alertAt || 0) >= this.t(12e3)) { b.alertAt = Date.now(); await this.api(b, 'GET', '/map/alert') }
       await sleep(Math.min(1000, end - Date.now()));
     }
+    b.inMenu = false;
   }
   async wait(b, ms) { const end = Date.now() + this.t(ms); while (Date.now() < end && this.keep(b)) await sleep(Math.min(1000, end - Date.now())) }
 
@@ -227,14 +251,14 @@ export class Fleet {
     if (s.status === 200) { b.week += amount; this.dirty = true }
   }
 
-  // ---- an online match against another bot of this fleet: the first one waiting; else, like a friend's challenge on
-  // Telegram, one who isn't playing comes online for it; else wait up to 20 s for one
+  // ---- an online match against another bot of this fleet that is online too: the first one waiting; else, like a
+  // friend's challenge, one on the menu; else wait up to 20 s for one
   async duel(b) {
     const peer = this.queue.shift();
     if (peer) { peer.taken = true; const m = { host: b, guest: peer.b }; m.done = this.play(m); peer.go(m); await m.done.catch(e => noteError(this.win, 'match: ' + (e && e.message || e))); return true }
-    const idle = !b.rush && [...this.bots.values()].filter(x => x !== b && !x.run && x.token && this.active(x));
-    if (idle && idle.length && Math.random() < .8) {
-      const x = pick(idle), m = { host: b, guest: x }; m.done = this.play(m); this.start(x, m);
+    const free = [...this.bots.values()].filter(x => x !== b && x.run && x.inMenu && !x.invite && x.token && this.keep(x));
+    if (free.length && Math.random() < .8) {
+      const x = pick(free), m = { host: b, guest: x }; x.invite = m; m.done = this.play(m);
       await m.done.catch(e => noteError(this.win, 'match: ' + (e && e.message || e))); return true;
     }
     const e = { b }, m = await new Promise(res => { e.go = res; this.queue.push(e); setTimeout(() => { if (e.taken) return; const i = this.queue.indexOf(e); if (i >= 0) this.queue.splice(i, 1); res(null) }, this.t(20e3)) });
@@ -254,9 +278,9 @@ export class Fleet {
     };
     try {
       const code = (await this.api(A, 'POST', '/match/new', {})).data; if (!code || !code.code) throw new Error('no match code');
-      ws[0] = await this.socket(`/match/${code.code}/ws?token=${encodeURIComponent(A.token)}`, on(0)); if (!ws[0]) throw new Error('host could not join');
+      ws[0] = await this.socket(`/match/${code.code}/ws?token=${encodeURIComponent(A.token)}`, on(0), A); if (!ws[0]) throw new Error('host could not join');
       await until(0, 'seat'); this.send(ws[0], { t: 'host', hat: A.prof.hat });
-      ws[1] = await this.socket(`/match/${code.code}/ws?token=${encodeURIComponent(B.token)}`, on(1)); if (!ws[1]) throw new Error('guest could not join');
+      ws[1] = await this.socket(`/match/${code.code}/ws?token=${encodeURIComponent(B.token)}`, on(1), B); if (!ws[1]) throw new Error('guest could not join');
       await until(1, 'seat'); this.send(ws[1], { t: 'join', hat: B.prof.hat });
       await until(0, 'join');
       A.inMatch = B.inMatch = true; this.busy(A, true); this.busy(B, true);
@@ -323,7 +347,7 @@ export class Fleet {
 
   // ---- numbers for Control
   snap() {
-    const s = { bots: 0, accounts: 0, online: 0, inMatch: 0, inBattle: 0, inGame: 0, sockets: this.open, lag: this.lag };
+    const s = { bots: 0, accounts: 0, online: 0, inMatch: 0, inBattle: 0, inGame: 0, sockets: this.open, lag: this.lag, recent, slow, reports: this.reports || 0, reportErr: this.reportErr || null, steps: this.steps || 0, reportAt: this.reported || 0, age: this.born ? Date.now() - this.born : 0, gap: this.gap };
     if (!this.bots || !this.cfg) return s;
     for (const b of this.bots.values()) {
       if (this.active(b)) s.bots++; if (b.token) s.accounts++; if (b.lobby && !b.lobby.gone) s.online++;
@@ -336,10 +360,12 @@ export class Fleet {
     const snap = this.snap(); this.lag = 0;
     const ids = this.idsChanged ? [...this.bots.values()].filter(b => b.id).map(b => b.id) : undefined; this.idsChanged = false;
     if (this.dirty) { this.dirty = false; this.persist().catch(() => { }) }
+    this.ctx.storage.put('alive', now).catch(() => { });
     try {
       const r = await this.env.CONTROL.get(this.env.CONTROL.idFromName('control')).fetch('https://control/report', { method: 'POST', body: JSON.stringify({ k: this.cfg.k, at: now, win, snap, ids }) });
       const c = await r.json().catch(() => null); if (c && c.v != null && (!this.cfg || c.v !== this.cfg.v || c.ids)) this.take(c);
-    } catch (e) { }
+      this.reports = (this.reports || 0) + 1; if (!r.ok) this.reportErr = 'report ' + r.status;
+    } catch (e) { this.reportErr = 'report: ' + String(e && e.message || e).slice(0, 160) }
   }
 
   // ---- how many sockets one Durable Object can hold open through the service binding (a one-off check before the real thing)
