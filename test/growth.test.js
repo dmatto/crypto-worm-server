@@ -196,5 +196,9 @@ test('growth: an announcement goes to the group once and to every Telegram playe
   assert.equal(calls.filter(c => c[0] === 'sendMessage' && /Second note/.test(c[1].text)).length, 0);
   env.now = Date.now() + 86400000; await cron(env, env.now);
   assert.deepEqual(calls.filter(c => c[0] === 'sendMessage' && /Second note/.test(c[1].text)).map(c => c[1].chat_id), [-100, 42]);   // 666 blocked the bot last time
+  // a note queued with a later time waits for it
+  env.sql.prepare('INSERT INTO announcements (text, created) VALUES (?, ?)').run('Timed note', env.now + 2 * 86400000);
+  calls.length = 0; env.now += 86400000; await cron(env, env.now); assert.equal(calls.filter(c => /Timed note/.test(c[1].text || '')).length, 0);
+  env.now += 86400000 + 60e3; await cron(env, env.now); assert.equal(calls.filter(c => /Timed note/.test(c[1].text || '')).length, 2);
   assert.ok(a);
 });

@@ -210,7 +210,7 @@ export async function cron(env, now = Date.now()) {
   if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (!env.BOT_TOKEN || !env.DB) return;
-  if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 LIMIT 1').first()) await kickAnnounce(env);   // the lobby sends notes back to back
+  if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   for (const job of quarter ? [weekly, reminders, mapCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 export async function sync(env) {

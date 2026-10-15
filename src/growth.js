@@ -298,7 +298,7 @@ export const ANNOUNCE_BATCH = 40;   // Telegram calls per run stay under the 50-
 export const utcDay = (now = Date.now()) => new Date(now).toISOString().slice(0, 10);
 // sends one batch; true while that note has more players to go
 export async function announce(env, now = Date.now()) {
-  const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 ORDER BY id LIMIT 1').first();
+  const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 AND created <= ? ORDER BY id LIMIT 1').bind(now).first();   // created in the future = send then
   if (!a) return false;
   const kb = { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] };
   if (!a.group_done) {
