@@ -21,7 +21,7 @@ const pick = a => a[Math.floor(Math.random() * a.length)];
 const weekStart = (t = Date.now()) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime() - ((d.getUTCDay() + 6) % 7) * DAY };
 const THEMES = ['moon', 'mars', 'beach', 'city', 'jungle', 'ice', 'desert', 'candy'];
 // the live feed on Home (src/feed.js): about half the games send a moment or two, the way the game reports its best moments
-const WEAPONS = ['rocket', 'grenade', 'shotgun', 'cluster', 'fomo', 'lambo', 'mine', 'rugpull', 'whale', 'punch', 'fart', 'mole', 'geyser', 'quake', 'bugs', 'btcbomb', 'drill', 'blackhole'];
+const WEAPONS = ['rocket', 'grenade', 'shotgun', 'cluster', 'fomo', 'lambo', 'mine', 'rugpull', 'whale', 'punch', 'fart', 'mole', 'geyser', 'quake', 'bugs', 'btcbomb', 'drill', 'blackhole', 'acid'];
 const FOES = ['Paper Hands', 'Miss FUD', 'Rekt', 'Bag Lady', 'Shorty', 'Dumper'], OWN = ['Moon Boy', 'Moon Girl', 'Lambo'];
 export function moments(mode, won, r = Math.random) {
   if (r() < .5) return null;
