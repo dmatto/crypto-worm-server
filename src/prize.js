@@ -3,7 +3,7 @@
 // (Damian checks the top 10's follows by hand), linked a wallet with the Holder tier (100K, read by holders.js), held it all
 // week (streak from Monday or earlier, no reading under 100K since), and finished matches on 3 different UTC days this week.
 // Prize points are the week's play-money $CWORM gained, at most 1,500 a UTC day, from a log of every score report that also
-// serves Monday's fair-play review. Accounts must be 14 days old by the Monday payout. The server pays nothing: /prize in
+// serves Monday's fair-play review. Accounts must be 8 days old by the Monday payout (Damian 2026-10-16; it was 14). The server pays nothing: /prize in
 // the bot gives the admins the list, the payout lines and the logs, and Damian sends the tokens from the treasury.
 // Against scripts (Damian 2026-10-16): the phone reports the score, so a day's prize points also can't pass what the matches
 // the server saw start and finish that day can carry (see runEnd), ties go to online wins against real players (the server
@@ -18,7 +18,7 @@ import { balances, MINT } from './holders.js';
 
 // Each place's share of the pool in SOL (25%, 17%, 12%, 7%, then 6.5% each), paid as $CWORM at the price on payout Monday
 export const PRIZES = [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065];   // 1 SOL
-export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, MIN_AGE_DAYS = 14;
+export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, MIN_AGE_DAYS = 8;
 export const FIRST_WEEK = Date.UTC(2026, 9, 19), SHOW_FROM = Date.UTC(2026, 9, 18);   // first prize week Mon 19 Oct; the card shows from Sun 18 Oct
 export const GROUP_LINK = 'https://t.me/CryptoWorm_Group', X_LINK = 'https://x.com/CryptoWorm72';
 const DAY = 864e5, WEEK = 7 * DAY, CHECK_MS = 30e3, RECHECK_MS = 10 * 60e3, LOG_KEEP = 35 * DAY;
@@ -110,7 +110,7 @@ export function steps(r, w, now = Date.now(), lax = false) {
     age: { ok: r.created <= w + WEEK - MIN_AGE_DAYS * DAY, days: Math.floor((now - r.created) / DAY), from: firstWeek(r.created) },
   };
 }
-// The first prize week an account is old enough for: 14 days old by that week's Monday payout.
+// The first prize week an account is old enough for: MIN_AGE_DAYS old by that week's Monday payout.
 const firstWeek = created => { const t = created + MIN_AGE_DAYS * DAY - WEEK, m = weekOf(t); return Math.max(FIRST_WEEK, m < t ? m + WEEK : m) };
 const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && s.days.done;
 

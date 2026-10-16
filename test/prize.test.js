@@ -132,12 +132,12 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
   const none = await player(env, 50, 'NoWallet'), low = await player(env, 51, 'Low', { wallet: 'LowWa11et1111111111111111111111111', bal: 5000 });
   const late = await player(env, 52, 'Late', { wallet: 'LateWa11et111111111111111111111111', since: Math.floor(at(2) / DAY) });
-  const young = await player(env, 53, 'Young', { age: 3, wallet: 'YoungWa11et11111111111111111111111' });
+  const young = await player(env, 53, 'Young', { age: 0, wallet: 'YoungWa11et11111111111111111111111' });
   clock = at(2, 12);
   let s = (await call(env, '/prize', undefined, none.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.linked, false);
   s = (await call(env, '/prize', undefined, low.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.low, true);
   s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);
-  s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 5); assert.equal(s.age.from, MON + 7 * DAY);
+  s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 2); assert.equal(s.age.from, MON + 7 * DAY);
   // without SOLANA_RPC the free hosts rarely answer: a linked wallet never read counts until Monday's live check, a holder
   // from mid-week counts too, and a wallet read under 100K still doesn't
   delete env.SOLANA_RPC;
@@ -145,9 +145,11 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   s = (await call(env, '/prize', undefined, unread.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.wallet.pending, true); assert.equal(s.hold.done, true); assert.equal(s.hold.days, 3);
   assert.equal((await call(env, '/prize', undefined, late.token)).steps.hold.done, true);
   assert.equal((await call(env, '/prize', undefined, low.token)).steps.wallet.done, false);
-  // an account made Friday 16 Oct is 10 days old at the first payout (too young) and 17 at the next one
-  assert.equal(P.steps({ created: MON - 3 * DAY }, MON, MON).age.ok, false);
-  assert.equal(P.steps({ created: MON - 3 * DAY }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
+  // accounts need 8 days by the payout: one made Friday 16 Oct is 10 days old at the first payout, one made at noon on
+  // Sunday 18 Oct is 7.5 (too young) and 14.5 at the next one
+  assert.equal(P.steps({ created: MON - 3 * DAY }, MON, MON).age.ok, true);
+  assert.equal(P.steps({ created: MON - DAY / 2 }, MON, MON).age.ok, false);
+  assert.equal(P.steps({ created: MON - DAY / 2 }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
   // Telegram's answers: member, admin, restricted but in the group count; left, kicked and "user not found" don't
   for (const [st, ok] of [['member', true], ['administrator', true], ['creator', true], ['left', false], ['kicked', false], [null, false]]) {
     if (st) members.set(77, st); else members.delete(77);
