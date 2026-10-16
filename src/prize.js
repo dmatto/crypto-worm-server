@@ -5,6 +5,9 @@
 // Prize points are the week's play-money $CWORM gained, at most 1,500 a UTC day, from a log of every score report that also
 // serves Monday's fair-play review. Accounts must be 14 days old by the Monday payout. The server pays nothing: /prize in
 // the bot gives the admins the list, the payout lines and the logs, and Damian sends the tokens from the treasury.
+// Against scripts (Damian 2026-10-16): the phone reports the score, so a day's prize points also can't pass what the matches
+// the server saw start and finish that day can carry (see runEnd), ties go to online wins against real players (the server
+// sees those matches), an X username belongs to one player, and an admin can take a player out (/prize skip).
 //
 //   GET  /prize                -> {on, start, week, steps, done, ticket, points, rank, entrants, ...}   the player's card
 //   POST /prize/check          -> same, after asking Telegram whether the player is in the group (at most every 30 s)
@@ -20,6 +23,21 @@ export const FIRST_WEEK = Date.UTC(2026, 9, 19), SHOW_FROM = Date.UTC(2026, 9, 1
 export const GROUP_LINK = 'https://t.me/CryptoWorm_Group', X_LINK = 'https://x.com/CryptoWorm72';
 const DAY = 864e5, WEEK = 7 * DAY, CHECK_MS = 30e3, RECHECK_MS = 10 * 60e3, LOG_KEEP = 35 * DAY;
 const day = t => Math.floor(t / DAY);
+// The match check: the game tells the server when a match starts (/started) and ends (/played). A finished match of at least
+// RUN_MIN_S seconds lets RUN_RATE prize points a second count (at most RUN_MAX a match), and each UTC day has FREE_PTS more
+// for mini games. Real players stay far under this (about 0.3 points a second); a script has to take match time like them.
+export const RUN_MIN_S = 20, RUN_RATE = 1.5, RUN_MAX = 400, FREE_PTS = 150;
+const NO_RUN = new Set(['tutorial', 'mini']);
+export const runStart = (env, player, mode, now = Date.now()) => env.DB.prepare('INSERT INTO prize_run (player, mode, at) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET mode = excluded.mode, at = excluded.at')
+  .bind(player, String(mode || '').slice(0, 12), now).run().catch(() => { });
+export async function runEnd(env, player, now = Date.now()) {
+  const r = await env.DB.prepare('DELETE FROM prize_run WHERE player = ? RETURNING mode, at').bind(player).first().catch(() => null);
+  const secs = r ? Math.floor((now - r.at) / 1000) : 0;
+  if (!r || NO_RUN.has(r.mode) || secs < RUN_MIN_S) return 0;
+  const credit = Math.min(RUN_MAX, Math.round(secs * RUN_RATE));
+  await env.DB.prepare('INSERT INTO run_log (player, at, secs, credit) VALUES (?, ?, ?, ?)').bind(player, now, secs, credit).run().catch(() => { });
+  return credit;
+}
 export function weekOf(now = Date.now()) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime() }
 // The prize week the card is about: this week once prizes have started, the first week before that.
 export const prizeWeek = (now = Date.now()) => Math.max(FIRST_WEEK, weekOf(now));
@@ -32,33 +50,48 @@ export const logScore = (env, player, amount, now = Date.now()) =>
   amount > 0 ? env.DB.prepare('INSERT INTO score_log (player, at, amount) VALUES (?, ?, ?)').bind(player, now, amount).run().catch(() => { }) : null;
 export const logPlayDay = (env, player, now = Date.now()) => env.DB.prepare('INSERT OR IGNORE INTO play_days (player, day) VALUES (?, ?)').bind(player, day(now)).run().catch(() => { });
 export const cleanup = (env, now = Date.now()) => env.DB.batch([env.DB.prepare('DELETE FROM score_log WHERE at < ?').bind(now - LOG_KEEP),
-  env.DB.prepare('DELETE FROM play_days WHERE day < ?').bind(day(now - LOG_KEEP)), env.DB.prepare('DELETE FROM hold_dips WHERE day < ?').bind(day(now - LOG_KEEP))]);
+  env.DB.prepare('DELETE FROM play_days WHERE day < ?').bind(day(now - LOG_KEEP)), env.DB.prepare('DELETE FROM hold_dips WHERE day < ?').bind(day(now - LOG_KEEP)),
+  env.DB.prepare('DELETE FROM run_log WHERE at < ?').bind(now - LOG_KEEP), env.DB.prepare('DELETE FROM prize_run WHERE at < ?').bind(now - DAY)]);
 
-// Prize points of week `w` for every player who scored, highest first: each UTC day counts at most DAY_CAP.
+// Prize points of week `w` for every player who scored, highest first: each UTC day counts at most DAY_CAP, and no more than
+// that day's checked matches carry plus FREE_PTS. `ok` is what the checks let through before the cap; `raw` everything reported.
 export async function points(env, w) {
-  const { results } = await env.DB.prepare(`SELECT player, SUM(MIN(?, d)) AS pts, SUM(d) AS raw, MAX(last) AS last FROM
+  const { results } = await env.DB.prepare(`SELECT player, SUM(MIN(?, d, ? + COALESCE(c, 0))) AS pts, SUM(d) AS raw, SUM(MIN(d, ? + COALESCE(c, 0))) AS ok, MAX(last) AS last FROM
       (SELECT player, at / ${DAY} AS dd, SUM(amount) AS d, MAX(at) AS last FROM score_log WHERE at >= ? AND at < ? AND player NOT IN (SELECT player FROM sim_players)
-      GROUP BY player, dd) GROUP BY player ORDER BY pts DESC, last ASC`)
-    .bind(DAY_CAP, w, w + WEEK).all();
+      GROUP BY player, dd) s
+      LEFT JOIN (SELECT player AS rp, at / ${DAY} AS rd, SUM(credit) AS c FROM run_log WHERE at >= ? AND at < ? GROUP BY rp, rd) r ON r.rp = s.player AND r.rd = s.dd
+      GROUP BY player ORDER BY pts DESC, last ASC`)
+    .bind(DAY_CAP, FREE_PTS, FREE_PTS, w, w + WEEK, w, w + WEEK).all();
   return results;
 }
 
 // What a player has done for week `w`, from what the server knows (the group answer is the last one Telegram gave).
 // D1 takes at most 100 bound values a query, so long lists go in parts.
 const PART = 90;
-async function rows(env, ids, w) {
-  if (ids.length > PART) { const out = new Map(); for (let i = 0; i < ids.length; i += PART) for (const [k, v] of await rows(env, ids.slice(i, i + PART), w)) out.set(k, v); return out }
-  if (!ids.length) return new Map();
+const parts = fn => async function go(env, ids, w) {
+  if (ids.length > PART) { const out = new Map(); for (let i = 0; i < ids.length; i += PART) for (const [k, v] of await go(env, ids.slice(i, i + PART), w)) out.set(k, v); return out }
+  return ids.length ? fn(env, ids, w) : new Map();
+};
+const rows = parts(async (env, ids, w) => {
   const q = ids.map(() => '?').join(','), W = day(w);
   const [p, d, dips] = await Promise.all([
-    env.DB.prepare(`SELECT p.id, p.name, p.tg_id, p.wallet, p.created, e.x, e.group_ok, e.group_at, h.wallet AS hw, h.tier, h.streak_day, h.balance, h.checked
+    env.DB.prepare(`SELECT p.id, p.name, p.tg_id, p.wallet, p.created, e.x, e.group_ok, e.group_at, h.wallet AS hw, h.tier, h.streak_day, h.balance, h.checked,
+        (SELECT 1 FROM prize_skip k WHERE k.player = p.id) AS skipped
         FROM players p LEFT JOIN prize_entry e ON e.player = p.id LEFT JOIN holders h ON h.player = p.id
         WHERE p.id IN (${q}) AND p.id NOT IN (SELECT player FROM sim_players)`).bind(...ids).all(),   // simulated players from load tests never take part
     env.DB.prepare(`SELECT player, COUNT(*) AS n FROM play_days WHERE player IN (${q}) AND day >= ? AND day < ? GROUP BY player`).bind(...ids, W, W + 7).all(),
     env.DB.prepare(`SELECT DISTINCT player FROM hold_dips WHERE player IN (${q}) AND day >= ? AND day < ?`).bind(...ids, W, W + 7).all()]);
   const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Set(dips.results.map(r => r.player));
   return new Map(p.results.map(r => [r.id, { ...r, days: days.get(r.id) || 0, dipped: dipped.has(r.id) }]));
-}
+});
+// Online wins in week `w` against real players (Telegram accounts, not load-test bots), each opponent once a UTC day, and
+// how many different players those were: the prize chart's tie-break, since the server sees these matches itself.
+export const wins = parts(async (env, ids, w) => {
+  const { results } = await env.DB.prepare(`SELECT winner AS player, COUNT(DISTINCT opp || ':' || (ended / ${DAY})) AS n, COUNT(DISTINCT opp) AS opps FROM
+      (SELECT winner, ended, CASE WHEN winner = p0 THEN p1 ELSE p0 END AS opp FROM matches WHERE ended >= ? AND ended < ? AND winner IN (${ids.map(() => '?').join(',')}))
+      WHERE opp != winner AND opp IN (SELECT id FROM players WHERE tg_id IS NOT NULL) AND opp NOT IN (SELECT player FROM sim_players) GROUP BY winner`).bind(w, w + WEEK, ...ids).all();
+  return new Map(results.map(r => [r.player, { n: r.n, opps: r.opps }]));
+});
 // Without SOLANA_RPC the daily wallet reading mostly fails on the free public hosts. Then (loose) a linked wallet that was
 // never read counts for now, holding is "no reading under 100K this week", and /prize reads the top wallets live on Monday.
 export const loose = env => !env.SOLANA_RPC;
@@ -81,19 +114,28 @@ export function steps(r, w, now = Date.now(), lax = false) {
 const firstWeek = created => { const t = created + MIN_AGE_DAYS * DAY - WEEK, m = weekOf(t); return Math.max(FIRST_WEEK, m < t ? m + WEEK : m) };
 const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && s.days.done;
 
-// The prize chart of week `w`: players who did all five steps (and are old enough), by prize points.
+// The prize chart of week `w`: players who did all five steps (and are old enough, and weren't taken out), by prize points,
+// then online wins against real players, then who got there first.
 // Only players who joined the group and gave their X username can have done all five, so only they are looked up.
 export async function chart(env, w, now = Date.now()) {
-  const ready = new Set((await env.DB.prepare('SELECT player FROM prize_entry WHERE group_ok = 1 AND x IS NOT NULL').all()).results.map(r => r.player));
+  const ready = new Set((await env.DB.prepare('SELECT player FROM prize_entry WHERE group_ok = 1 AND x IS NOT NULL AND player NOT IN (SELECT player FROM prize_skip)').all()).results.map(r => r.player));
   const pts = (await points(env, w)).filter(p => ready.has(p.player)), info = await rows(env, pts.map(p => p.player), w), out = [];
-  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw }) }
-  return out;
+  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw, ok: p.ok, last: p.last }) }
+  const won = await wins(env, out.map(r => r.id), w);
+  for (const r of out) { const x = won.get(r.id); r.wins = x ? x.n : 0; r.opps = x ? x.opps : 0 }
+  return out.sort((a, b) => b.pts - a.pts || b.wins - a.wins || a.last - b.last);
 }
 export async function tickets(env, ids, now = Date.now()) {
   const w = prizeWeek(now); if (now < w) return new Set();
   const info = await rows(env, ids, w), out = new Set();
-  for (const [id, r] of info) { const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.add(id) }
+  for (const [id, r] of info) { const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok && !r.skipped) out.add(id) }
   return out;
+}
+// An admin takes a player out of the weekly prize (on = true) or lets them back in. null when there's no such player.
+export async function skip(env, player, on, by, now = Date.now()) {
+  const p = await env.DB.prepare('SELECT id, name FROM players WHERE id = ?').bind(player).first(); if (!p) return null;
+  await (on ? env.DB.prepare('INSERT OR IGNORE INTO prize_skip (player, at, by) VALUES (?, ?, ?)').bind(player, now, by ?? null) : env.DB.prepare('DELETE FROM prize_skip WHERE player = ?').bind(player)).run();
+  return p;
 }
 
 // Telegram's answer about a player in the community group (the bot must be an admin there to see members).
@@ -122,8 +164,8 @@ export async function card(env, me, now = Date.now()) {
   const w = prizeWeek(now), r = (await rows(env, [me.id], w)).get(me.id), s = steps(r, w, now, loose(env)), done = doneOf(s);
   const pts = now >= w ? await points(env, w) : [], mine = pts.find(p => p.player === me.id);
   let rank = null, entrants = 0;
-  if (done && s.age.ok) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
-  return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok, points: mine ? mine.pts : 0,
+  if (done && s.age.ok && !r.skipped) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
+  return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), points: mine ? mine.pts : 0,
     rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
 }
 export async function handle(path, env, me, body, now = Date.now()) {
@@ -133,6 +175,8 @@ export async function handle(path, env, me, body, now = Date.now()) {
   if (path === '/prize/x') {
     const raw = String(body.handle || '').trim(), x = cleanX(raw);
     if (raw && !x) return { error: 'type your X username, like @yourname', status: 400 };
+    if (x && await env.DB.prepare('SELECT 1 AS y FROM prize_entry WHERE x = ? COLLATE NOCASE AND player != ?').bind(x, me.id).first())
+      return { error: 'that X username is already used by another player', status: 409 };
     await env.DB.prepare('INSERT INTO prize_entry (player, x, x_at) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET x = excluded.x, x_at = excluded.x_at').bind(me.id, x, now).run();
     return card(env, me, now);
   }
@@ -168,13 +212,22 @@ export async function adminList(env, w, now = Date.now()) {
   }
   const ids = top.map(r => r.id), logs = ids.length ? (await env.DB.prepare(`SELECT player, at, amount FROM score_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? ORDER BY player, at`)
     .bind(...ids, w, w + WEEK).all()).results : [];
-  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0 }])), hours = new Map();
-  for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++ }
+  const runs = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM run_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
+    .bind(...ids, w, w + WEEK).all()).results.map(r => [r.player, r.n])) : new Map();
+  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0, runs: runs.get(id) || 0, gaps: [], amounts: new Map() }])), hours = new Map(), prev = new Map();
+  for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++
+    if (prev.has(l.player) && l.at - prev.get(l.player) < 3600e3) f.gaps.push(l.at - prev.get(l.player)); prev.set(l.player, l.at); f.amounts.set(l.amount, (f.amounts.get(l.amount) || 0) + 1) }
+  for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
+    const m = f.gaps.reduce((a, b) => a + b, 0) / (f.gaps.length || 1), sd = Math.sqrt(f.gaps.reduce((a, g) => a + (g - m) ** 2, 0) / (f.gaps.length || 1));
+    f.even = f.gaps.length >= 20 && sd < m * 0.25; f.same = f.reports >= 20 && Math.max(0, ...f.amounts.values()) >= f.reports / 2; delete f.gaps; delete f.amounts }
   const px = await cwormPerSol(), cw = sol => px ? Math.round(sol * px.perSol) : null;
-  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], cworm: cw(PRIZES[i]), fair: fair.get(r.id) }));
-  const head = ['place', 'prize_sol', 'prize_cworm_now', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc'];
-  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.cworm ?? 'price not read', r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night])]);
+  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], cworm: cw(PRIZES[i]), fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok) } }));
+  const head = ['place', 'prize_sol', 'prize_cworm_now', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
+    'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts'];
+  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.cworm ?? 'price not read', r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night,
+    r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : ''])]);
   const pay = winners.map(r => r.wallet + ',' + (r.cworm ?? r.prize + ' SOL')).join('\n');
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
-  return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length, price: px };
+  const out = (await env.DB.prepare('SELECT p.id, p.name FROM prize_skip k JOIN players p ON p.id = k.player ORDER BY k.at DESC LIMIT 20').all()).results;
+  return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length, price: px, skipped: out };
 }

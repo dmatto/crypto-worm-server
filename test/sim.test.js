@@ -136,6 +136,7 @@ test('prize: a week with 150 scorers (bots among them) stays under D1\'s 100 bou
     const id = env.sql.prepare("INSERT INTO players (name, created, wallet) VALUES (?, ?, ?) RETURNING id").get('P' + i, w - 30 * D, 'W' + i).id;
     if (sim) env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(id);
     env.sql.prepare('INSERT INTO score_log (player, at, amount) VALUES (?, ?, ?)').run(id, w + D, 100 + i);
+    env.sql.prepare('INSERT INTO run_log (player, at, secs, credit) VALUES (?, ?, 300, 400)').run(id, w + D);   // one checked match
     env.sql.prepare("INSERT INTO prize_entry (player, x, group_ok) VALUES (?, 'x' || ?, 1)").run(id, i);
     for (let d = 0; d < 3; d++) env.sql.prepare('INSERT INTO play_days (player, day) VALUES (?, ?)').run(id, Math.floor((w + d * D) / D));
     return id;

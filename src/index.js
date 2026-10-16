@@ -47,7 +47,7 @@ import { webhook, setup, cron, tellAdmins } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
-import { handle as prizeHandle, logScore, tickets } from './prize.js';
+import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -354,8 +354,9 @@ const app = {
       if (ctx && ctx.waitUntil) ctx.waitUntil(note); else await note;
       return json({ ok: true }, 200, cors);
     }
-    if (path === '/started' && req.method === 'POST') return json(await started(env, me), 200, cors);
-    if (path === '/played' && req.method === 'POST') return json(await played(env, me, String(body.mode || '').slice(0, 12), geo), 200, cors);
+    // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
+    if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
+    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runEnd(env, me.id); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo), 200, cors) }
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)

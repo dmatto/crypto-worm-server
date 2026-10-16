@@ -2,7 +2,8 @@
 // (your invite link and friends so far), /help, /top, /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
 // /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
 // "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
-// the week that ended, with the payout lines and the score logs as files).
+// the week that ended, with the payout lines and the score logs as files; /prize skip <id> and /prize unskip <id> take a
+// player out of the prize or let them back in).
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -14,7 +15,7 @@ function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.le
 import { friendCode } from './auth.js';
 import { cleanup as mapCleanup } from './map.js';
 import { holderCron } from './holders.js';
-import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, FIRST_WEEK } from './prize.js';
+import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
@@ -181,7 +182,12 @@ export async function webhook(req, env) {
       await tg(env, 'sendMessage', { chat_id, text: today ? '📣 Queued. A note already went out today, so this one goes to the group and every player tomorrow (one note a day).' : '📣 Sending now to the group and every Telegram player (except those who sent /stop).' }) }
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
-  else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) await sendPrize(env, chat_id, /last/i.test(arg));
+  else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
+    const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
+    if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
+    else { const p = await prizeSkip(env, Number(sk[2]), !sk[1], (await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null))?.id);
+      await tg(env, 'sendMessage', { chat_id, text: !p ? `No player with id ${sk[2]}.` : sk[1] ? `✅ ${p.name} (id ${p.id}) can win the weekly prize again.`
+        : `🚫 ${p.name} (id ${p.id}) is out of the weekly prize from now on, this week too. They still play and stay in the ranking.\n\n/prize unskip ${p.id} brings them back.` }) } }
   else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
   else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
     text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });
@@ -217,12 +223,15 @@ async function sendPrize(env, chat_id, last) {
   const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
   if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
   const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
-  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} · ${fmt(x.pts)} pts · ${x.prize} SOL${x.cworm != null ? ' ≈ ' + fmt(x.cworm) + ' $CWORM' : ''}\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
-  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} players did all 5 steps.\n` +
+  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : ''].filter(Boolean);
+  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts · ${x.prize} SOL${x.cworm != null ? ' ≈ ' + fmt(x.cworm) + ' $CWORM' : ''}\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n` +
+    `    ${x.fair.runs} checked matches · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => ' · ' + t).join('')}\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
+  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} ${r.entrants === 1 ? 'player' : 'players'} did all 5 steps.\n` +
     (r.price ? `Price now: 1 SOL ≈ ${fmt(Math.round(r.price.perSol))} $CWORM (${r.price.from}). Check it again right before sending.\n\n` : 'The $CWORM price could not be read: work out each SOL amount in $CWORM by hand.\n\n') +
     (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
     (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + (x.why === 'group' ? ' (left the group)' : ' (holds ' + fmt(x.now) + ')')).join(', ')}` : '') +
-    '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now.';
+    (r.skipped.length ? `\n\nTaken out by an admin: ${r.skipped.map(x => esc(x.name) + ' (id ' + x.id + ')').join(', ')}` : '') +
+    '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now. Ties go to online wins against real players.\n/prize skip &lt;id&gt; takes a player out (scripts, shared accounts).';
   await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
   if (!r.winners.length) return;
   await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');

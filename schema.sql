@@ -116,6 +116,25 @@ CREATE TABLE IF NOT EXISTS prize_entry (   -- the weekly prize steps a player di
   group_ok INTEGER NOT NULL DEFAULT 0,
   group_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS prize_run (     -- the match a player has open now: /started opens it, /played closes it (the prize's match check)
+  player INTEGER PRIMARY KEY,
+  mode   TEXT,
+  at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_log (       -- matches the server saw start and finish, and the prize points each can carry (kept 5 weeks)
+  player INTEGER NOT NULL,
+  at     INTEGER NOT NULL,                 -- when it finished
+  secs   INTEGER NOT NULL,
+  credit INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_log_player ON run_log (player, at);
+CREATE INDEX IF NOT EXISTS run_log_at ON run_log (at);
+CREATE TABLE IF NOT EXISTS prize_skip (    -- players an admin took out of the weekly prize (/prize skip): scripts, shared or bought accounts
+  player INTEGER PRIMARY KEY,
+  at     INTEGER NOT NULL,
+  by     INTEGER
+);
+CREATE INDEX IF NOT EXISTS prize_entry_x ON prize_entry (x COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS reward_once (   -- invite bonuses paid at most once: 'loyal:<friend id>', 'mile:<friends>', 'share:<UTC day>'
   player  INTEGER NOT NULL,
   k       TEXT NOT NULL,

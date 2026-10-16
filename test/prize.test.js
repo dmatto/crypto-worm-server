@@ -66,7 +66,8 @@ async function player(env, tgId, name, { age = 30, wallet, bal = 150000, since }
   return { id, token: s.token };
 }
 const score = async (env, p, amount, t) => { clock = t; return call(env, '/score', { amount }, p.token) };
-const play = async (env, p, t) => { clock = t; return call(env, '/played', { mode: 'cpu' }, p.token) };
+// A match the server sees start `secs` seconds before `t` and finish at `t` (the prize's match check)
+const play = async (env, p, t, secs = 300, mode = 'cpu') => { clock = t - secs * 1e3; await call(env, '/started', { mode }, p.token); clock = t; return call(env, '/played', { mode: 'cpu' }, p.token) };
 
 test('prize: hidden before Sunday 18 Oct except for admins and the preview switch', async () => {
   clock = Date.UTC(2026, 9, 15, 12);
@@ -101,9 +102,13 @@ test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ran
   c = await call(env, '/prize/x', { handle: 'https://x.com/Dami_W?s=20' }, a.token);
   assert.equal(c.steps.x.done, true); assert.equal(c.steps.x.handle, '@Dami_W');
   assert.equal(P.cleanX('@CryptoWorm72'), 'CryptoWorm72'); assert.equal(P.cleanX('this_name_is_too_long'), null);
-  // 5. three play days, and prize points: Monday 3 x 600 counts 1,500, Tuesday 500
+  // 5. three play days, and prize points: Monday 3 x 600 counts 1,500, Tuesday 500, once the server saw the matches
   for (const t of [at(0, 10), at(0, 10) + 9e3, at(0, 10) + 18e3]) assert.equal((await score(env, a, 600, t)).added, 600);
-  await score(env, a, 500, at(1)); await play(env, a, at(0)); await play(env, a, at(1));
+  await score(env, a, 500, at(1));
+  clock = at(1, 12); assert.equal((await call(env, '/prize', undefined, a.token)).points, 300);   // no checked match yet: 150 a day
+  await play(env, a, at(0, 8));                                                     // a 5-minute match carries 400
+  clock = at(1, 12); assert.equal((await call(env, '/prize', undefined, a.token)).points, 700);
+  for (const h of [9, 11, 12]) await play(env, a, at(0, h)); await play(env, a, at(1));
   clock = at(1, 12); c = await call(env, '/prize', undefined, a.token);
   assert.equal(c.points, 2000); assert.equal(c.steps.days.n, 2); assert.equal(c.done, false); assert.equal(c.rank, null);
   await play(env, a, at(2)); await play(env, a, at(2) + 25e3);
@@ -167,7 +172,7 @@ test('prize: /prize gives admins the eligible top 10 with the group asked again,
   await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
   const text = calls.find(([m]) => m === 'sendMessage')[1].text;
   assert.match(text, /Weekly prize 2026-10-19 to 2026-10-25/); assert.match(text, /12 players did all 5 steps/);
-  assert.match(text, /Price now: 1 SOL ≈ 1,000,000 \$CWORM \(DexScreener\)/); assert.match(text, /1\. Worm10 · 600 pts · 0\.25 SOL ≈ 250,000 \$CWORM/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line/);
+  assert.match(text, /Price now: 1 SOL ≈ 1,000,000 \$CWORM \(DexScreener\)/); assert.match(text, /1\. Worm10 \(id \d+\) · 600 pts · 0\.25 SOL ≈ 250,000 \$CWORM/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line/);
   assert.match(text, /Dropped just now: Worm11 \(left the group\), Worm9 \(holds 50,000\)/);
   assert.match(text, /X @worm3 · 4 reports, max 130\/hour, 1 at night/);
   const docs = calls.filter(([m]) => m === 'sendDocument').map(([, b]) => b);
@@ -206,4 +211,61 @@ test('weekly prize: the SOL prizes turn into $CWORM at the price now, from DexSc
   assert.deepEqual(await P.cwormPerSol(), { perSol: 1e6, from: 'Jupiter' });
   price.jup = null; assert.equal(await P.cwormPerSol(), null);                       // nothing answers: the admin works it out by hand
   price.dex = '0.000001';
+});
+
+test('prize vs scripts: points need matches the server saw, ties go to online wins against real players, one X username each, and /prize skip', async () => {
+  clock = at(0, 8); calls.length = 0;
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' }), [a, b, c, d] = [];
+  const mk = async (tgId, name) => { const w = H.b58(randomBytes(32)); ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, 150000); members.set(tgId, 'member');
+    const p = await player(env, tgId, name, { wallet: w }); env.sql.prepare('INSERT INTO prize_entry (player, x, group_ok, group_at) VALUES (?, ?, 1, ?)').run(p.id, name.toLowerCase(), clock); return p };
+  const ann = await mk(300, 'Ann'), bob = await mk(301, 'Bob'), cat = await mk(302, 'Cat');
+  const pts = async p => { const r = (await P.points(env, MON)).find(x => x.player === p.id); return r ? r.pts : 0 };
+  // the match check: what each finished match carries, and what carries nothing
+  clock = at(0, 9); assert.equal(await P.runEnd(env, ann.id), 0);                  // /played with no /started
+  await P.runStart(env, ann.id, 'cpu', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 15e3), 0);     // under 20 s
+  await P.runStart(env, ann.id, 'tutorial', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 300e3), 0);
+  await P.runStart(env, ann.id, 'mini', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 300e3), 0);
+  await P.runStart(env, ann.id, 'online', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 100e3), 150);   // 1.5 a second
+  assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 200e3), 0);                    // closed already
+  await P.runStart(env, ann.id, 'cpu', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 12)), 400);           // at most 400
+  // a script that only sends scores: 150 a day for mini games, the rest stays in the ranking but not in the prize
+  for (let i = 0; i < 3; i++) await score(env, bob, 600, at(1, 10) + i * 9e3);
+  assert.equal(await pts(bob), 150); assert.equal((await call(env, '/ranking?period=week', undefined, bob.token)).me.cworm, 1800);
+  // load-test bots don't open matches
+  const sim = await call(env, '/auth/guest', {}); clock = at(1, 11);
+  await worker.fetch(new Request('https://api.test/started', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + sim.token, 'x-sim-key': 'x' }, body: '{"mode":"cpu"}' }), env);
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM prize_run WHERE player = ?').get(sim.player.id).n, 0);
+  // Ann and Cat both reach 1,500 on three days; Cat beat two real players online, Ann beat a bot, a guest and herself
+  for (const p of [ann, cat]) for (const dd of [0, 1, 2]) { for (const h of [13, 14, 15, 16]) await play(env, p, at(dd, h) + p.id * 1e3); for (let i = 0; i < 3; i++) await score(env, p, 600, at(dd, 17) + p.id * 1e3 + i * 9e3) }
+  const guest = await call(env, '/auth/guest', {}), sp = env.sql.prepare("INSERT INTO players (name, created) VALUES ('SimBot', 0) RETURNING id").get().id;
+  env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(sp);
+  const m = (w, l, t) => env.sql.prepare("INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, 'played', ?)").run(l, w, w, t);
+  m(cat.id, bob.id, at(1, 18)); m(cat.id, bob.id, at(1, 19)); m(cat.id, ann.id, at(2, 18));       // Bob counts once that day
+  for (const l of [sp, guest.player.id, ann.id]) m(ann.id, l, at(1, 18) + l);   // a bot and a guest don't count, Cat's win over Ann does
+  m(ann.id, ann.id, at(1, 20));
+  assert.equal(await pts(ann), 4500); assert.equal(await pts(cat), 4500);
+  clock = at(3, 12); let ch = await P.chart(env, MON, clock);
+  assert.deepEqual(ch.map(r => [r.name, r.wins, r.opps]), [['Cat', 2, 2], ['Ann', 0, 0]]);
+  assert.equal((await call(env, '/prize', undefined, cat.token)).rank, 1);
+  // one X username per player, whatever the case
+  assert.equal((await call(env, '/prize/x', { handle: '@CAT' }, ann.token)).status, 409);
+  assert.equal((await call(env, '/prize/x', { handle: '@cat' }, cat.token)).steps.x.handle, '@cat');
+  // /prize skip takes Cat out; she still plays and ranks, her card says so; /prize unskip lets her back
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  const say = async text => { calls.length = 0; await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text } }); return calls.filter(([x]) => x === 'sendMessage').map(([, y]) => y.text) };
+  assert.match((await say('/prize skip ' + cat.id))[0], /Cat \(id \d+\) is out of the weekly prize/);
+  assert.match((await say('/prize skip 99999'))[0], /No player with id 99999/);
+  const card = await call(env, '/prize', undefined, cat.token); assert.equal(card.skipped, true); assert.equal(card.ticket, false); assert.equal(card.rank, null);
+  assert.deepEqual((await P.chart(env, MON, clock)).map(r => r.name), ['Ann']);
+  assert.equal((await call(env, '/ranking?period=week', undefined, cat.token)).me.ticket, undefined);
+  let text = (await say('/prize'))[0];
+  assert.match(text, /1\. Ann \(id \d+\) · 4,500 pts/); assert.match(text, /14 checked matches · 0 online wins vs 0 players · ⚠️ 100 pts without a checked match/); assert.match(text, /Taken out by an admin: Cat/);
+  assert.match((await say('/prize unskip ' + cat.id))[0], /Cat \(id \d+\) can win the weekly prize again/);
+  text = (await say('/prize'))[0]; assert.match(text, /1\. Cat/); assert.match(text, /2 online wins vs 2 players/);
+  // the red flags: points the checks didn't let through, and a script's even gaps and same amounts
+  for (let i = 0; i < 25; i++) await score(env, ann, 40, at(4, 1) + i * 9e3);
+  text = (await say('/prize'))[0];
+  assert.match(text, /Ann[^]*⚠️ 950 pts without a checked match \(not counted\) · ⚠️ reports at even gaps · ⚠️ same amount again and again/);
+  const csv = calls.find(([x]) => x === 'sendDocument')[1].csv;
+  assert.match(csv, /checked_matches,points_without_checked_match,online_wins,win_opponents,even_timing,same_amounts/);
 });
