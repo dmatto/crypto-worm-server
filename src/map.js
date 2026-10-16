@@ -21,6 +21,7 @@ import { HEX, TERRAIN, COUNTRIES, TILES } from './world.js';
 import { tg } from './bot.js';
 import { newCode } from './match.js';
 import { flag, gameLink } from './growth.js';
+import { landRow } from './feed.js';
 
 export const ATTACKS_PER_DAY = 10, HOME_TILES = 7, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
   INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8,
@@ -269,6 +270,7 @@ export async function handle(path, req, env, me, body, cors, ctx, now = Date.now
     await env.DB.batch([
       q(env, "UPDATE attacks SET ended = ?, result = 'won' WHERE id = ?", now, a.id),
       q(env, 'UPDATE landlords SET won = won + 1 WHERE player = ?', a.attacker),
+      landRow(env, a.attacker, prev && prev.owner !== a.attacker ? prev.owner : null, countryOf(a.tile), now),   // the live feed on Home
       q(env, `INSERT INTO land (tile, owner, since, def, truce) VALUES (?, ?, ?, '0000', ?)
         ON CONFLICT(tile) DO UPDATE SET owner = excluded.owner, since = excluded.since, def = excluded.def, truce = excluded.truce`, a.tile, a.attacker, now, now + TRUCE_MS),
     ]);

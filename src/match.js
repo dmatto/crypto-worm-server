@@ -19,7 +19,10 @@
 // viewers {n} whenever someone starts or stops watching (the players get viewers {n} too). The only thing a viewer can send
 // is cheer {id}: one of the game's six cheer emojis, at most one every 0.7 s, shown to everyone in the match.
 // A started match is listed in the lobby's Live now list until it ends, unless a simulated player from a load test is in
-// it (x-sim from index.js): their phones stream made-up frames that nobody could watch.
+// it (x-sim from index.js): their phones stream made-up frames that nobody could watch. Every finished match between two
+// players also goes to the live feed on Home (feed.js), load-test players' matches too.
+
+import { winRow } from './feed.js';
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
@@ -169,7 +172,7 @@ export class Match {
       const w = winner === 0 || winner === 1 ? m.players[winner] : null, l = w == null ? null : m.players[1 - winner];
       await this.env.DB.batch([
         this.env.DB.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').bind(m.players[0], m.players[1], w, reason, Date.now()),
-        ...(w != null ? [this.env.DB.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').bind(w), this.env.DB.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').bind(l)] : []),
+        ...(w != null ? [this.env.DB.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').bind(w), this.env.DB.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').bind(l), winRow(this.env, w, l, reason)] : []),
       ]).catch(() => { });
     }
   }

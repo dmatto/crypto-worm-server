@@ -3,7 +3,8 @@
 // part of the ranking or the airdrop list.
 //
 //   POST /started  {mode}                -> {ok}        the game started a match or a mini game (counted once per player)
-//   POST /played   {mode}                -> {played, rewards: [{amount, reason, note}]}   the game finished a match (any mode)
+//   POST /played   {mode, feed?}         -> {played, rewards: [{amount, reason, note}]}   the game finished a match (any mode); feed:
+//                                                      up to 3 of its best moments for the live feed on Home (see feed.js)
 //   POST /rewards                        -> {rewards}   play money the server owes this player (invite rewards), claimed once
 //   GET  /invites                        -> {joined, counted, loyal, earned, next, milestones, friends, shared}   the Invite page
 //   POST /share/done {via}               -> {bonus, rewards}   the player shared their invite link: +30 once per UTC day
@@ -18,6 +19,7 @@ import { tg } from './bot.js';
 import { friendCode } from './auth.js';
 import { newCode } from './match.js';
 import { logPlayDay } from './prize.js';
+import { moments } from './feed.js';
 
 export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
 // Invite & earn: on top of +200 for both when a friend finishes a first match, the inviter gets +300 when that friend has
@@ -116,7 +118,7 @@ export async function started(env, me) {
 
 // The game finished a match. Counts it (at most one every 20 s), pays a pending invite reward on a first match, and
 // hands back any rewards waiting for this player.
-export async function played(env, me, mode, cc) {
+export async function played(env, me, mode, cc, feed) {
   const now = Date.now(), day = Math.floor(now / DAY), daily = mode === 'daily' ? 1 : 0;
   await env.DB.prepare('INSERT OR IGNORE INTO player_meta (player, last_seen) VALUES (?, ?)').bind(me.id, now).run();
   const r = await env.DB.prepare(`UPDATE player_meta SET played = played + 1, last_played = ?, last_seen = ?, cc = COALESCE(?, cc),
@@ -126,6 +128,7 @@ export async function played(env, me, mode, cc) {
   await logPlayDay(env, me.id, now);                                             // the weekly prize's "play on 3 days"
   if (r && r.played === 1 && r.invited_by && r.invite_paid == null) await payInvite(env, me, r);
   if (r && r.played === LOYAL_MATCHES && r.invited_by) await payLoyal(env, me, r);
+  if (r && feed) await moments(env, me, mode, feed, now).catch(() => 0);          // the match's best moments, for the live feed on Home
   return { played: m ? m.played : 0, rewards: await claim(env, me.id) };
 }
 

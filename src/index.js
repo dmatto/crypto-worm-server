@@ -23,6 +23,7 @@
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
 //   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
+//   GET  /feed                                                  -> {feed, now}  the live feed on Home: wins, kills, great shots (no sign-in, see feed.js)
 // Load tests (see sim/): /auth/guest with the header x-sim-key: SIM_KEY makes a simulated player (sim_players). They count and
 // rank like everyone else, but stay hidden in the lobby, out of Live now and the weekly prize, and only fight CPU or bot land.
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
@@ -48,6 +49,7 @@ import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
+import { feedResponse } from './feed.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -220,6 +222,7 @@ const app = {
     if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
     if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
     if (path === '/stats' && req.method === 'GET') return json({ players: await playerCount(env) }, 200, cors);
+    if (path === '/feed' && req.method === 'GET') return feedResponse(env, ctx, cors);
     const watch = path.match(/^\/match\/([A-Z2-9]{6})\/watch$/);
     if (watch) return env.MATCH.get(env.MATCH.idFromName(watch[1])).fetch(new Request(req.url, { headers: req.headers }));
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
@@ -356,7 +359,7 @@ const app = {
     }
     // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
-    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runEnd(env, me.id); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo), 200, cors) }
+    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runEnd(env, me.id); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed), 200, cors) }
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)

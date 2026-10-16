@@ -20,6 +20,21 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const weekStart = (t = Date.now()) => { const d = new Date(t); d.setUTCHours(0, 0, 0, 0); return d.getTime() - ((d.getUTCDay() + 6) % 7) * DAY };
 const THEMES = ['moon', 'mars', 'beach', 'city', 'jungle', 'ice', 'desert', 'candy'];
+// the live feed on Home (src/feed.js): about half the games send a moment or two, the way the game reports its best moments
+const WEAPONS = ['rocket', 'grenade', 'shotgun', 'cluster', 'fomo', 'lambo', 'mine', 'rugpull', 'whale', 'punch', 'fart', 'mole', 'geyser', 'quake', 'bugs', 'btcbomb', 'drill', 'blackhole'];
+const FOES = ['Paper Hands', 'Miss FUD', 'Rekt', 'Bag Lady', 'Shorty', 'Dumper'], OWN = ['Moon Boy', 'Moon Girl', 'Lambo'];
+export function moments(mode, won, r = Math.random) {
+  if (r() < .5) return null;
+  const out = [], wp = () => WEAPONS[Math.floor(r() * WEAPONS.length)], one = a => a[Math.floor(r() * a.length)];
+  if (mode !== 'online' && r() < (won ? .5 : .25)) out.push(won ? { k: 'solo', m: mode, ...(mode === 'camp' ? { n: 1 + Math.floor(r() * 30) } : {}) } : { k: 'lost', m: mode });
+  const x = r();
+  if (x < .12) out.push({ k: 'multi', n: r() < .8 ? 2 : 3, wp: wp() });
+  else if (x < .34) out.push({ k: 'big', n: Math.round(60 + r() * 50), wp: wp() });
+  else if (x < .66) out.push({ k: 'kill', w: one(mode === 'online' ? [...FOES.slice(0, 3), ...OWN] : FOES), wp: wp(), how: r() < .25 ? 'drown' : 'blast' });
+  else if (x < .71) out.push({ k: 'oops', w: one(OWN), wp: wp() });
+  else if (x < .82 && mode !== 'online') out.push({ k: 'died', w: one(OWN), wp: wp() });
+  return out.length ? out : null;
+}
 const OFFLINE = [['cpu', 'cpu'], ['cpu', 'cpu'], ['cpu', 'cpu'], ['cpu', 'camp'], ['cpu', 'daily'], ['mini', 'cpu'], ['team', 'cpu']];   // [started, played]
 
 // World Map neighbours (the same hex grid as src/map.js)
@@ -245,7 +260,7 @@ export class Fleet {
     } finally { b.inGame = false; this.busy(b, false) }
   }
   async done(b, mode, won) {
-    await this.api(b, 'POST', '/played', { mode });
+    const feed = moments(mode, won); await this.api(b, 'POST', '/played', feed ? { mode, feed } : { mode });
     const wk = weekStart(); if (b.wk !== wk) { b.wk = wk; b.week = 0 }
     const left = b.prof.budget - b.week; if (left <= 0) return;
     const amount = Math.max(5, Math.min(600, left, Math.round(rnd(.5, 1.5) * b.prof.per * (won ? 1 : .35))));

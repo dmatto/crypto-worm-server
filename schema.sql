@@ -238,3 +238,21 @@ CREATE TABLE IF NOT EXISTS sim_stats (     -- the load test's numbers, one row a
   at       INTEGER PRIMARY KEY,
   data     TEXT NOT NULL                   -- JSON
 );
+-- The live feed on Home (feed.js): online wins, land taken, and moments the game reports with /played. Kept 2 days.
+CREATE TABLE IF NOT EXISTS feed (
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  at   INTEGER NOT NULL,
+  k    TEXT NOT NULL,                      -- win | land | solo | lost | kill | died | oops | multi | big
+  p    INTEGER NOT NULL,                   -- the player
+  a    TEXT NOT NULL,                      -- their name and country at the time
+  ac   TEXT,
+  b    TEXT,                               -- the other side's name and country, when there is one
+  bc   TEXT,
+  w    TEXT,                               -- a worm's name
+  wp   TEXT,                               -- weapon id
+  n    INTEGER,                            -- damage, worms hit or campaign mission
+  how  TEXT,                               -- blast | drown | off | bird
+  m    TEXT                                -- mode, why an online match ended, or the land's country
+);
+CREATE INDEX IF NOT EXISTS feed_p ON feed (p, at);
+CREATE INDEX IF NOT EXISTS feed_at ON feed (at);
