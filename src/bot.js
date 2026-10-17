@@ -16,6 +16,7 @@ import { friendCode } from './auth.js';
 import { cleanup as mapCleanup } from './map.js';
 import { cleanup as feedCleanup } from './feed.js';
 import { holderCron } from './holders.js';
+import { makePack } from './stickers.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
@@ -276,7 +277,19 @@ export async function cron(env, now = Date.now()) {
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
+  if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
   for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+}
+// The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
+async function stickerPack(env) {
+  const log = note => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
+  try {
+    const admins = await adminTgIds(env); if (!admins.length) return log('stickers: no admin with Telegram');
+    const r = await makePack((m, b) => tg(env, m, b), admins[0]);
+    await log('stickers ' + JSON.stringify(r));
+    if (r.link && !r.error) for (const chat_id of admins)
+      await tg(env, 'sendMessage', { chat_id, text: `🪱 The Crypto Worm sticker pack is ready: ${r.count} stickers.\n${r.link}` });
+  } catch (e) { await log('stickers error ' + (e && e.message)) }
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }
