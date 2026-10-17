@@ -17,6 +17,7 @@ import { cleanup as mapCleanup } from './map.js';
 import { cleanup as feedCleanup } from './feed.js';
 import { holderCron } from './holders.js';
 import { makePack } from './stickers.js';
+import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites } from './growth.js';
@@ -86,6 +87,15 @@ export async function tellAdmins(env, f) {
     (f.wallet ? `Wallet: <code>${esc(f.wallet)}</code>${f.wallet_ok ? ' ✅ signed in' : ' (typed)'}\n` : 'No wallet\n') +
     (f.info ? `<i>${esc(f.info)}</i>\n` : '') + '\n' + esc(f.text);
   for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+}
+
+// A new or reported custom worm (worms.js): the picture, with what to do about it.
+export async function tellAdminsPhoto(env, photo, caption) {
+  if (!env.BOT_TOKEN) return;
+  for (const chat_id of await adminTgIds(env)) {
+    const r = await tg(env, 'sendPhoto', { chat_id, photo, caption: caption.slice(0, 1000) });
+    if (!r.ok) await tg(env, 'sendMessage', { chat_id, text: (caption + '\n' + photo).slice(0, 4000), disable_web_page_preview: true });
+  }
 }
 
 // /feedback (admins only): every message so far as a spreadsheet, plus one line per tester with their wallet, for the airdrop.
@@ -190,6 +200,12 @@ export async function webhook(req, env) {
     else { const p = await prizeSkip(env, Number(sk[2]), !sk[1], (await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null))?.id);
       await tg(env, 'sendMessage', { chat_id, text: !p ? `No player with id ${sk[2]}.` : sk[1] ? `✅ ${p.name} (id ${p.id}) can win the weekly prize again.`
         : `🚫 ${p.name} (id ${p.id}) is out of the weekly prize from now on, this week too. They still play and stay in the ranking.\n\n/prize unskip ${p.id} brings them back.` }) } }
+  else if ((cmd === '/wormoff' || cmd === '/wormon') && env.DB && await isAdmin(env, m.from)) {   // custom worms (worms.js)
+    const a = arg.trim();
+    if (cmd === '/wormoff') { const p = a && await wormOff(env, a);
+      await tg(env, 'sendMessage', { chat_id, text: p ? `🚫 Removed ${p.name}'s custom worm (player ${p.id}). They can't make a new one now.\n/wormon ${p.id} lets them again.` : 'No custom worm with that id. Copy it from the message with the picture: /wormoff <id>' }) }
+    else await tg(env, 'sendMessage', { chat_id, text: a && await wormOn(env, a) ? `✅ Player ${a} can make custom worms again.` : 'Nothing to undo for that player. Use /wormon <player id>.' });
+  }
   else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
   else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
     text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });
@@ -278,7 +294,7 @@ export async function cron(env, now = Date.now()) {
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
-  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
 async function stickerPack(env) {

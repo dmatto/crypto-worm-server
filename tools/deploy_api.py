@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deploy without wrangler, straight through the Cloudflare API (for machines where npm is unavailable).
 
-Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and optionally TELEGRAM_BOT_TOKEN and SOLANA_RPC, from the environment.
+Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and optionally TELEGRAM_BOT_TOKEN, SOLANA_RPC and XAI_API_KEY, from the environment.
 Creates the D1 database and its tables if needed, uploads the Worker with its Durable Objects, sets the secrets,
 and turns on the workers.dev address. Run from the repo root: python3 tools/deploy_api.py
 Secrets are sent to Cloudflare only and never printed.
@@ -50,7 +50,7 @@ meta = {
 if first: meta['migrations'] = {'new_tag': 'v1', 'new_sqlite_classes': ['Match', 'Lobby']}
 b = uuid.uuid4().hex
 parts = [('metadata', 'metadata.json', 'application/json', json.dumps(meta).encode())]
-for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js', 'map.js', 'world.js', 'holders.js', 'prize.js', 'feed.js', 'stickers.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
+for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js', 'map.js', 'world.js', 'holders.js', 'prize.js', 'feed.js', 'stickers.js', 'worms.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')
@@ -66,6 +66,8 @@ if os.environ.get('TELEGRAM_BOT_TOKEN'):
     call('PUT', f'/workers/scripts/{NAME}/secrets', {'name': 'BOT_TOKEN', 'text': os.environ['TELEGRAM_BOT_TOKEN'], 'type': 'secret_text'})
 if os.environ.get('SOLANA_RPC'):   # a Solana RPC URL with its key (e.g. Helius), for $CWORM holder rewards; or add it in the Cloudflare dashboard
     call('PUT', f'/workers/scripts/{NAME}/secrets', {'name': 'SOLANA_RPC', 'text': os.environ['SOLANA_RPC'], 'type': 'secret_text'})
+if os.environ.get('XAI_API_KEY'):   # Grok, which checks the photos and draws the custom worms (worms.js)
+    call('PUT', f'/workers/scripts/{NAME}/secrets', {'name': 'XAI_API_KEY', 'text': os.environ['XAI_API_KEY'], 'type': 'secret_text'})
 print('secrets set' + ('' if os.environ.get('TELEGRAM_BOT_TOKEN') or 'BOT_TOKEN' in have else ' (no BOT_TOKEN yet: Telegram sign-in is off)')
       + ('' if os.environ.get('SOLANA_RPC') or 'SOLANA_RPC' in have else ' (no SOLANA_RPC: holder rewards use the free public Solana hosts)'))
 

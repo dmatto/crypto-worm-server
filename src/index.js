@@ -35,6 +35,8 @@
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
+//   GET  /worm, POST /worm/make, /worm/pick, /worm/remove, /worm/report, GET /worm/img/<id>.jpg   custom photo worms for holders (see
+//                                                               worms.js); the session's player.cw, ranking rows and match flags carry the portrait's id
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
 //   POST /telegram/webhook, /telegram/setup                     the bot's welcome message and settings (see bot.js)
 //
@@ -44,12 +46,13 @@
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
-import { webhook, setup, cron, tellAdmins } from './bot.js';
+import { webhook, setup, cron, tellAdmins, tellAdminsPhoto } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
+import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 export { Match, Lobby };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -86,16 +89,16 @@ async function ranking(env, period, me) {
   const rows = period === 'week'
     ? (await env.DB.prepare(`SELECT p.id, p.name, s.week AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC`).bind(since).all()).results
     : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
-  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me) };
+  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me, wormAdmins(env)) };
   if (period === 'week') {                                        // 🎟️ next to players who did every weekly prize step
     const t = await tickets(env, [...out.top.map(r => r.id), ...(out.me ? [out.me.id] : [])]).catch(() => new Set());
     for (const r of [...out.top, ...(out.me ? [out.me] : [])]) if (t.has(r.id)) r.ticket = true;
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier', TIER_JOIN = 'LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet';   // holder badge next to the name
-function place(rows, me) {
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}) }));
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on'";   // holder badge and custom worm next to the name
+function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -147,8 +150,8 @@ async function signedIn(req, env) {
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
-  const holder = await holderGet(env, p).catch(() => null);
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -187,6 +190,8 @@ async function link(env, me, target) {
     q('UPDATE attacks SET attacker = ? WHERE attacker = ?', b, a),
     q('UPDATE OR IGNORE holders SET player = ? WHERE player = ?', b, a), q('DELETE FROM holders WHERE player = ?', a),   // holder status follows the wallet
     q('UPDATE OR IGNORE hold_dips SET player = ? WHERE player = ?', b, a), q('DELETE FROM hold_dips WHERE player = ?', a),
+    q("DELETE FROM custom_worms WHERE player = ? AND EXISTS (SELECT 1 FROM custom_worms WHERE player = ? AND state = 'on')", a, b),   // custom worms: the target's own portrait wins
+    q('UPDATE custom_worms SET player = ? WHERE player = ?', b, a), q('UPDATE worm_makes SET player = ? WHERE player = ?', b, a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -223,6 +228,8 @@ const app = {
     if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
     if (path === '/stats' && req.method === 'GET') return json({ players: await playerCount(env) }, 200, cors);
     if (path === '/feed' && req.method === 'GET') return feedResponse(env, ctx, cors);
+    const pic = path.match(/^\/worm\/img\/([a-z0-9]{12,24})(?:\.jpg)?$/);
+    if (pic && req.method === 'GET') return wormImage(env, pic[1]);              // a custom worm's portrait, for anyone
     const watch = path.match(/^\/match\/([A-Z2-9]{6})\/watch$/);
     if (watch) return env.MATCH.get(env.MATCH.idFromName(watch[1])).fetch(new Request(req.url, { headers: req.headers }));
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
@@ -373,13 +380,20 @@ const app = {
     if (path === '/holder' || path.startsWith('/holder/')) {
       try { const r = await holderHandle(path, req, env, me, body); if (r) return json(r, r.error ? 400 : 200, cors) } catch (e) { return json({ error: e && e.message || 'try again later' }, 502, cors) }
     }
+    if (path === '/worm' || path.startsWith('/worm/')) {                                   // custom photo worms (see worms.js)
+      if (await isSim(env, me.id)) return json({ on: false }, 200, cors);
+      const tell = (photo, caption) => { const t = tellAdminsPhoto(env, photo, caption).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
+      const r = await wormHandle(path, req, env, me, body, { tier: (await badge(env, me.id)).tier, tell, origin: env.PUBLIC_URL || url.origin });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
+    }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
     if (ws) {
       const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', geo);   // country only, from Cloudflare, for the opponent's flag
-      h.set('x-tier', String((await badge(env, me.id)).tier));                                // holder tier, for the opponent's badge
+      const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier));                   // holder tier, for the opponent's badge
+      h.set('x-cw', (await wormMine(env, me.id, hb.tier)) || '');                            // and their custom worm, while they hold
       h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }

@@ -256,3 +256,30 @@ CREATE TABLE IF NOT EXISTS feed (
 );
 CREATE INDEX IF NOT EXISTS feed_p ON feed (p, at);
 CREATE INDEX IF NOT EXISTS feed_at ON feed (at);
+-- Custom photo worms (worms.js, Damian 2026-10-17): portraits Grok draws from a holder's photo. The photo is never kept.
+CREATE TABLE IF NOT EXISTS custom_worms (
+  id       TEXT PRIMARY KEY,               -- random, in the picture's address
+  player   INTEGER NOT NULL,
+  job      TEXT NOT NULL,                  -- the make call it came from (its options share one)
+  kind     TEXT NOT NULL,                  -- person | pet
+  state    TEXT NOT NULL,                  -- offer (one of the options to pick from) | on (the one kept)
+  img      TEXT NOT NULL,                  -- the picture, base64
+  pay      TEXT,                           -- how it was paid: cworm (play money in the game); stars or token later
+  created  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS custom_worms_player ON custom_worms (player, state);
+CREATE TABLE IF NOT EXISTS worm_makes (    -- every make call, for the daily limits; ok 2 = not allowed to make more (an admin's /wormoff)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  ok       INTEGER NOT NULL,               -- 1 portraits made, 0 photo turned down or nothing drawn
+  why      TEXT
+);
+CREATE INDEX IF NOT EXISTS worm_makes_player ON worm_makes (player, at);
+CREATE INDEX IF NOT EXISTS worm_makes_at ON worm_makes (at);
+CREATE TABLE IF NOT EXISTS worm_reports (  -- players who reported someone's portrait (one report each)
+  worm     TEXT NOT NULL,
+  reporter INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (worm, reporter)
+);
