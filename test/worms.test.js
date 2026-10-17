@@ -14,7 +14,7 @@ const grok = { verdict: { subject: 'person', adult: true, famous: false, unsafe:
 globalThis.fetch = async (url, init) => {
   const u = String(url), body = init && init.body ? JSON.parse(init.body) : {};
   if (u.endsWith('/chat/completions')) return RealResponse.json({ choices: [{ message: { content: JSON.stringify(grok.verdict) } }] });
-  if (u.endsWith('/images/edits')) { grok.draws++; grok.prompt = body.prompt; if (grok.fail-- > 0) return RealResponse.json({ error: 'busy' }, { status: 503 }); return RealResponse.json({ data: [{ b64_json: JPEG }] }) }
+  if (u.endsWith('/images/edits')) { grok.draws++; grok.prompt = body.prompt; (grok.bodies ||= []).push(body); if (grok.fail-- > 0) return RealResponse.json({ error: 'busy' }, { status: grok.failStatus || 503 }); return RealResponse.json({ data: [{ b64_json: JPEG }] }) }
   if (u.includes('api.telegram.org')) { sent.push({ method: u.split('/').pop(), ...body }); return RealResponse.json({ ok: true, result: {} }) }
   return RealResponse.json({}, { status: 404 });
 };
@@ -48,6 +48,9 @@ test('custom worms: holders only; a checked photo gives four portraits, one a da
 
   const m = await call(env, '/worm/make', { photo: PHOTO }, h.token);
   assert.equal(m.status, 200); assert.equal(m.offer.kind, 'person'); assert.equal(m.offer.opts.length, 4); assert.match(grok.prompt, /clearly a WORM/);
+  const refs = grok.bodies.map(b => b.images && b.images[1].url).sort();                      // drawn like four of the game's avatars, square
+  assert.deepEqual(refs, W.STYLES.map(s => 'https://play.cryptoworm.io/avatars/' + s + '.jpg').sort());
+  assert.ok(grok.bodies.every(b => b.images[0].url === PHOTO && b.aspect_ratio === '1:1' && /same art style as image 2/.test(b.prompt) && /Full body/.test(b.prompt)));
   const img = await worker.fetch(new Request('https://api.test/worm/img/' + m.offer.opts[2] + '.jpg'), env);
   assert.equal(img.status, 200); assert.equal(img.headers.get('content-type'), 'image/jpeg'); assert.equal(img.headers.get('access-control-allow-origin'), '*');
   assert.deepEqual(Buffer.from(await img.arrayBuffer()), Buffer.from(JPEG, 'base64'));
@@ -101,8 +104,12 @@ test('custom worms: photos turned down say why and only use up tries; pets get t
   assert.equal((await call(env, '/worm', undefined, h.token)).why, 'today');                    // ...but that was the sixth try
   env.sql.prepare('DELETE FROM worm_makes').run();
   grok.fail = 3; const r = await call(env, '/worm/make', { photo: PHOTO }, h.token);                // three fail, then get one more go each
-  assert.equal(r.offer.kind, 'pet'); assert.equal(r.offer.opts.length, 4); assert.match(grok.prompt, /pet in this photo/);
+  assert.equal(r.offer.kind, 'pet'); assert.equal(r.offer.opts.length, 4); assert.match(grok.prompt, /photo of a pet/); assert.ok(grok.bodies.slice(-3).every(b => b.images));          // a busy drawer: the retries keep the avatar picture
   assert.match(env.sql.prepare('SELECT why FROM worm_makes WHERE ok = 1').get().why, /^pet 4 · 3 failed/);
+  env.sql.prepare('DELETE FROM worm_makes').run(); env.sql.prepare("DELETE FROM custom_worms").run();
+  grok.fail = 2; grok.failStatus = 400; grok.bodies = [];                                          // refused (the avatar picture could not be fetched): retried without it
+  assert.equal((await call(env, '/worm/make', { photo: PHOTO }, h.token)).offer.opts.length, 4); grok.failStatus = 0;
+  assert.equal(grok.bodies.length, 6); assert.ok(grok.bodies.slice(-2).every(b => b.image && !b.images && /art style of our game/.test(b.prompt)));
   grok.verdict = { subject: 'person', adult: true, famous: false, unsafe: false };
 });
 

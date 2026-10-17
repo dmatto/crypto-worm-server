@@ -24,15 +24,22 @@ const CHECK = 'You check photos that players upload to become a cartoon worm cha
   'subject: the main subject is one real person, or one animal (pet), or anything else (drawings, memes, objects, several people, no clear subject). ' +
   'adult: for a person, true only if they clearly look 18 or older; null for pets and other. famous: true if the person looks like a celebrity, politician or other well-known public figure, ' +
   'or the photo is clearly a press, movie or event picture of someone famous. unsafe: nudity, sexual content, violence, gore, hate symbols, drugs or weapons as the focus.';
-const LOOK = 'in a polished stylized 3D cartoon style like a modern animated movie, with no arms, no hands, no legs and no paws. Half-body portrait, centered, ' +
-  'on a flat purple-blue gradient background with a few gold sparkles. No text, no letters, no logos.';
+// Photo worms are drawn like the game's avatars (avatars/<id>.jpg on the game site, Damian 2026-10-17: "same style, full body"): the photo is
+// image 1 and an avatar is image 2, a different one for each of the four options so their backgrounds differ.
+const LOOK = 'a cute, simple, smooth cartoon worm with a small rounded worm head, big round shiny eyes and a happy cartoon mouth, polished stylized 3D like a modern animated movie, ' +
+  'with no arms, no hands, no legs and no paws. Full body: the whole worm is visible from head to tail, its segmented body curled under it, centered with space around it, ' +
+  'on a flat colored gradient background with a few small gold sparkles';
 const DRAW = {
-  person: 'Turn the person in this photo into a character that is clearly a WORM, not a human: the same smooth rounded pink worm head and segmented worm body as our mascot, ' +
-    'no human nose, no ears, no neck, no shoulders. A cute pink cartoon worm character with big round expressive eyes and thick eyebrows, ' + LOOK +
-    ' Keep only what makes them recognizable, as accessories on the worm: hair color and hairstyle as a little tuft on top, glasses, beard, a scarf or collar in their clothing colors.',
-  pet: 'Turn the pet in this photo into a cute cartoon worm character: a smooth rounded segmented worm body in the colors of its fur, keeping its snout or beak, ears, ' +
-    'fur color and markings, and any collar or bandana, with big round expressive eyes, ' + LOOK,
+  person: 'Image 1 is a photo of a person. Turn them into a NEW character that is clearly a WORM, not a human: a pink cartoon worm with no human face, no human nose, no ears, ' +
+    'no neck, no shoulders and no skin texture. Show who they are only with accessories on the worm: their hair color and hairstyle as a tuft on top of the head, their glasses, ' +
+    'beard or mustache as cartoon shapes, and a little scarf or collar in their clothing colors.',
+  pet: 'Image 1 is a photo of a pet. Turn it into a NEW character: a cute cartoon worm with a smooth segmented worm body in the colors of its fur, keeping its snout or beak, ' +
+    'ears, fur markings and any collar or bandana, cartoon style, not realistic fur.',
 };
+export const STYLES = ['cworm', 'pirate', 'cowgirl', 'diver'];
+const site = env => (env.SITE_URL || env.MENU_URL || 'https://play.cryptoworm.io/').replace(/\/+$/, '');
+const prompt = (kind, ref) => DRAW[kind] + (ref ? ' Draw it in exactly the same art style as image 2, which is a character from our game: ' + LOOK +
+  ', just like image 2. Do not copy the hat or accessories of image 2.' : ' Draw it in the art style of our game: ' + LOOK + '.') + ' No text, no letters, no logos.';
 // Why a photo was turned down or a new portrait can't be made now (the game shows its own translated text for each code).
 export const WHY = {
   other: 'We could not find one person or one pet in that photo. Try a clear photo of just you or just your pet.',
@@ -71,7 +78,8 @@ export async function check(env, photo) {
   const why = v.unsafe ? 'unsafe' : v.subject === 'pet' ? null : v.subject !== 'person' ? 'other' : v.famous ? 'famous' : v.adult !== true ? 'young' : null;
   return { kind: v.subject === 'pet' ? 'pet' : 'person', why, note: String(v.reason || '').slice(0, 200) };
 }
-const draw = (env, photo, kind) => xai(env, 'images/edits', { model: IMAGE_MODEL, prompt: DRAW[kind], image: { url: photo, type: 'image_url' }, n: 1, response_format: 'b64_json' })
+const draw = (env, photo, kind, ref) => xai(env, 'images/edits', { model: IMAGE_MODEL, prompt: prompt(kind, ref), aspect_ratio: '1:1', n: 1, response_format: 'b64_json',
+  ...(ref ? { images: [{ url: photo, type: 'image_url' }, { url: site(env) + '/avatars/' + ref + '.jpg', type: 'image_url' }] } : { image: { url: photo, type: 'image_url' } }) })
   .then(d => d.data && d.data[0] && d.data[0].b64_json || null);
 
 async function state(env, me, tier, now) {
@@ -103,9 +111,12 @@ export async function handle(path, req, env, me, body, { tier = 0, tell = async 
     const log = (ok, why) => q('INSERT INTO worm_makes (player, at, ok, why) VALUES (?, ?, ?, ?)', me.id, now, ok, why ? String(why).slice(0, 300) : null).run();
     let c; try { c = await check(env, photo) } catch (e) { return no('retry', 502) }
     if (c.why) { await log(0, c.why + ': ' + c.note); return no(c.why, 422) }
-    const errs = [], one = () => draw(env, photo, c.kind).catch(e => { errs.push(String(e && e.message || e).slice(0, 120)); return null });
-    let pics = (await Promise.all(Array.from({ length: OPTIONS }, one))).filter(Boolean);
-    if (pics.length < OPTIONS) pics = pics.concat((await Promise.all(Array.from({ length: OPTIONS - pics.length }, one))).filter(Boolean));   // one more go for the ones that failed
+    const errs = [], refused = new Set(), refs = STYLES.slice(0, OPTIONS);
+    const one = ref => draw(env, photo, c.kind, ref).catch(e => { const m = String(e && e.message || e); errs.push(m.slice(0, 120)); if (/^xai 4(?!29)/.test(m)) refused.add(ref); return null });
+    const first = await Promise.all(refs.map(one));
+    let pics = first.filter(Boolean);
+    // one more go for the ones that failed (busy, as a rule); a call Grok refused, say because it could not fetch the avatar picture, goes without it
+    if (pics.length < OPTIONS) pics = pics.concat((await Promise.all(refs.filter((r, i) => !first[i]).map(r => one(refused.has(r) ? null : r)))).filter(Boolean));
     if (!pics.length) { await log(0, 'no pictures: ' + errs[0]); return no('retry', 502) }
     const job = newId(), ids = pics.map(() => newId());
     await env.DB.batch([
