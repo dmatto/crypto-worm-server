@@ -27,6 +27,8 @@
 // Load tests (see sim/): /auth/guest with the header x-sim-key: SIM_KEY makes a simulated player (sim_players). They count and
 // rank like everyone else, but stay hidden in the lobby, out of Live now and the weekly prize, and only fight CPU or bot land.
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
+//   POST /me/avatar          {av}                               -> session   pick an avatar (an id from the game's list); it shows in the
+//                                                               ranking and the battle's corners, online too (session player.av)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
@@ -96,9 +98,9 @@ async function ranking(env, period, me) {
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on'";   // holder badge and custom worm next to the name
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id";   // holder badge, avatar and custom worm next to the name
 function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -140,6 +142,8 @@ async function simTick(env) {
 const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wallet: p.wallet || null, wins: p.wins, losses: p.losses };
 
 async function playerById(env, id) { return env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(id).first() }
+const AVATAR = /^[a-z0-9]{2,16}$/;
+const avatarOf = (env, id) => env.DB.prepare('SELECT av FROM player_avatar WHERE player = ?').bind(id).first().then(r => r ? r.av : null).catch(() => null);
 
 async function signedIn(req, env) {
   const auth = req.headers.get('Authorization') || '', token = auth.startsWith('Bearer ') ? auth.slice(7) : new URL(req.url).searchParams.get('token');
@@ -150,8 +154,8 @@ async function signedIn(req, env) {
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
-  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0);
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -192,6 +196,7 @@ async function link(env, me, target) {
     q('UPDATE OR IGNORE hold_dips SET player = ? WHERE player = ?', b, a), q('DELETE FROM hold_dips WHERE player = ?', a),
     q("DELETE FROM custom_worms WHERE player = ? AND EXISTS (SELECT 1 FROM custom_worms WHERE player = ? AND state = 'on')", a, b),   // custom worms: the target's own portrait wins
     q('UPDATE custom_worms SET player = ? WHERE player = ?', b, a), q('UPDATE worm_makes SET player = ? WHERE player = ?', b, a),
+    q('UPDATE OR IGNORE player_avatar SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_avatar WHERE player = ?', a),   // the account's own avatar wins
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -332,6 +337,12 @@ const app = {
       ]);
       return session(env, await playerById(env, me.id), cors, false);
     }
+    if (path === '/me/avatar' && req.method === 'POST') {
+      const av = String(body.av || '');
+      if (!AVATAR.test(av)) return json({ error: 'pick one of the avatars' }, 400, cors);
+      await env.DB.prepare('INSERT INTO player_avatar (player, av) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET av = excluded.av').bind(me.id, av).run();
+      return session(env, me, cors, false);
+    }
     // Disconnect the wallet. Only for accounts that also sign in with Telegram: for a wallet-only account the wallet is the
     // way back in, so the game logs that device out instead.
     if (path === '/me/wallet/unlink' && req.method === 'POST') {
@@ -394,6 +405,7 @@ const app = {
       const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', geo);   // country only, from Cloudflare, for the opponent's flag
       const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier));                   // holder tier, for the opponent's badge
       h.set('x-cw', (await wormMine(env, me.id, hb.tier)) || '');                            // and their custom worm, while they hold
+      h.set('x-av', (await avatarOf(env, me.id)) || '');                                     // the avatar they picked, for the battle's corners
       h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }

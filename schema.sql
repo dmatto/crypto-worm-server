@@ -283,3 +283,9 @@ CREATE TABLE IF NOT EXISTS worm_reports (  -- players who reported someone's por
   at       INTEGER NOT NULL,
   PRIMARY KEY (worm, reporter)
 );
+-- The avatar each player picked (Damian 2026-10-17): an id from the game's list (avatars/<id>.jpg on the site), shown in the
+-- ranking and in the battle's corners. A custom worm (custom_worms) shows instead while its owner holds.
+CREATE TABLE IF NOT EXISTS player_avatar (
+  player   INTEGER PRIMARY KEY,
+  av       TEXT NOT NULL
+);

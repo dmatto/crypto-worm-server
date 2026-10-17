@@ -87,12 +87,12 @@ test('match: quick chat relays only a line number, from either side, at most eve
 
 test('match: both phones get each player\'s country for the flag, unknown ones as null', async () => {
   const c = ctx(), m = new Match(c, {});
-  const at = (player, cc) => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-country': cc } }));
-  await at(11, 'br'); await at(22, 'XX');
+  const at = (player, cc, av = '') => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-country': cc, 'x-av': av } }));
+  await at(11, 'br'); await at(22, 'XX', 'BAD!');
   const s0 = c.socks.get('0'), s1 = c.socks.get('1');
-  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null] }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null] });
-  await at(22, 'UY');                                                              // rejoining from somewhere else updates it
-  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'], tier: [0, 0], cw: [null, null] });
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null], av: [null, null] }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null], av: [null, null] });
+  await at(22, 'UY', 'queen');                                                     // rejoining from somewhere else updates it
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'], tier: [0, 0], cw: [null, null], av: [null, 'queen'] });
 });
 
 test('match: the waiting phone takes over a turn only after the other phone has been quiet for a while', async () => {
@@ -118,11 +118,12 @@ test('match: the waiting phone takes over a turn only after the other phone has 
 test('match: a match against a bot streams to viewers with the bot as the opponent and records nothing', async () => {
   const c = ctx(), m = new Match(c, {});
   await open(m, 11); const s0 = c.socks.get('0');
-  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 7, theme: 'moon', count: 2, hats: ['crown', 'team'], bot: { name: 'TokyoLambo', cc: 'jp', team: 1 } }));
-  assert.equal(m.mem.bot, true); assert.equal(m.mem.names[1], 'TokyoLambo'); assert.equal(m.mem.cc[1], 'JP');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 7, theme: 'moon', count: 2, hats: ['unicorn|galaxy|comet|pyramid', 'team'], bot: { name: 'TokyoLambo', cc: 'jp', team: 1, av: 'pirate' } }));
+  assert.equal(m.mem.bot, true); assert.equal(m.mem.names[1], 'TokyoLambo'); assert.equal(m.mem.cc[1], 'JP'); assert.equal(m.mem.av[1], 'pirate');
+  assert.equal(m.mem.start.hats[0], 'unicorn|galaxy|comet|pyramid');            // a whole look, not cut short
   assert.equal((await open(m, 22)).code, 409);                                   // nobody else can take the bot's seat
   const v = await m.fetch(new Request('https://x/match/ABCDEF/watch', { headers: { Upgrade: 'websocket' } }));
-  const vs = c.socks.get('v'); assert.equal(vs.out[0].t, 'watch'); assert.equal(vs.out[0].names[1], 'TokyoLambo');
+  const vs = c.socks.get('v'); assert.equal(vs.out[0].t, 'watch'); assert.equal(vs.out[0].names[1], 'TokyoLambo'); assert.equal(vs.out[0].av[1], 'pirate');
   await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: { a: 1 } }));
   assert.equal(vs.out.at(-1).t, 'f');
   await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [['gameOver', [0]]], s: {} }));

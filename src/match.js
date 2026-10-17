@@ -11,8 +11,9 @@
 //   skip                        the waiting phone asks to take over because the phone running the turn went quiet
 //                               (closed or minimised app): allowed after SKIP_MS of silence from it
 // The server adds: took {} to the phone that took over and lost {} to the quiet one, seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
-// flags {cc:[country,country], tier:[0-5,0-5], cw:[id,id]} (two-letter codes from Cloudflare, null when unknown; $CWORM holder tiers
-// from the server, for the badge and the whale entrance; custom worm portraits, see worms.js) to both phones whenever one connects.
+// flags {cc:[country,country], tier:[0-5,0-5], cw:[id,id], av:[id,id]} (two-letter codes from Cloudflare, null when unknown; $CWORM
+// holder tiers from the server, for the badge and the whale entrance; custom worm portraits, see worms.js; the avatar each player
+// picked, for the corners of the battle) to both phones whenever one connects.
 //
 // Viewers (GET /match/<code>/watch) watch a match live without playing. They get watch {start,s,carves,names,cc,viewers}
 // (or wait {} until the match starts, then watch), every f and auth the players send, chat {id,side}, over, and
@@ -43,7 +44,7 @@ export class Match {
     const out = typeof msg === 'string' ? msg : JSON.stringify(msg);
     for (const ws of [...this.viewers(), ...(players ? [this.sock(0), this.sock(1)] : [])]) if (ws) try { ws.send(out) } catch { }
   }
-  watchMsg(m) { return { t: 'watch', start: m.start, s: m.state, carves: m.carves, names: m.names || [null, null], cc: m.cc || [null, null], viewers: this.viewers().length } }
+  watchMsg(m) { return { t: 'watch', start: m.start, s: m.state, carves: m.carves, names: m.names || [null, null], cc: m.cc || [null, null], av: m.av || [null, null], cw: m.cw || [null, null], viewers: this.viewers().length } }
   countViewers(gone) {                                                // tell everyone, and keep the Live now list roughly up to date
     const n = this.viewers().filter(w => w !== gone).length; this.spread({ t: 'viewers', n }, true);
     const m = this.mem; if (m && m.start && !m.done && Date.now() - (this.liveAt || 0) > 5000) { this.liveAt = Date.now(); this.live({ viewers: n }) }
@@ -80,13 +81,14 @@ export class Match {
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
     m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; (m.sim = m.sim || [0, 0])[side] = req.headers.get('x-sim') === '1' ? 1 : 0; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0));
-    const cw = String(req.headers.get('x-cw') || ''); (m.cw = m.cw || [null, null])[side] = /^[a-z0-9]{12,24}$/.test(cw) ? cw : null; await this.save();
+    const cw = String(req.headers.get('x-cw') || ''); (m.cw = m.cw || [null, null])[side] = /^[a-z0-9]{12,24}$/.test(cw) ? cw : null;
+    const av = String(req.headers.get('x-av') || ''); (m.av = m.av || [null, null])[side] = /^[a-z0-9]{2,16}$/.test(av) ? av : null; await this.save();
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);
     pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state, carves: m.carves } : { t: 'seat', side }));
     if (m.start) this.tell(1 - side, { t: 'back', side });
-    const flags = { t: 'flags', cc: m.cc, tier: m.tier, cw: m.cw }; this.tell(0, flags); this.tell(1, flags);
+    const flags = { t: 'flags', cc: m.cc, tier: m.tier, cw: m.cw, av: m.av }; this.tell(0, flags); this.tell(1, flags);
     m.last = Date.now(); await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -107,13 +109,13 @@ export class Match {
       case 'host': case 'join': this.tell(1 - side, raw); break;
       case 'start':
         if (side !== 0 || m.start) return;
-        m.start = { seed: msg.seed | 0, theme: String(msg.theme).slice(0, 20), count: Math.min(3, Math.max(1, msg.count | 0)), hats: (msg.hats || []).slice(0, 2).map(h => String(h).slice(0, 20)) };
+        m.start = { seed: msg.seed | 0, theme: String(msg.theme).slice(0, 20), count: Math.min(3, Math.max(1, msg.count | 0)), hats: (msg.hats || []).slice(0, 2).map(h => String(h).slice(0, 60)) };   // a look is hat|skin|trail|grave
         m.holder = 0; await this.names(m);
         if (msg.bot && typeof msg.bot === 'object') {                 // vs a bot: the bot's name and country, on the team it plays
           const bt = msg.bot.team === 0 ? 0 : 1, cc = String(msg.bot.cc || '').toUpperCase(); m.bot = true;
           m.names = m.names || [null, null]; m.cc = m.cc || [null, null];
-          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]]; m.tier = [(m.tier || [0, 0])[1], (m.tier || [0, 0])[0]]; m.cw = [(m.cw || [null, null])[1], (m.cw || [null, null])[0]] }
-          (m.tier = m.tier || [0, 0])[bt] = 0; (m.cw = m.cw || [null, null])[bt] = null;
+          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]]; m.tier = [(m.tier || [0, 0])[1], (m.tier || [0, 0])[0]]; m.cw = [(m.cw || [null, null])[1], (m.cw || [null, null])[0]]; m.av = [(m.av || [null, null])[1], (m.av || [null, null])[0]] }
+          (m.tier = m.tier || [0, 0])[bt] = 0; (m.cw = m.cw || [null, null])[bt] = null; (m.av = m.av || [null, null])[bt] = /^[a-z0-9]{2,16}$/.test(String(msg.bot.av || '')) ? msg.bot.av : null;
           m.names[bt] = String(msg.bot.name || 'Worm').slice(0, 24); m.cc[bt] = /^[A-Z]{2}$/.test(cc) ? cc : null;
         }
         m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
