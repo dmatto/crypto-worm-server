@@ -26,6 +26,11 @@ export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, 
 // played 5 matches, and a bonus at 3, 5, 10, 25 and 50 friends (friends who finished a first match). Three of the bonuses
 // unlock invite-only skins in the game's store. Sharing the invite link pays +30 once a day. All play money.
 export const LOYAL_REWARD = 300, LOYAL_MATCHES = 5, SHARE_BONUS = 30;
+// Invite week (Damian 2026-10-18: "This week you get 1500 cworm if you bring a friend"): until the end of Sunday 25 October
+// (UTC) the inviter gets +1,500 instead of +200 for each friend who finishes a first match; the friend still gets +200.
+export const PROMO = { amount: 1500, until: Date.UTC(2026, 9, 26) };
+export const promoOn = (now = Date.now()) => now < PROMO.until;
+export const inviterReward = (now = Date.now()) => promoOn(now) ? PROMO.amount : INVITE_REWARD;
 export const MILESTONES = [{ n: 3, amount: 500, skin: 'Coral crew' }, { n: 5, amount: 1000 }, { n: 10, amount: 2500, skin: 'Ambassador' },
   { n: 25, amount: 5000, skin: 'Influencer' }, { n: 50, amount: 10000 }];
 const DAY = 864e5, REMIND_GAP = 20 * 3600e3, ACTIVE_MS = 7 * DAY, RECENT_MS = 2 * 3600e3, REMIND_MAX = 100, DAILY_HOUR = 16;
@@ -91,11 +96,12 @@ async function payInvite(env, me, m) {
   if (!inviter) return;
   const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM rewards WHERE player = ? AND reason = 'invite' AND created > ?").bind(inviter.id, Date.now() - DAY).first();
   if (n.n >= INVITES_PER_DAY) { await env.DB.prepare('UPDATE player_meta SET invite_paid = 0 WHERE player = ?').bind(me.id).run(); return }
-  const now = Date.now();
-  await env.DB.batch([addReward(env, inviter.id, INVITE_REWARD, 'invite', me.name, now), addReward(env, me.id, INVITE_REWARD, 'invited', inviter.name, now),
+  const now = Date.now(), mine = inviterReward(now);
+  await env.DB.batch([addReward(env, inviter.id, mine, 'invite', me.name, now), addReward(env, me.id, INVITE_REWARD, 'invited', inviter.name, now),
     env.DB.prepare('UPDATE player_meta SET invite_paid = ? WHERE player = ?').bind(now, me.id)]);
   const ms = await payMilestones(env, inviter.id);
-  await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n+${INVITE_REWARD} $CWORM for each of you. ` +
+  await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n` +
+    (mine === INVITE_REWARD ? `+${INVITE_REWARD} $CWORM for each of you. ` : `Invite week: +${fmt(mine)} $CWORM for you, and +${INVITE_REWARD} for ${me.name}. `) +
     `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${LOYAL_REWARD} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
     `Friends so far: ${ms.n}. ${nextLine(ms.n)}\n\nIt all lands in your game wallet next time you open the game. (Play money, not real tokens.)`);
 }
@@ -138,13 +144,25 @@ export async function setRemind(env, me, on) {
   return { remind: !!on };
 }
 
+// Rate the game (Damian 2026-10-18: "rate the game and comment to get 500 CWORM"): feedback with 1 to 5 stars and a comment
+// of at least a short sentence pays +500 play $CWORM once per player, whatever the stars say. Only inside the game: rewards for
+// store or catalog reviews break those stores' rules.
+export const RATE_REWARD = 500, RATE_MIN = 12;
+export async function rateReward(env, id, rating, text) {
+  const ok = rating >= 1 && rating <= 5 && String(text || '').trim().length >= RATE_MIN;
+  const paid = ok && await once(env, id, 'rate', RATE_REWARD, 'rate', null);
+  const rated = paid || !!await env.DB.prepare("SELECT 1 FROM reward_once WHERE player = ? AND k = 'rate'").bind(id).first();
+  return { reward: paid ? RATE_REWARD : 0, rated, rewards: paid ? await claim(env, id) : [] };
+}
+
 // ---- Invite & earn ----
 // The game's Invite page: how many friends joined, what they earned this player, the bonus ladder and the friends list.
 // Opening it also pays any bonus already earned but not paid yet (friends from before the bonuses existed), and hands back
 // the rewards waiting for this player.
 export async function invites(env, me) {
-  const { results } = await env.DB.prepare(`SELECT p.id, p.name, p.created, m.played, m.invite_paid FROM player_meta m JOIN players p ON p.id = m.player
-      WHERE m.invited_by = ? ORDER BY p.created DESC LIMIT 200`).bind(me.id).all();
+  const { results } = await env.DB.prepare(`SELECT p.id, p.name, p.created, m.played, m.invite_paid,
+      (SELECT amount FROM rewards WHERE player = ? AND reason = 'invite' AND created = m.invite_paid LIMIT 1) AS amount FROM player_meta m JOIN players p ON p.id = m.player
+      WHERE m.invited_by = ? ORDER BY p.created DESC LIMIT 200`).bind(me.id, me.id).all();
   const owed = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES);
   if (owed.length) { const { results: got } = await env.DB.prepare("SELECT k FROM reward_once WHERE player = ? AND k LIKE 'loyal:%'").bind(me.id).all(), have = new Set(got.map(g => g.k));
     for (const r of owed) if (!have.has('loyal:' + r.id)) await once(env, me.id, 'loyal:' + r.id, LOYAL_REWARD, 'loyal', r.name) }
@@ -152,10 +170,10 @@ export async function invites(env, me) {
   const n = results.filter(r => r.invite_paid > 0).length, loyal = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES).length;
   const e = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM rewards WHERE player = ? AND reason IN ('invite', 'loyal', 'milestone')").bind(me.id).first();
   const shared = !!await env.DB.prepare('SELECT 1 FROM reward_once WHERE player = ? AND k = ?').bind(me.id, 'share:' + utcDay()).first();
-  return { reward: INVITE_REWARD, loyalReward: LOYAL_REWARD, loyalAt: LOYAL_MATCHES, shareBonus: SHARE_BONUS, perDay: INVITES_PER_DAY,
+  return { reward: INVITE_REWARD, inviterReward: inviterReward(), promoUntil: promoOn() ? PROMO.until : 0, loyalReward: LOYAL_REWARD, loyalAt: LOYAL_MATCHES, shareBonus: SHARE_BONUS, perDay: INVITES_PER_DAY,
     joined: results.length, counted: n, loyal, earned: e ? e.s : 0, shared, next: nextMilestone(n), rewards: await claim(env, me.id),
     milestones: MILESTONES.map(x => ({ ...x, got: n >= x.n })),
-    friends: results.slice(0, 50).map(r => ({ name: r.name, at: r.created, played: Math.min(r.played, LOYAL_MATCHES),
+    friends: results.slice(0, 50).map(r => ({ name: r.name, at: r.created, played: Math.min(r.played, LOYAL_MATCHES), paid: r.amount || 0,
       state: r.invite_paid > 0 ? (r.played >= LOYAL_MATCHES ? 'loyal' : 'played') : r.invite_paid === 0 ? 'capped' : 'waiting' })) };
 }
 // The player shared their invite link (the game says so when Telegram or the phone's share sheet reports it went out).

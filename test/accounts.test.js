@@ -107,7 +107,8 @@ test('feedback: stored with the linked wallet, checked, limited per day, and sen
     assert.equal((await call(env, '/feedback', { text: 'hi' })).status, 401);
     assert.equal((await call(env, '/feedback', { text: '   ' }, w.token)).status, 400);
     assert.equal((await call(env, '/feedback', { text: 'hi', wallet: 'not a wallet' }, w.token)).status, 400);
-    assert.equal((await call(env, '/feedback', { text: 'Love the <vulture>!', rating: 5, info: 'web en L3' }, w.token)).ok, true);
+    const fb = await call(env, '/feedback', { text: 'Love the <vulture>!', rating: 5, info: 'web en L3' }, w.token);
+    assert.equal(fb.ok, true); assert.equal(fb.reward, 500); assert.equal(fb.rated, true); assert.deepEqual(fb.rewards.map(r => [r.amount, r.reason]), [[500, 'rate']]);   // stars + a comment: +500 once
     const row = env.sql.prepare('SELECT * FROM feedback').get();
     assert.equal(row.wallet, w.player.wallet); assert.equal(row.wallet_ok, 1); assert.equal(row.rating, 5);
     assert.equal(sent.length, 1); assert.equal(sent[0][1].chat_id, 42); assert.match(sent[0][1].text, /Love the &lt;vulture&gt;!/); assert.match(sent[0][1].text, /★★★★★/);
@@ -115,15 +116,21 @@ test('feedback: stored with the linked wallet, checked, limited per day, and sen
     const bug = env.sql.prepare('SELECT * FROM feedback ORDER BY id DESC').get();
     assert.match(bug.info, /^BUG · web android/); assert.equal(bug.info.length, 6 + 600);
     assert.equal(sent.length, 2); assert.match(sent[1][1].text, /^🐞 Bug report from/); assert.doesNotMatch(sent[1][1].text, /no rating/);
+    const again = await call(env, '/feedback', { text: 'Still loving it, one more note', rating: 2 }, w.token);
+    assert.equal(again.reward, 0); assert.equal(again.rated, true); assert.deepEqual(again.rewards, []);
     const g = await call(env, '/auth/guest', {}), typed = w.player.wallet;
     assert.equal((await call(env, '/feedback', { text: 'ok', rating: 9, wallet: typed }, g.token)).ok, true);
     const r2 = env.sql.prepare('SELECT * FROM feedback WHERE player = ?').get(g.player.id);
     assert.equal(r2.wallet_ok, 0); assert.equal(r2.rating, null);
+    // no stars, or a comment too short: no reward yet; any honest rating with a comment counts, even 1 star
+    const short = await call(env, '/feedback', { text: 'meh', rating: 1 }, g.token); assert.equal(short.reward, 0); assert.equal(short.rated, false);
+    assert.equal((await call(env, '/feedback', { text: 'Too hard to aim on my phone', rating: 1 }, g.token)).reward, 500);
+    env.sql.prepare("DELETE FROM feedback WHERE player = ? AND text IN ('meh', 'Too hard to aim on my phone')").run(g.player.id);
     for (let i = 1; i < 10; i++) await call(env, '/feedback', { text: 'more ' + i }, g.token);
     assert.equal((await call(env, '/feedback', { text: 'too many' }, g.token)).status, 429);
     const { feedbackCsv } = await import('../src/bot.js');
     const csv = await feedbackCsv(env);
-    assert.equal(csv.messages, 12); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
+    assert.equal(csv.messages, 13); assert.equal(csv.testers, 2); assert.equal(csv.withWallet, 2);
     assert.match(csv.csv, /"Love the <vulture>!"|Love the <vulture>!/); assert.ok(boss.player.id === 1);
   } finally { globalThis.fetch = realFetch }
 });

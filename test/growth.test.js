@@ -17,7 +17,8 @@ globalThis.fetch = async (url, init) => {
 };
 const { default: worker } = await import('../src/index.js');
 const { webhook, cron } = await import('../src/bot.js');
-const { weekStart, announce } = await import('../src/growth.js');
+const { weekStart, announce, PROMO } = await import('../src/growth.js');
+const PROMO_UNTIL = PROMO.until; PROMO.until = 0;   // the invite week is off for the tests that don't test it
 
 function makeEnv(online = []) {
   const sql = new DatabaseSync(':memory:'); sql.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
@@ -62,6 +63,32 @@ test('growth: a source tag sticks to a new account; a friend link pays both play
   const again = await call(env, '/friends/add', { code: host.friendCode }, kid.token); assert.equal(again.invited, false);
   // the ranking doesn't move: invite rewards aren't $CWORM gained
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM cworm_scores').get().n, 0);
+});
+
+test('growth: invite week: the inviter gets +1,500 per friend, the friend +200; the Invite page and /invite say so; off after it ends', async () => {
+  const env = makeEnv(); calls.length = 0; PROMO.until = PROMO_UNTIL;
+  try {
+    assert.ok(PROMO.until === Date.UTC(2026, 9, 26) && PROMO.amount === 1500);
+    PROMO.until = Date.now() + 864e5;
+    const host = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
+    const kid = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid.token);
+    assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, kid.token)).rewards.map(r => [r.amount, r.reason]), [[200, 'invited']]);
+    const dm = calls.find(([m, b]) => m === 'sendMessage' && b.chat_id === 42)[1];
+    assert.match(dm.text, /Invite week: \+1,500 \$CWORM for you, and \+200 for /); assert.match(dm.text, /Play money/);
+    const page = await call(env, '/invites', undefined, host.token);
+    assert.deepEqual(page.rewards.map(r => [r.amount, r.reason]), [[1500, 'invite']]);
+    assert.equal(page.inviterReward, 1500); assert.equal(page.promoUntil, PROMO.until); assert.equal(page.earned, 1500); assert.equal(page.friends[0].paid, 1500);
+    calls.length = 0; await hook(env, msg('/invite', 42));
+    assert.match(calls[0][1].text, /\+1,500 \$CWORM for you \(invite week, until Sunday 25 October\)\n• \+200 \$CWORM for your friend/);
+    calls.length = 0; await hook(env, msg('/start', 42));
+    assert.match(calls[0][1].text, /Invite week: \+1,500 \$CWORM for every friend you bring/);
+    // after the week: +200 again, and friends paid during it still show +1,500
+    PROMO.until = Date.now() - 1;
+    const kid2 = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid2.token); await call(env, '/played', { mode: 'cpu' }, kid2.token);
+    const after = await call(env, '/invites', undefined, host.token);
+    assert.equal(after.inviterReward, 200); assert.equal(after.promoUntil, 0); assert.deepEqual(after.rewards.map(r => r.amount), [200]);
+    assert.deepEqual(after.friends.map(f => f.paid).sort((a, b) => a - b), [200, 1500]);
+  } finally { PROMO.until = 0 }
 });
 
 test('growth: at most 10 rewarded invites per inviter a day', async () => {

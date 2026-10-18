@@ -33,7 +33,7 @@
 //   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
-//   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins
+//   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
@@ -50,7 +50,7 @@ import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone } from './growth.js';
+import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
@@ -373,7 +373,7 @@ const app = {
         .bind(row.player, row.name, row.tg_id, row.wallet, row.wallet_ok, row.rating, row.text, row.info, row.created).run();
       const note = tellAdmins(env, row).catch(() => { });
       if (ctx && ctx.waitUntil) ctx.waitUntil(note); else await note;
-      return json({ ok: true }, 200, cors);
+      return json({ ok: true, ...(bug ? {} : await rateReward(env, me.id, row.rating, text)) }, 200, cors);   // stars and a comment: +500 once
     }
     // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
