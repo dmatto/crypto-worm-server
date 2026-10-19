@@ -22,6 +22,9 @@
 //   GET  /match/<code>/ws?token=...                             websocket into the match
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
+//   POST /royale/join                                           -> {code, left}  the open Worm Royale room (see lobby.js, royale.js)
+//   GET  /royale/<code>/ws?token=...                            websocket into a Worm Royale room
+//   GET  /royale/ping, POST /royale/ping {on}                   -> {on}  a bot message when the daily Royale hour starts
 //   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
 //   GET  /feed                                                  -> {feed, now}  the live feed on Home: wins, kills, great shots (no sign-in, see feed.js)
 // Load tests (see sim/): /auth/guest with the header x-sim-key: SIM_KEY makes a simulated player (sim_players). They count and
@@ -48,6 +51,7 @@
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
+import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
@@ -55,7 +59,7 @@ import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
-export { Match, Lobby };
+export { Match, Lobby, Royale };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
 const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
@@ -400,6 +404,21 @@ const app = {
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }
+    if (path === '/royale/join' && req.method === 'POST') {
+      if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
+      return json(await (await lobbyOf(env).fetch('https://lobby/royale/join')).json(), 200, cors);
+    }
+    const rws = path.match(/^\/royale\/([A-Z2-9]{6})\/ws$/);
+    if (rws) {
+      const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-country', geo);
+      const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier));
+      h.set('x-cw', (await wormMine(env, me.id, hb.tier)) || ''); h.set('x-av', (await avatarOf(env, me.id)) || ''); h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');
+      return env.ROYALE.get(env.ROYALE.idFromName(rws[1])).fetch(new Request(req.url, { headers: h }));
+    }
+    if (path === '/royale/ping') {                                                     // the Royale hour message from the bot (see royaleHour in growth.js)
+      if (req.method === 'POST') await env.DB.prepare(body.on ? 'INSERT OR IGNORE INTO royale_ping (player, at) VALUES (?, ?)' : 'DELETE FROM royale_ping WHERE player = ? AND ? > 0').bind(me.id, Date.now()).run();
+      return json({ on: !!(await env.DB.prepare('SELECT 1 AS y FROM royale_ping WHERE player = ?').bind(me.id).first()), tg: me.tg_id != null }, 200, cors);
+    }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);

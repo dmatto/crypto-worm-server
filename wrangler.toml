@@ -24,8 +24,13 @@ database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
 bindings = [
   { name = "MATCH", class_name = "Match" },
   { name = "LOBBY", class_name = "Lobby" },
+  { name = "ROYALE", class_name = "Royale" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Match", "Lobby"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Royale"]

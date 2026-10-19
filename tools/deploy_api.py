@@ -38,19 +38,22 @@ print('database', DB_NAME, 'ready')
 # 2. worker (first upload creates the Durable Object classes; later ones keep them)
 existing = call('GET', '/workers/scripts')['result']
 first = not any(s['id'] == NAME for s in existing)
+tag = next((s.get('migration_tag') for s in existing if s['id'] == NAME), None)
 meta = {
     'main_module': 'index.js', 'compatibility_date': COMPAT,
     'bindings': [{'type': 'd1', 'name': 'DB', 'id': db['uuid']},
                  {'type': 'durable_object_namespace', 'name': 'MATCH', 'class_name': 'Match'},
-                 {'type': 'durable_object_namespace', 'name': 'LOBBY', 'class_name': 'Lobby'}]
+                 {'type': 'durable_object_namespace', 'name': 'LOBBY', 'class_name': 'Lobby'},
+                 {'type': 'durable_object_namespace', 'name': 'ROYALE', 'class_name': 'Royale'}]
                 + ([{'type': 'service', 'name': 'SIM', 'service': 'crypto-worm-sim'}] if any(s['id'] == 'crypto-worm-sim' for s in existing) else [])   # the load test (sim/), once deployed
                 + [{'type': 'plain_text', 'name': k, 'text': v} for k, v in VARS.items()],
     'keep_bindings': ['secret_text'],
 }
-if first: meta['migrations'] = {'new_tag': 'v1', 'new_sqlite_classes': ['Match', 'Lobby']}
+if first: meta['migrations'] = {'new_tag': 'v2', 'steps': [{'new_sqlite_classes': ['Match', 'Lobby']}, {'new_sqlite_classes': ['Royale']}]}
+elif tag in (None, 'v1'): meta['migrations'] = {'old_tag': 'v1', 'new_tag': 'v2', 'new_sqlite_classes': ['Royale']}   # Worm Royale rooms (royale.js)
 b = uuid.uuid4().hex
 parts = [('metadata', 'metadata.json', 'application/json', json.dumps(meta).encode())]
-for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'bot.js', 'growth.js', 'map.js', 'world.js', 'holders.js', 'prize.js', 'feed.js', 'stickers.js', 'worms.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
+for f in ('index.js', 'auth.js', 'match.js', 'lobby.js', 'royale.js', 'bot.js', 'growth.js', 'map.js', 'world.js', 'holders.js', 'prize.js', 'feed.js', 'stickers.js', 'worms.js'): parts.append((f, f, 'application/javascript+module', open('src/' + f, 'rb').read()))
 body = b''.join(f'--{b}\r\nContent-Disposition: form-data; name="{n}"; filename="{fn}"\r\nContent-Type: {ct}\r\n\r\n'.encode() + data + b'\r\n' for n, fn, ct, data in parts) + f'--{b}--\r\n'.encode()
 call('PUT', f'/workers/scripts/{NAME}', raw=body, ctype=f'multipart/form-data; boundary={b}')
 print('worker uploaded')

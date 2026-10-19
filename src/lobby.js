@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st}], online, playing, live: [{code, names, cc, viewers, at, ids}]}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st}], online, playing, live: [{code, names, cc, viewers, at, ids}], royale: {n, left} | null}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}    whale {name, tier}
 //
 // tier and st are the player's $CWORM holder tier (0-5) and hold stars (0-4), from the server (see holders.js). A Whale or Big
@@ -15,14 +15,19 @@
 //
 // It also keeps the one waiting spot for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
 // also counts the players online: `online` is everyone connected (hidden players too), `playing` those in a match.
+//
+// And the one open Worm Royale room (royaleJoin): everyone who taps Drop in gets its code, so real players meet in the same
+// match. A room opens with the first player and starts ROYALE_WAIT_MS later (see royale.js); its count of players waiting and
+// time left go out with the list as royale {n, left}, for the Royale card on Home.
 
 import { newCode } from './match.js';
+import { ROYALE_WAIT_MS } from './royale.js';
 import { announce } from './growth.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
 const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000,
-  BUSY_LOBBY = 40, LIST_GAP_MS = 1000;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
+  BUSY_LOBBY = 40, LIST_GAP_MS = 1000, ROYALE_LATE_MS = 4000;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
 const open = ws => ws.readyState == null || ws.readyState === 1;   // a closing socket can still be listed until its close event has run
 
 export class Lobby {
@@ -31,6 +36,7 @@ export class Lobby {
   async fetch(req) {
     const url = new URL(req.url);
     if (!this.liveList) this.liveList = await this.live();
+    if (this.royale === undefined) this.royale = (await this.ctx.storage.get('royale')) || null;
     if (req.headers.get('Upgrade') === 'websocket') return this.enter(req);
     if (url.pathname === '/online') {
       const here = new Set(this.players().map(p => p.id));
@@ -40,6 +46,8 @@ export class Lobby {
     if (url.pathname === '/count') return Response.json(this.count());
     if (url.pathname === '/ids') return Response.json({ ids: this.players().map(p => p.id) });   // visible players, for the bot's "friend is online" reminders
     if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
+    if (url.pathname === '/royale/join') return this.royaleJoin();
+    if (url.pathname === '/royale/note' && req.method === 'POST') return this.royaleNote(await req.json().catch(() => ({})));
     return this.quick(Number(url.searchParams.get('player')));
   }
 
@@ -69,6 +77,25 @@ export class Lobby {
     if (b.gone || !codes.has(code) || was !== this.liveList.length) this.broadcast();   // starts and ends go out at once; viewer counts ride along later
     return Response.json({ ok: true });
   }
+
+  // Worm Royale: the open room's code, or a new room when there is none, it has started, or it starts too soon to get in.
+  async royaleJoin() {
+    const now = Date.now(); let r = this.royale || (this.royale = await this.ctx.storage.get('royale'));
+    if (!r || r.started || now > r.startAt - this.royaleLate()) {
+      r = this.royale = { code: newCode(), startAt: now + this.royaleWait(), n: 0, started: false }; await this.ctx.storage.put('royale', r);
+      await this.env.ROYALE.get(this.env.ROYALE.idFromName(r.code)).fetch('https://room/open', { method: 'POST', body: JSON.stringify({ code: r.code, startAt: r.startAt }) });
+    }
+    return Response.json({ code: r.code, left: r.startAt - now });
+  }
+  async royaleNote(b) {                                               // a room's players came or went, or it started
+    const r = this.royale || (this.royale = await this.ctx.storage.get('royale'));
+    if (!r || r.code !== b.code) return Response.json({ ok: false });
+    r.n = Math.max(0, Number(b.n) || 0); r.started = !!b.started; await this.ctx.storage.put('royale', r); this.broadcast();
+    return Response.json({ ok: true });
+  }
+  royaleOpen() { const r = this.royale, left = r ? r.startAt - Date.now() : 0; return r && !r.started && r.n > 0 && left > this.royaleLate() ? { n: r.n, left } : null }
+  royaleWait() { return Number(this.env.ROYALE_WAIT_MS) || ROYALE_WAIT_MS }                  // ROYALE_WAIT_MS in the env: a shorter wait for tests
+  royaleLate() { return Math.min(ROYALE_LATE_MS, this.royaleWait() / 4) }
 
   // Quick match: the first player gets a fresh match code and waits; the next player within 30 seconds gets the same code.
   async quick(player) {
@@ -127,7 +154,7 @@ export class Lobby {
   }
   sendList(except) {
     const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0 }));
-    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [] });
+    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [], royale: this.royaleOpen() });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except && open(ws)) try { ws.send(out) } catch { }
   }
 

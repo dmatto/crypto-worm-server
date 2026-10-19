@@ -289,3 +289,18 @@ CREATE TABLE IF NOT EXISTS player_avatar (
   player   INTEGER PRIMARY KEY,
   av       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS royale_log (    -- Worm Royale online (royale.js): each real player's place in each room, kept 5 weeks. ok 0: the host's
+  code   TEXT NOT NULL,                    -- places and the player's own phone disagreed (on the host's row: some other row disagreed)
+  player INTEGER NOT NULL,
+  place  INTEGER,
+  kills  INTEGER NOT NULL DEFAULT 0,
+  host   INTEGER NOT NULL DEFAULT 0,       -- 1 = this player's phone ran the match
+  ok     INTEGER NOT NULL DEFAULT 1,
+  at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS royale_log_player ON royale_log (player, at);
+CREATE INDEX IF NOT EXISTS royale_log_at ON royale_log (at);
+CREATE TABLE IF NOT EXISTS royale_ping (   -- players who asked the bot for a message when the daily Royale hour starts
+  player INTEGER PRIMARY KEY,
+  at     INTEGER NOT NULL
+);

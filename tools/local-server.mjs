@@ -40,12 +40,13 @@ function namespace(Cls, env) {
     idFromName: n => n,
     get(name) {
       if (!live.has(name)) {
-        const socks = [], store = new Map();
+        const socks = [], store = new Map(); let alarmT = null, alarmAt = null;
         const ctx = {
           acceptWebSocket(ws, tags) { ws.tags = tags; ws.obj = obj; socks.push(ws) },
           getWebSockets: tag => socks.filter(w => !w.closed && (w.sock || w.early) && (tag == null || w.tags.includes(tag))),
           getTags: ws => ws.tags,
-          storage: { get: async k => store.get(k), put: async (k, v) => void store.set(k, structuredClone(v)), delete: async k => void store.delete(k), setAlarm: async () => { } },
+          storage: { get: async k => store.get(k), put: async (k, v) => { if (typeof k === 'object') for (const [a, b] of Object.entries(k)) store.set(a, structuredClone(b)); else store.set(k, structuredClone(v)) }, delete: async k => void store.delete(k),
+            setAlarm: async t => { clearTimeout(alarmT); alarmAt = t; alarmT = setTimeout(() => { alarmAt = null; obj.alarm && obj.alarm() }, Math.max(0, t - Date.now())) }, getAlarm: async () => alarmAt },
         };
         const obj = new Cls(ctx, env); live.set(name, obj);
       }
@@ -55,9 +56,10 @@ function namespace(Cls, env) {
   };
 }
 
-const { default: worker, Match, Lobby } = await import('../src/index.js');
+const { default: worker, Match, Lobby, Royale } = await import('../src/index.js');
 const env = { DB, SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '', SOLANA_RPC: process.env.SOLANA_RPC || '', PRIZE_PREVIEW: process.env.PRIZE_PREVIEW || '', SIM_KEY: process.env.SIM_KEY || '', XAI_API_KEY: process.env.XAI_API_KEY || '', ADMIN_PLAYERS: process.env.ADMIN_PLAYERS || '' };
-env.MATCH = namespace(Match, env); env.LOBBY = namespace(Lobby, env);
+env.MATCH = namespace(Match, env); env.LOBBY = namespace(Lobby, env); env.ROYALE = namespace(Royale, env);
+if (process.env.ROYALE_WAIT_MS) env.ROYALE_WAIT_MS = process.env.ROYALE_WAIT_MS;   // a shorter Worm Royale waiting room for tests
 
 // ---- tiny WebSocket server (text frames only)
 function wsSend(sock, text) {

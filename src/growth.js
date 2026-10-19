@@ -312,6 +312,34 @@ export async function reminders(env, now = Date.now()) {
 }
 export const botUsername = botName;
 
+// ---- the daily Worm Royale hour (Damian 2026-10-19): at 20:00 UTC, the busiest hour of the week before, one post in the
+// community group and a bot message to the players who asked for one (POST /royale/ping), so real players drop into the same
+// rooms. The cron calls this every minute of that hour; each run sends one batch and saves its place. ----
+export const ROYALE_HOUR = 20;
+const ROYALE_POST = '🪂 Worm Royale hour! For the next hour real players drop onto the same island together: 50 worms, everyone fires at once, the last worm standing wins. Tap to drop in 👇';
+const ROYALE_DM = '🪂 Worm Royale hour has started: real players are dropping in right now. Join them!\n\nNo more of these: switch off "Royale hour message" in the Worm Royale waiting room.';
+export async function royaleHour(env, now = Date.now()) {
+  if (!env.BOT_TOKEN || !env.DB || new Date(now).getUTCHours() !== ROYALE_HOUR) return 0;
+  const day = utcDay(now), kb = { inline_keyboard: [[{ text: '🪂 Drop in', url: gameLink(env, 'royale') }]] };
+  if (await kv.get(env, 'royale_day') !== day) {
+    await kv.set(env, 'royale_day', day); await kv.set(env, 'royale_last', '0');
+    const group = await kv.get(env, 'group');
+    if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: ROYALE_POST, reply_markup: kb });
+  }
+  const last = Number(await kv.get(env, 'royale_last')); if (!(last >= 0)) return 0;
+  const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id FROM royale_ping r JOIN players p ON p.id = r.player LEFT JOIN player_meta m ON m.player = p.id
+      WHERE p.tg_id IS NOT NULL AND COALESCE(m.no_dm, 0) = 0 AND p.id > ? ORDER BY p.id LIMIT ?`).bind(last, ANNOUNCE_BATCH).all();
+  let sent = 0;
+  for (const r of results) {
+    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: ROYALE_DM, reply_markup: kb });
+    if (res && res.ok) sent++;
+    else if (res && res.error_code === 403) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, no_dm) VALUES (?, 0, 1) ON CONFLICT(player) DO UPDATE SET no_dm = 1').bind(r.id).run();
+    await kv.set(env, 'royale_last', String(r.id));
+  }
+  if (results.length < ANNOUNCE_BATCH) await kv.set(env, 'royale_last', '-1');
+  return sent;
+}
+
 // ---- update notes: the oldest unfinished announcement goes to the group, then to players in batches ----
 // A Worker run may make only about 50 outside calls, so each run sends one batch and saves its place after every message.
 // The lobby Durable Object runs the batches back to back on its alarm (each alarm is a fresh run), so a note reaches

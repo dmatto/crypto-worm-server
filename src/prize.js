@@ -51,7 +51,8 @@ export const logScore = (env, player, amount, now = Date.now()) =>
 export const logPlayDay = (env, player, now = Date.now()) => env.DB.prepare('INSERT OR IGNORE INTO play_days (player, day) VALUES (?, ?)').bind(player, day(now)).run().catch(() => { });
 export const cleanup = (env, now = Date.now()) => env.DB.batch([env.DB.prepare('DELETE FROM score_log WHERE at < ?').bind(now - LOG_KEEP),
   env.DB.prepare('DELETE FROM play_days WHERE day < ?').bind(day(now - LOG_KEEP)), env.DB.prepare('DELETE FROM hold_dips WHERE day < ?').bind(day(now - LOG_KEEP)),
-  env.DB.prepare('DELETE FROM run_log WHERE at < ?').bind(now - LOG_KEEP), env.DB.prepare('DELETE FROM prize_run WHERE at < ?').bind(now - DAY)]);
+  env.DB.prepare('DELETE FROM run_log WHERE at < ?').bind(now - LOG_KEEP), env.DB.prepare('DELETE FROM prize_run WHERE at < ?').bind(now - DAY),
+  env.DB.prepare('DELETE FROM royale_log WHERE at < ?').bind(now - LOG_KEEP)]);
 
 // Prize points of week `w` for every player who scored, highest first: each UTC day counts at most DAY_CAP, and no more than
 // that day's checked matches carry plus FREE_PTS. `ok` is what the checks let through before the cap; `raw` everything reported.
@@ -214,7 +215,9 @@ export async function adminList(env, w, now = Date.now()) {
     .bind(...ids, w, w + WEEK).all()).results : [];
   const runs = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM run_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
     .bind(...ids, w, w + WEEK).all()).results.map(r => [r.player, r.n])) : new Map();
-  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0, runs: runs.get(id) || 0, gaps: [], amounts: new Map() }])), hours = new Map(), prev = new Map();
+  const odd = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM royale_log WHERE ok = 0 AND player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
+    .bind(...ids, w, w + WEEK).all().catch(() => ({ results: [] }))).results.map(r => [r.player, r.n])) : new Map();   // Worm Royale places that did not match (royale.js record)
+  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0, runs: runs.get(id) || 0, royaleOdd: odd.get(id) || 0, gaps: [], amounts: new Map() }])), hours = new Map(), prev = new Map();
   for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++
     if (prev.has(l.player) && l.at - prev.get(l.player) < 3600e3) f.gaps.push(l.at - prev.get(l.player)); prev.set(l.player, l.at); f.amounts.set(l.amount, (f.amounts.get(l.amount) || 0) + 1) }
   for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
@@ -223,9 +226,9 @@ export async function adminList(env, w, now = Date.now()) {
   const px = await cwormPerSol(), cw = sol => px ? Math.round(sol * px.perSol) : null;
   const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], cworm: cw(PRIZES[i]), fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok) } }));
   const head = ['place', 'prize_sol', 'prize_cworm_now', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
-    'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts'];
+    'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts', 'royale_place_mismatch'];
   const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.cworm ?? 'price not read', r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night,
-    r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : ''])]);
+    r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : '', r.fair.royaleOdd || ''])]);
   const pay = winners.map(r => r.wallet + ',' + (r.cworm ?? r.prize + ' SOL')).join('\n');
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
   const out = (await env.DB.prepare('SELECT p.id, p.name FROM prize_skip k JOIN players p ON p.id = k.player ORDER BY k.at DESC LIMIT 20').all()).results;

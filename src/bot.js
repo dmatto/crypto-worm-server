@@ -19,7 +19,7 @@ import { holderCron } from './holders.js';
 import { makePack } from './stickers.js';
 import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
-import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay,
+import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
@@ -241,7 +241,7 @@ async function sendPrize(env, chat_id, last) {
   const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
   if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
   const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
-  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : ''].filter(Boolean);
+  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : '', f.royaleOdd ? `⚠️ ${f.royaleOdd} Worm Royale place${f.royaleOdd > 1 ? 's' : ''} that did not match` : ''].filter(Boolean);
   const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts · ${x.prize} SOL${x.cworm != null ? ' ≈ ' + fmt(x.cworm) + ' $CWORM' : ''}\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n` +
     `    ${x.fair.runs} checked matches · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => ' · ' + t).join('')}\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
   const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} ${r.entrants === 1 ? 'player' : 'players'} did all 5 steps.\n` +
@@ -294,6 +294,7 @@ export async function cron(env, now = Date.now()) {
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
+  try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
   for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
