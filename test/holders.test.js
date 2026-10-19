@@ -93,6 +93,12 @@ test('holders: linking a wallet, refreshing, the daily chest, whale toasts and t
   assert.equal((await call(env, '/me', undefined, t)).player.holder.title, 'Whale');
   await call(env, '/score', { amount: 50 }, t);
   assert.equal((await call(env, '/ranking', undefined, t)).top[0].tier, 4);
+  // holders only: a guest who scored more is left out, and ranks are counted among holders
+  const g = await call(env, '/auth/guest', {}); await call(env, '/score', { amount: 300 }, g.token);
+  const all = await call(env, '/ranking', undefined, t), only = await call(env, '/ranking?holders=1', undefined, t);
+  assert.deepEqual([all.players, all.top[0].id, all.me.rank], [2, g.player.id, 2]);
+  assert.deepEqual([only.holders, only.players, only.top.length, only.top[0].id, only.me.rank], [true, 1, 1, p.player.id, 1]);
+  assert.equal((await call(env, '/ranking?period=week&holders=1', undefined, g.token)).me, null);
   const plain = makeEnv(), q = await walletPlayer(plain);
   assert.equal((await call(plain, '/holder/chest', {}, q.token)).error, 'holders only');
   const guest = await call(plain, '/auth/guest', {});

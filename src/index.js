@@ -30,7 +30,7 @@
 //   POST /me/avatar          {av}                               -> session   pick an avatar (an id from the game's list); it shows in the
 //                                                               ranking and the battle's corners, online too (session player.av)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
-//   GET  /ranking?period=week|all                               -> {period, since, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}
+//   GET  /ranking?period=week|all&holders=1                    -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
@@ -86,12 +86,14 @@ const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|s
 
 // The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC) or all time. The game reports what each
 // match banked; the server caps each report and each day so a tampered phone can't run away with it.
-async function ranking(env, period, me) {
+// holders (Damian 2026-10-19: "an option to see only the holders"): only players with a holder tier, ranked among themselves.
+async function ranking(env, period, me, holders) {
   const since = weekStart();
-  const rows = period === 'week'
+  let rows = period === 'week'
     ? (await env.DB.prepare(`SELECT p.id, p.name, s.week AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC`).bind(since).all()).results
     : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
-  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...place(rows, me, wormAdmins(env)) };
+  if (holders) rows = rows.filter(r => r.tier > 0);
+  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...(holders ? { holders: true } : {}), ...place(rows, me, wormAdmins(env)) };
   if (period === 'week') {                                        // 🎟️ next to players who did every weekly prize step
     const t = await tickets(env, [...out.top.map(r => r.id), ...(out.me ? [out.me.id] : [])]).catch(() => new Set());
     for (const r of [...out.top, ...(out.me ? [out.me] : [])]) if (t.has(r.id)) r.ticket = true;
@@ -359,7 +361,7 @@ const app = {
       if (r.error) return json({ error: r.error }, r.status, cors);
       return json({ added: r.added, week: r.s.week_start === weekStart() ? r.s.week : 0, total: r.s.total }, 200, cors);
     }
-    if (path === '/ranking' && req.method === 'GET') return json(await ranking(env, url.searchParams.get('period') === 'week' ? 'week' : 'all', me), 200, cors);
+    if (path === '/ranking' && req.method === 'GET') return json(await ranking(env, url.searchParams.get('period') === 'week' ? 'week' : 'all', me, url.searchParams.get('holders') === '1'), 200, cors);
     if (path === '/feedback' && req.method === 'POST') {
       const text = String(body.text || '').trim().slice(0, MAX_FEEDBACK), typed = String(body.wallet || '').trim();
       if (!text) return json({ error: 'write something first' }, 400, cors);
