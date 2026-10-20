@@ -13,11 +13,16 @@
 //   POST /teams/leave                 -> {ok}   the leader's place goes to the longest member; an empty team is deleted
 //   POST /teams/kick   {id}           -> the team   (leader)
 //   POST /teams/edit   {emoji?, tg?}  -> the team   (leader)
+//   POST /teams/logo   {img}          -> the team   (leader) the team's own picture: a 256 px JPEG data URL from the game, checked by
+//                                      Grok first; {img: null} takes it off. Turned down: {error, code: 'logo'}
+//   GET  /teams/logo/<id>.jpg         the picture (no sign-in: the ids are random); `logo` on teams is its id
 // Points a member earned stay with the team they earned them for.
 
 import { newCode } from './match.js';
 import { weekStart, gameLink } from './growth.js';
+import { xai, VISION_MODEL } from './worms.js';
 
+export const LOGO_TRIES = 5, MAX_LOGO = 200_000;   // uploads a team can try a UTC day, and the biggest data URL taken
 export const MAX_MEMBERS = 50, CREATE_PLAYED = 3, REJOIN_MS = 12 * 3600e3, CLASH = 100, CLASH_DAY = 5, TOP = 50;
 export const EMOJI = ['🪱', '🐸', '🐶', '🐱', '🦊', '🐻', '🐼', '🦁', '🐯', '🐺', '🦈', '🐋', '🐙', '🦄', '🐲', '🦅', '🔥', '⚡', '🌙', '🚀', '💎', '👑', '⚔️', '🍀'];
 const NAME = /^[\p{L}\p{N}][\p{L}\p{N} _.\-'&!]{1,18}[\p{L}\p{N}!.]$/u, TAG = /^[A-Z0-9]{2,5}$/;
@@ -34,17 +39,17 @@ export function cleanTg(s) {
 const bad = s => BLOCK.test(s) || BLOCK.test(s.replace(/[\s_.\-'&!]/g, ''));
 
 export async function teamOf(env, player) {
-  return q(env, 'SELECT t.id, t.name, t.tag, t.emoji, m.role FROM team_members m JOIN teams t ON t.id = m.team WHERE m.player = ?', player).first().catch(() => null);
+  return q(env, 'SELECT t.id, t.name, t.tag, t.emoji, m.role, l.id AS logo FROM team_members m JOIN teams t ON t.id = m.team LEFT JOIN team_logos l ON l.team = t.id WHERE m.player = ?', player).first().catch(() => null);
 }
 
 // The weekly (or all time) table: every team, ranked by the points its members earned for it.
 async function table(env, period, now = Date.now()) {
   const wk = weekStart(now), week = period !== 'all';
-  const { results } = await q(env, `SELECT t.id, t.name, t.tag, t.emoji, t.created,
+  const { results } = await q(env, `SELECT t.id, t.name, t.tag, t.emoji, t.created, (SELECT l.id FROM team_logos l WHERE l.team = t.id) AS logo,
       (SELECT COUNT(*) FROM team_members m WHERE m.team = t.id) AS members,
       COALESCE((SELECT SUM(p.pts) FROM team_points p WHERE p.team = t.id ${week ? 'AND p.week_start = ?' : ''}), 0) AS pts
       FROM teams t ORDER BY pts DESC, t.created ASC`, ...(week ? [wk] : [])).all();
-  return results.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, tag: r.tag, emoji: r.emoji, members: r.members, pts: r.pts | 0 }));
+  return results.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, tag: r.tag, emoji: r.emoji, ...(r.logo ? { logo: r.logo } : {}), members: r.members, pts: r.pts | 0 }));
 }
 
 async function detail(env, id, me, opts = {}, now = Date.now()) {
@@ -57,7 +62,8 @@ async function detail(env, id, me, opts = {}, now = Date.now()) {
   const mine = !!me && results.some(r => r.id === me.id);
   let online = new Set();
   if (mine && opts.lobby && results.length) try { online = new Set((await (await opts.lobby.fetch('https://lobby/online?ids=' + results.map(r => r.id).join(','))).json()).online) } catch (e) { }
-  return { team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
+  const logo = await q(env, 'SELECT id FROM team_logos WHERE team = ?', t.id).first();
+  return { team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, ...(logo ? { logo: logo.id } : {}), tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
       ...(mine ? { code: t.code, link: gameLink(opts.env || env, 't_' + t.code) } : {}) },
     members: results.map(r => ({ id: r.id, name: r.name, ...(r.av ? { av: r.av } : {}), role: r.role, pts: r.pts | 0, ...(mine ? { online: online.has(r.id) } : {}) })), mine };
 }
@@ -130,7 +136,48 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
     if (tgl !== undefined) await q(env, 'UPDATE teams SET tg = ? WHERE id = ?', tgl, mine.id).run();
     return detail(env, mine.id, me, opts, now);
   }
+  if (sub === '/logo') {
+    if (!mine || mine.role !== 'lead') return { error: 'only the team leader can do that', status: 403 };
+    if (body.img == null || body.img === '') { await q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id).run(); return detail(env, mine.id, me, opts, now) }
+    const r = await logo(env, me, mine, String(body.img), opts, now); if (r) return r;
+    return detail(env, mine.id, me, opts, now);
+  }
   return null;
+}
+
+// Grok looks at a team picture before anyone else sees it (PG-13 game, shown to every player).
+const LOGO_CHECK = 'You check pictures that a team in a PG-13 mobile game uploads as its team logo. Every player sees it. Answer with JSON only: {"ok":true|false,"reason":"<short>"}. ' +
+  'ok is false if the picture shows: nudity or sexual content; violence, blood or gore; hate symbols or extremist signs; drugs; real guns or knives as the focus (cartoon game weapons are fine); ' +
+  'rude or offensive words; a real photo of a person (cartoon or drawn characters are fine); a child; a scam (wallet addresses, QR codes, "send crypto", "free airdrop", giveaway promises); ' +
+  'or the logo of a real company or exchange presented as official. Team logos, emblems, mascots, animals, cartoon characters, coins and crypto community art are fine.';
+const LOGO_ID = /^[a-z0-9]{12,24}$/;
+const logoNo = (error, status = 422) => ({ error, code: 'logo', status });
+async function logo(env, me, mine, img, opts, now) {
+  if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(img) || img.length > MAX_LOGO) return logoNo('send a JPEG, PNG or WebP picture', 400);
+  const d = Math.floor(now / DAY) * DAY;
+  const [tries, banned] = await Promise.all([q(env, 'SELECT COUNT(*) AS n FROM team_logo_log WHERE team = ? AND at >= ? AND ok < 2', mine.id, d).first(), q(env, 'SELECT 1 AS y FROM team_logo_log WHERE team = ? AND ok = 2', mine.id).first()]);
+  if (banned) return logoNo('team pictures are turned off for this team', 403);
+  if (!env.XAI_API_KEY) return logoNo('team pictures are resting right now: try again later', 503);
+  if (tries.n >= LOGO_TRIES) return logoNo('that is enough pictures for today: try again tomorrow', 429);
+  let v; try { const r = await xai(env, 'chat/completions', { model: VISION_MODEL, temperature: 0, response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: img } }, { type: 'text', text: LOGO_CHECK }] }] }); v = JSON.parse(r.choices[0].message.content) }
+  catch (e) { return logoNo('busy right now: try again in a minute', 502) }
+  const ok = v && v.ok === true, why = String(v && v.reason || '').slice(0, 200);
+  await q(env, 'INSERT INTO team_logo_log (team, player, at, ok, why) VALUES (?, ?, ?, ?, ?)', mine.id, me.id, now, ok ? 1 : 0, why || null).run();
+  if (!ok) return logoNo('that picture can not be used: try your community logo or a drawing' + (why ? ' (' + why + ')' : ''));
+  const id = [...crypto.getRandomValues(new Uint8Array(12))].map(b => (b % 36).toString(36)).join('') + now.toString(36).slice(-4);
+  await q(env, `INSERT INTO team_logos (team, id, img, created) VALUES (?, ?, ?, ?) ON CONFLICT(team) DO UPDATE SET id = excluded.id, img = excluded.img, created = excluded.created`,
+    mine.id, id, img.slice(img.indexOf(',') + 1), now).run();
+  if (opts.tell) await opts.tell((opts.origin || '') + '/teams/logo/' + id + '.jpg', `🛡️ New team picture: ${mine.emoji} ${mine.name} [${mine.tag}] (team ${mine.id}), uploaded by ${me.name} (player ${me.id}).\n/teams logooff ${mine.id} removes it and stops new ones; /teams off ${mine.id} removes the team.`).catch(() => { });
+  return null;
+}
+// The picture itself, for anyone (img tags and the bot's photo messages).
+export async function teamLogo(env, id) {
+  const row = LOGO_ID.test(id) && await env.DB.prepare('SELECT img FROM team_logos WHERE id = ?').bind(id).first().catch(() => null);
+  if (!row) return new Response('not found', { status: 404, headers: { 'access-control-allow-origin': '*' } });
+  const bin = atob(row.img), bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const type = row.img.startsWith('iVBOR') ? 'image/png' : row.img.startsWith('UklGR') ? 'image/webp' : 'image/jpeg';
+  return new Response(bytes, { headers: { 'content-type': type, 'cache-control': 'public, max-age=604800', 'access-control-allow-origin': '*' } });
 }
 
 async function leave(env, player, mine, now) {
@@ -139,7 +186,7 @@ async function leave(env, player, mine, now) {
   if (mine.role !== 'lead') return;
   const next = await q(env, 'SELECT player FROM team_members WHERE team = ? ORDER BY joined ASC LIMIT 1', mine.id).first();
   if (next) await env.DB.batch([q(env, "UPDATE team_members SET role = 'lead' WHERE player = ?", next.player), q(env, 'UPDATE teams SET owner = ? WHERE id = ?', next.player, mine.id)]);
-  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
+  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
 }
 
 // Two accounts become one (index.js link: `a` folds into `b`). b's own team wins; points a earned move to b.
@@ -210,13 +257,18 @@ export async function teamMessage(env, player) {
 
 // /teams and /teamoff <id> (admins): the table, and taking down a team with an abusive name or link
 export async function adminTeams(env, arg) {
-  const off = String(arg || '').trim().match(/^off\s+(\d+)/i);
+  const off = String(arg || '').trim().match(/^off\s+(\d+)/i), nologo = String(arg || '').trim().match(/^logooff\s+(\d+)/i);
+  if (nologo) {
+    const t = await q(env, 'SELECT id, name FROM teams WHERE id = ?', Number(nologo[1])).first(); if (!t) return `No team with id ${nologo[1]}.`;
+    await env.DB.batch([q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, "INSERT INTO team_logo_log (team, player, at, ok, why) VALUES (?, 0, ?, 2, 'removed by an admin')", t.id, Date.now())]);
+    return `🚫 Removed the picture of the team ${t.name} (id ${t.id}). It can't upload a new one.`;
+  }
   if (off) {
     const t = await q(env, 'SELECT id, name FROM teams WHERE id = ?', Number(off[1])).first(); if (!t) return `No team with id ${off[1]}.`;
-    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
+    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
     return `🚫 Removed the team ${t.name} (id ${t.id}). Its members are free to join another team.`;
   }
   const rows = (await table(env, 'week')).slice(0, 25);
   if (!rows.length) return '🛡️ No teams yet.';
-  return '🛡️ Teams this week\n' + rows.map(r => `#${r.rank} ${r.emoji} ${r.name} [${r.tag}] · ${r.members} worms · ${r.pts.toLocaleString('en-US')} pts · id ${r.id}`).join('\n') + '\n\n/teams off <id> removes a team.';
+  return '🛡️ Teams this week\n' + rows.map(r => `#${r.rank} ${r.emoji} ${r.name} [${r.tag}] · ${r.members} worms · ${r.pts.toLocaleString('en-US')} pts · id ${r.id}`).join('\n') + '\n\n/teams off <id> removes a team, /teams logooff <id> only its picture.';
 }

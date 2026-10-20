@@ -40,7 +40,7 @@
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
-//   GET  /teams, /teams/<id>, POST /teams/create, /teams/join, /teams/leave, /teams/kick, /teams/edit   community teams (see teams.js)
+//   GET  /teams, /teams/<id>, POST /teams/create, /teams/join, /teams/leave, /teams/kick, /teams/edit, /teams/logo, GET /teams/logo/<id>.jpg   community teams (see teams.js)
 //   GET  /worm, POST /worm/make, /worm/pick, /worm/remove, /worm/report, GET /worm/img/<id>.jpg   custom photo worms for holders (see
 //                                                               worms.js); the session's player.cw, ranking rows and match flags carry the portrait's id
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
@@ -59,7 +59,7 @@ import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepare
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
-import { handle as teamHandle, teamScore, teamOf, mergeTeams } from './teams.js';
+import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo } from './teams.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 export { Match, Lobby, Royale };
 
@@ -164,7 +164,7 @@ async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
   const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id);
-  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.role === 'lead' ? { lead: true } : {}) } : null;
+  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null;
   return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
@@ -246,6 +246,8 @@ const app = {
     if (path === '/feed' && req.method === 'GET') return feedResponse(env, ctx, cors);
     const pic = path.match(/^\/worm\/img\/([a-z0-9]{12,24})(?:\.jpg)?$/);
     if (pic && req.method === 'GET') return wormImage(env, pic[1]);              // a custom worm's portrait, for anyone
+    const tpic = path.match(/^\/teams\/logo\/([a-z0-9]{12,24})(?:\.jpg)?$/);
+    if (tpic && req.method === 'GET') return teamLogo(env, tpic[1]);             // a team's picture, for anyone
     const watch = path.match(/^\/match\/([A-Z2-9]{6})\/watch$/);
     if (watch) return env.MATCH.get(env.MATCH.idFromName(watch[1])).fetch(new Request(req.url, { headers: req.headers }));
     const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
@@ -411,7 +413,8 @@ const app = {
     if (path === '/teams' || path.startsWith('/teams/')) {                                 // community teams (see teams.js)
       if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
       if (req.method !== 'GET' && req.method !== 'POST') return json({ error: 'not found' }, 404, cors);
-      const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), post: req.method === 'POST' });
+      const tell = (photo, caption) => { const t = tellAdminsPhoto(env, photo, caption).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
+      const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), post: req.method === 'POST', tell, origin: env.PUBLIC_URL || url.origin });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }

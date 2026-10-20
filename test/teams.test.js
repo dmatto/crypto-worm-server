@@ -7,7 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
 const RealResponse = globalThis.Response;
 globalThis.Response = class extends RealResponse { static json(b, i) { return new globalThis.Response(JSON.stringify(b), { ...i, headers: { 'content-type': 'application/json' } }) } };
 const sent = [];
-globalThis.fetch = async (url, init) => { sent.push([String(url).split('/').pop(), JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
+let vision = { ok: true, reason: 'a lion logo' };                                  // what the Grok picture check answers
+globalThis.fetch = async (url, init) => {
+  if (String(url).startsWith('https://api.x.ai/')) { sent.push(['xai', JSON.parse(init.body)]); return Response.json({ choices: [{ message: { content: JSON.stringify(vision) } }] }) }
+  sent.push([String(url).split('/').pop(), init.body instanceof FormData ? init.body : JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
 const { default: worker } = await import('../src/index.js');
 const { teamClash, teamTopText, CLASH, CLASH_DAY, MAX_MEMBERS, REJOIN_MS } = await import('../src/teams.js');
 const { weekly, weekStart } = await import('../src/growth.js');
@@ -158,3 +161,31 @@ async function hookSecret(env) {
   const h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('webhook:' + env.SESSION_SECRET)))].map(x => x.toString(16).padStart(2, '0')).join('');
   return h.slice(0, 48);
 }
+
+test('teams: the leader uploads a team picture, Grok checks it first, everyone sees it, and admins can take it off', async () => {
+  const env = { ...makeEnv(), XAI_API_KEY: 'test' }, a = await guest(env), b = await guest(env), admin = await call(env, '/auth/telegram', { initData: tgInit(901, 'Boss') });
+  env.ADMIN_PLAYERS = String(admin.player.id);
+  const t = await call(env, '/teams/create', { name: 'Lion Pack', tag: 'LION', emoji: '🦁' }, a.token);
+  await call(env, '/teams/join', { id: t.team.id }, b.token);
+  const img = 'data:image/jpeg;base64,' + Buffer.from('fake jpeg bytes').toString('base64');
+  assert.equal((await call(env, '/teams/logo', { img }, b.token)).status, 403);                // only the leader
+  assert.equal((await call(env, '/teams/logo', { img: 'data:text/html;base64,AAAA' }, a.token)).status, 400);
+  vision = { ok: false, reason: 'a real photo of a person' };
+  const no = await call(env, '/teams/logo', { img }, a.token); assert.equal(no.status, 422); assert.equal(no.code, 'logo'); assert.match(no.error, /real photo of a person/);
+  vision = { ok: true, reason: 'a lion logo' }; sent.length = 0;
+  const yes = await call(env, '/teams/logo', { img }, a.token); assert.equal(yes.status, 200); assert.match(yes.team.logo, /^[a-z0-9]{12,24}$/);
+  assert.ok(sent.some(s => s[0] === 'sendPhoto'), 'the admins get the new picture');
+  const pic = await worker.fetch(new Request('https://api.test/teams/logo/' + yes.team.logo + '.jpg'), env);   // no sign-in
+  assert.equal(pic.status, 200); assert.equal(Buffer.from(await pic.arrayBuffer()).toString(), 'fake jpeg bytes');
+  assert.equal((await call(env, '/teams', undefined, b.token)).top[0].logo, yes.team.logo);
+  assert.equal((await call(env, '/me', undefined, b.token)).player.team.logo, yes.team.logo);
+  for (let i = 0; i < 3; i++) await call(env, '/teams/logo', { img }, a.token);
+  assert.equal((await call(env, '/teams/logo', { img }, a.token)).status, 429);              // 5 tries a day
+  assert.equal((await call(env, '/teams/logo', { img: null }, a.token)).team.logo, undefined);   // taken off
+  env.sql.prepare('DELETE FROM team_logo_log').run(); await call(env, '/teams/logo', { img }, a.token);
+  const { adminTeams } = await import('../src/teams.js');
+  assert.match(await adminTeams(env, 'logooff ' + t.team.id), /Removed the picture/);
+  assert.equal((await call(env, '/teams/' + t.team.id, undefined, a.token)).team.logo, undefined);
+  assert.equal((await call(env, '/teams/logo', { img }, a.token)).status, 403);              // no more uploads for this team
+  assert.equal((await worker.fetch(new Request('https://api.test/teams/logo/' + yes.team.logo + '.jpg'), env)).status, 404);
+});

@@ -17,7 +17,7 @@
 export const PRICE = 2500;                       // play $CWORM for four portraits
 export const MAKES_PER_DAY = 1, TRIES_PER_DAY = 6, ADMIN_MAKES = 10, ALL_PER_DAY = 60, OFFER_DAYS = 3, REPORTS_PER_DAY = 10;
 const MAX_PHOTO = 1_600_000, ID = /^[a-z0-9]{12,24}$/, OPTIONS = 4;
-const IMAGE_MODEL = 'grok-imagine-image-2.0', VISION_MODEL = 'grok-4.20-0309-non-reasoning', XAI = 'https://api.x.ai/v1/';
+const IMAGE_MODEL = 'grok-imagine-image-2.0'; export const VISION_MODEL = 'grok-4.20-0309-non-reasoning', XAI = 'https://api.x.ai/v1/';
 
 const CHECK = 'You check photos that players upload to become a cartoon worm character in a PG-13 game. Look at the photo and answer with JSON only: ' +
   '{"subject":"person"|"pet"|"other","adult":true|false|null,"famous":true|false,"unsafe":true|false,"reason":"<short>"}. ' +
@@ -64,7 +64,7 @@ export async function mine(env, id, tier) {
 }
 const mimeOf = b64 => b64.startsWith('iVBOR') ? 'image/png' : b64.startsWith('UklGR') ? 'image/webp' : 'image/jpeg';
 
-async function xai(env, path, body) {
+export async function xai(env, path, body) {
   const r = await fetch(XAI + path, { method: 'POST', headers: { authorization: 'Bearer ' + env.XAI_API_KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error('xai ' + r.status + ' ' + String(d.error && (d.error.message || d.error) || d.code || '').slice(0, 200));

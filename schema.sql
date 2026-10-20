@@ -344,3 +344,19 @@ CREATE TABLE IF NOT EXISTS team_leave (    -- when a player last left (or was re
   player  INTEGER PRIMARY KEY,
   left_at INTEGER NOT NULL
 );
+-- A team's own picture (Damian 2026-10-20: "the teams can upload their identification image"): the leader uploads it, Grok checks
+-- it first, and it shows instead of the team's emoji. Admins get each new one in the bot; /teams logooff <team id> removes it.
+CREATE TABLE IF NOT EXISTS team_logos (
+  team    INTEGER PRIMARY KEY,
+  id      TEXT NOT NULL UNIQUE,            -- random, in the picture's address (a new upload gets a new one, so no cache shows the old picture)
+  img     TEXT NOT NULL,                   -- the game sends a 256 px JPEG; base64
+  created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_logo_log ( -- every upload, for the daily limit (kept 30 days); ok 2 = an admin removed this team's picture: no more uploads
+  team    INTEGER NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  ok      INTEGER NOT NULL,
+  why     TEXT
+);
+CREATE INDEX IF NOT EXISTS team_logo_log_team ON team_logo_log (team, at);
