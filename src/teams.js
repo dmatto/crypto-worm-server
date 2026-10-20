@@ -28,6 +28,10 @@ export const EMOJI = ['🪱', '🐸', '🐶', '🐱', '🦊', '🐻', '🐼', '�
 const NAME = /^[\p{L}\p{N}][\p{L}\p{N} _.\-'&!]{1,18}[\p{L}\p{N}!.]$/u, TAG = /^[A-Z0-9]{2,5}$/;
 const BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm|cwormteam|support)/i;
 const DAY = 864e5;
+// Load-test bots (sim_players) can be in teams so the Teams chart isn't empty, but they score only SIM_SHARE of their play
+// money and never get rival-win points, so a few active real players can always catch a bot team.
+export const SIM_SHARE = 0.2;
+const isSim = (env, id) => q(env, 'SELECT 1 AS y FROM sim_players WHERE player = ?', id).first().then(r => !!r).catch(() => false);
 const q = (env, s, ...v) => env.DB.prepare(s).bind(...v);
 
 // a Telegram group link: t.me/name, @name or a t.me/+invite link, kept as https://t.me/...
@@ -206,6 +210,7 @@ export async function mergeTeams(env, a, b, now = Date.now()) {
 export async function teamScore(env, player, amount, now = Date.now()) {
   if (!(amount > 0)) return;
   const m = await q(env, 'SELECT team FROM team_members WHERE player = ?', player).first().catch(() => null); if (!m) return;
+  if (await isSim(env, player)) amount = Math.round(amount * SIM_SHARE); if (!(amount > 0)) return;
   await q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
     ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.team, weekStart(now), player, amount).run();
 }
@@ -215,7 +220,7 @@ export async function teamScore(env, player, amount, now = Date.now()) {
 export async function teamClash(env, winner, loser, now = Date.now()) {
   if (winner == null || loser == null || winner === loser) return 0;
   const a = await q(env, 'SELECT team FROM team_members WHERE player = ?', winner).first().catch(() => null), b = a && await q(env, 'SELECT team FROM team_members WHERE player = ?', loser).first();
-  if (!a || !b || a.team === b.team) return 0;
+  if (!a || !b || a.team === b.team || await isSim(env, winner)) return 0;
   const day = Math.floor(now / DAY) * DAY;
   const done = await q(env, 'SELECT COUNT(*) AS n, SUM(loser = ?) AS same FROM team_clash WHERE winner = ? AND at >= ?', loser, winner, day).first();
   if ((done.n | 0) >= CLASH_DAY || (done.same | 0) > 0) return 0;

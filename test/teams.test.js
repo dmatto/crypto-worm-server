@@ -12,7 +12,7 @@ globalThis.fetch = async (url, init) => {
   if (String(url).startsWith('https://api.x.ai/')) { sent.push(['xai', JSON.parse(init.body)]); return Response.json({ choices: [{ message: { content: JSON.stringify(vision) } }] }) }
   sent.push([String(url).split('/').pop(), init.body instanceof FormData ? init.body : JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
 const { default: worker } = await import('../src/index.js');
-const { teamClash, teamTopText, CLASH, CLASH_DAY, MAX_MEMBERS, REJOIN_MS } = await import('../src/teams.js');
+const { teamClash, teamTopText, CLASH, CLASH_DAY, MAX_MEMBERS, REJOIN_MS, SIM_SHARE } = await import('../src/teams.js');
 const { weekly, weekStart } = await import('../src/growth.js');
 
 function makeEnv() {
@@ -122,6 +122,20 @@ test('teams: members\' play money scores for the team, rival wins add clash poin
   env.sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('group', '-100')").run();
   sent.length = 0; await weekly(env, weekStart() + 10 * 60e3);
   assert.match(sent[0][1].text, /Top teams of last week/);
+});
+
+test('teams: a load-test bot in a team scores only a share of its play money and never gets rival-win points', async () => {
+  const env = makeEnv(), a = await guest(env), bot = await guest(env), c = await guest(env);
+  const t1 = await call(env, '/teams/create', { name: 'Moon Squad', tag: 'MOON', emoji: '🌙' }, a.token);
+  await call(env, '/teams/create', { name: 'Bears', tag: 'BEAR', emoji: '🐻' }, c.token);
+  env.sql.prepare("INSERT INTO team_members (player, team, role, joined) VALUES (?, ?, 'member', 0)").run(bot.player.id, t1.team.id);
+  env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(bot.player.id);
+  assert.equal((await call(env, '/score', { amount: 500 }, bot.token)).added, 500);   // its own ranking still gets it all
+  await call(env, '/score', { amount: 100 }, a.token);
+  const page = await call(env, '/teams/' + t1.team.id, undefined, a.token);
+  assert.equal(page.members.find(m => m.id === bot.player.id).pts, 500 * SIM_SHARE); assert.equal(page.team.ptsAll, 100 + 500 * SIM_SHARE);
+  assert.equal(await teamClash(env, bot.player.id, c.player.id), 0);                // a bot beating a rival: nothing
+  assert.equal(await teamClash(env, c.player.id, bot.player.id), CLASH);            // a real player beating a bot team's worm still counts
 });
 
 test('teams: a guest folded into a Telegram account brings its team and its points along', async () => {
