@@ -324,6 +324,17 @@ CREATE TABLE IF NOT EXISTS team_members (
   joined  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS team_members_team ON team_members (team, joined);
+CREATE TABLE IF NOT EXISTS team_invites (   -- a member invited a player from the game (teams.js invite)
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  team    INTEGER NOT NULL,
+  sender  INTEGER NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  state   INTEGER NOT NULL DEFAULT 0,       -- 0 waiting, 1 joined, 2 said no, 3 joined another team
+  dm      INTEGER NOT NULL DEFAULT 0        -- 1 when the bot told them on Telegram
+);
+CREATE INDEX IF NOT EXISTS team_invites_player ON team_invites (player, state);
+CREATE INDEX IF NOT EXISTS team_invites_sender ON team_invites (sender, at);
 CREATE TABLE IF NOT EXISTS team_points (   -- points each member earned for their team, by week
   team       INTEGER NOT NULL,
   week_start INTEGER NOT NULL,

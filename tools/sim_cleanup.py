@@ -27,12 +27,12 @@ STEPS = [
     f'DELETE FROM play_days WHERE player IN {S}', f'DELETE FROM rewards WHERE player IN {S}', f'DELETE FROM reward_once WHERE player IN {S}',
     f'DELETE FROM prize_entry WHERE player IN {S}', f'DELETE FROM holders WHERE player IN {S}', f'DELETE FROM hold_dips WHERE player IN {S}',
     f'DELETE FROM team_clash WHERE winner IN {S} OR loser IN {S}', f'DELETE FROM team_leave WHERE player IN {S}',
-    f'DELETE FROM team_points WHERE player IN {S}', f'DELETE FROM team_members WHERE player IN {S}',
+    f'DELETE FROM team_points WHERE player IN {S}', f'DELETE FROM team_members WHERE player IN {S}', f'DELETE FROM team_invites WHERE sender IN {S} OR player IN {S}',
     # bot teams: a team real players joined stays, led by its earliest real member; a team with nobody left goes
     f'UPDATE teams SET owner = (SELECT player FROM team_members m WHERE m.team = teams.id ORDER BY joined LIMIT 1) WHERE owner IN {S} AND id IN (SELECT team FROM team_members)',
     "UPDATE team_members SET role = 'lead' WHERE player IN (SELECT owner FROM teams)",
     'DELETE FROM team_points WHERE team NOT IN (SELECT team FROM team_members)', 'DELETE FROM team_logos WHERE team NOT IN (SELECT team FROM team_members)',
-    'DELETE FROM team_logo_log WHERE team NOT IN (SELECT team FROM team_members)', 'DELETE FROM teams WHERE id NOT IN (SELECT team FROM team_members)',
+    'DELETE FROM team_logo_log WHERE team NOT IN (SELECT team FROM team_members)', 'DELETE FROM team_invites WHERE team NOT IN (SELECT team FROM team_members)', 'DELETE FROM teams WHERE id NOT IN (SELECT team FROM team_members)',
     f'DELETE FROM feedback WHERE player IN {S}', f'UPDATE player_meta SET invited_by = NULL WHERE invited_by IN {S}',
     f'DELETE FROM player_meta WHERE player IN {S}', f'DELETE FROM players WHERE id IN {S}', 'DELETE FROM sim_players',
 ]

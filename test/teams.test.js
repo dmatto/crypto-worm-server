@@ -12,7 +12,7 @@ globalThis.fetch = async (url, init) => {
   if (String(url).startsWith('https://api.x.ai/')) { sent.push(['xai', JSON.parse(init.body)]); return Response.json({ choices: [{ message: { content: JSON.stringify(vision) } }] }) }
   sent.push([String(url).split('/').pop(), init.body instanceof FormData ? init.body : JSON.parse(init.body)]); return Response.json({ ok: true, result: {} }) };
 const { default: worker } = await import('../src/index.js');
-const { teamClash, teamTopText, CLASH, CLASH_DAY, MAX_MEMBERS, REJOIN_MS, SIM_SHARE } = await import('../src/teams.js');
+const { teamClash, teamTopText, CLASH, CLASH_DAY, MAX_MEMBERS, REJOIN_MS, SIM_SHARE, INVITE_DAY, INVITE_DM_DAY } = await import('../src/teams.js');
 const { weekly, weekStart } = await import('../src/growth.js');
 
 function makeEnv() {
@@ -169,6 +169,55 @@ test('teams: the bot shows a player\'s team with its invite link, the week\'s to
   out = await hook(555, '/teams'); assert.match(out[0].text, new RegExp('id ' + t.team.id));
   out = await hook(555, '/teams off ' + t.team.id); assert.match(out[0].text, /Removed the team Pump Crew/);
   assert.equal((await call(env, '/me', undefined, tgUser.token)).player.team, null);
+});
+
+test('teams: members invite players from the game, the bot tells Telegram players, and the invited player joins or says no', async () => {
+  const env = makeEnv(), a = await guest(env), b = await guest(env), free = await guest(env, 0), bot = await guest(env, 0), other = await guest(env);
+  const tgp = await call(env, '/auth/telegram', { initData: tgInit(4242, 'Tina') });
+  await call(env, '/me/name', { name: 'Tina' }, tgp.token); await call(env, '/me/name', { name: 'Frodo' }, free.token); await call(env, '/me/name', { name: 'Fred' }, bot.token);
+  const t = await call(env, '/teams/create', { name: 'Bull Worms', tag: 'BULL', emoji: '🦁' }, a.token);
+  await call(env, '/teams/join', { id: t.team.id }, b.token);
+  const o = await call(env, '/teams/create', { name: 'Bears', tag: 'BEAR', emoji: '🐻' }, other.token);
+  env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(bot.player.id);
+  env.sql.prepare('INSERT INTO friends (player, friend, created) VALUES (?, ?, 0), (?, ?, 0)').run(b.player.id, free.player.id, b.player.id, other.player.id);
+  await call(env, '/score', { amount: 50 }, tgp.token); await call(env, '/score', { amount: 50 }, bot.token);
+
+  let sug = await call(env, '/teams/suggest', undefined, b.token);                 // friends first, then players active this week; never teams' members or bots
+  assert.deepEqual(sug.players.map(p => [p.name, p.why]), [['Frodo', 'friend'], ['Tina', 'active']]);
+  sug = await call(env, '/teams/suggest?q=fr', undefined, b.token);
+  assert.deepEqual(sug.players.map(p => p.name), ['Frodo']);
+  assert.equal((await call(env, '/teams/suggest', undefined, free.token)).status, 400);   // only members invite
+
+  sent.length = 0;
+  let r = await call(env, '/teams/invite', { id: tgp.player.id }, b.token);            // any member can invite
+  assert.equal(r.ok, true); assert.equal(r.dm, true);
+  const dm = sent.find(x => x[0] === 'sendMessage')[1];
+  assert.equal(dm.chat_id, 4242); assert.match(dm.text, /invited you to join 🦁 Bull Worms \[BULL\]/); assert.match(dm.reply_markup.inline_keyboard[0][0].url, new RegExp('t_' + t.team.code));
+  assert.equal((await call(env, '/teams/invite', { id: tgp.player.id }, a.token)).already, true);   // one waiting invitation per team
+  assert.equal((await call(env, '/teams/invite', { id: other.player.id }, a.token)).status, 409);  // already in a team
+  assert.equal((await call(env, '/teams/invite', { id: free.player.id }, free.token)).status, 400);
+  r = await call(env, '/teams/invite', { id: free.player.id }, a.token); assert.equal(r.dm, false);   // a guest: in the game only
+  assert.equal((await call(env, '/teams/suggest', undefined, b.token)).players.find(p => p.name === 'Frodo').invited, true);
+
+  assert.equal((await call(env, '/me', undefined, tgp.token)).player.tinv, 1);
+  let list = await call(env, '/teams', undefined, tgp.token);
+  assert.equal(list.invites.length, 1); assert.equal(list.invites[0].from, b.player.name); assert.equal(list.invites[0].team.tag, 'BULL');
+  const joined = await call(env, '/teams/invites/join', { id: list.invites[0].id }, tgp.token);
+  assert.equal(joined.team.id, t.team.id); assert.equal(joined.mine, true);
+  assert.equal((await call(env, '/me', undefined, tgp.token)).player.tinv, undefined);
+  assert.equal((await call(env, '/teams/invites/join', { id: list.invites[0].id }, tgp.token)).status, 404);
+
+  list = await call(env, '/teams', undefined, free.token);
+  const no = await call(env, '/teams/invites/no', { id: list.invites[0].id }, free.token);
+  assert.equal(no.ok, true); assert.deepEqual(no.invites, []);
+  assert.equal((await call(env, '/teams/invite', { id: free.player.id }, b.token)).status, 409);   // said no: not again for a few days
+  r = await call(env, '/teams/invite', { id: free.player.id }, other.token); assert.equal(r.ok, true);   // another team can still ask
+
+  for (let i = 0; i < INVITE_DAY; i++) env.sql.prepare('INSERT INTO team_invites (team, sender, player, at) VALUES (?, ?, ?, ?)').run(o.team.id, other.player.id, 9000 + i, Date.now());
+  assert.equal((await call(env, '/teams/invite', { id: bot.player.id }, other.token)).status, 429);   // a day's invitations per member
+  const busy = await call(env, '/auth/telegram', { initData: tgInit(4343, 'Max') });          // the bot messages a player at most INVITE_DM_DAY times a day
+  for (let i = 0; i < INVITE_DM_DAY; i++) env.sql.prepare('INSERT INTO team_invites (team, sender, player, at, dm) VALUES (?, ?, ?, ?, 1)').run(9999, 1, busy.player.id, Date.now());
+  assert.equal((await call(env, '/teams/invite', { id: busy.player.id }, a.token)).dm, false);
 });
 
 async function hookSecret(env) {

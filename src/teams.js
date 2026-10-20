@@ -16,11 +16,18 @@
 //   POST /teams/logo   {img}          -> the team   (leader) the team's own picture: a 256 px JPEG data URL from the game, checked by
 //                                      Grok first; {img: null} takes it off. Turned down: {error, code: 'logo'}
 //   GET  /teams/logo/<id>.jpg         the picture (no sign-in: the ids are random); `logo` on teams is its id
+//   GET  /teams/suggest?q=            -> {players: [{id, name, av?, why, online?, invited?}]}  who a member could invite: friends,
+//                                      players online now and players active this week who have no team (or a name search)
+//   POST /teams/invite {id}           -> {ok, name, dm}  a member invites a player who has no team (dm: the bot told them too)
+//   POST /teams/invites/join {id}     -> the team      the invited player says yes (the same checks as /teams/join)
+//   POST /teams/invites/no {id}       -> {ok, invites} ... or no thanks
+//   GET /teams also carries `invites`: [{id, at, from, team: {id, name, tag, emoji, logo?, members}}] waiting for this player
 // Points a member earned stay with the team they earned them for.
 
 import { newCode } from './match.js';
 import { weekStart, gameLink } from './growth.js';
 import { xai, VISION_MODEL } from './worms.js';
+import { tg } from './bot.js';
 
 export const LOGO_TRIES = 5, MAX_LOGO = 200_000;   // uploads a team can try a UTC day, and the biggest data URL taken
 export const MAX_MEMBERS = 50, CREATE_PLAYED = 3, REJOIN_MS = 12 * 3600e3, CLASH = 100, CLASH_DAY = 5, TOP = 50;
@@ -86,13 +93,22 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
   if (sub === '' || sub === '/') {
     const period = opts.period === 'all' ? 'all' : 'week', rows = await table(env, period, now), mine = await teamOf(env, me.id);
     return { period, since: period === 'week' ? weekStart(now) : null, top: rows.slice(0, TOP), players: rows.length,
-      mine: mine ? { ...mine, ...(rows.find(r => r.id === mine.id) || {}) } : null, can: !mine && await canCreate(env, me), wait: mine ? 0 : await waitFor(env, me, now) };
+      mine: mine ? { ...mine, ...(rows.find(r => r.id === mine.id) || {}) } : null, can: !mine && await canCreate(env, me), wait: mine ? 0 : await waitFor(env, me, now),
+      invites: await myInvites(env, me, now) };
   }
+  if (sub === '/suggest') return suggest(env, me, opts, now);
   const one = sub.match(/^\/(\d+)$/);
   if (one) return detail(env, Number(one[1]), me, opts, now);
   const byCode = sub.match(/^\/code\/([A-Za-z0-9]{4,8})$/);                    // an invite link's team, before joining it
   if (byCode) { const t = await q(env, 'SELECT id FROM teams WHERE code = ?', byCode[1].toUpperCase()).first(); return t ? detail(env, t.id, me, opts, now) : { error: 'that team does not exist any more', status: 404 } }
   if (opts.post === false) return null;                                     // the rest change things: POST only
+  if (sub === '/invite') return invite(env, me, body, opts, now);
+  if (sub === '/invites/join' || sub === '/invites/no') {
+    const i = await q(env, 'SELECT id, team FROM team_invites WHERE id = ? AND player = ? AND state = 0', Number(body.id) || 0, me.id).first();
+    if (!i) return { error: 'that invitation is gone', status: 404 };
+    if (sub === '/invites/no') { await q(env, 'UPDATE team_invites SET state = 2 WHERE id = ?', i.id).run(); return { ok: true, invites: await myInvites(env, me, now) } }
+    return handle('/teams/join', env, me, { id: i.team }, opts, now);
+  }
   if (sub === '/create') {
     if (await teamOf(env, me.id)) return { error: 'leave your team first', status: 400 };
     if (!await canCreate(env, me)) return { error: `finish ${CREATE_PLAYED} matches first, then you can start a team`, status: 403 };
@@ -107,7 +123,7 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
     const made = await q(env, 'SELECT COUNT(*) AS n FROM teams WHERE owner = ? AND created > ?', me.id, now - DAY).first();
     if (made && made.n >= 1) return { error: 'one new team a day', status: 429 };
     const t = await q(env, 'INSERT INTO teams (name, tag, emoji, tg, owner, code, created) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id', name, tag, emoji, tgl, me.id, newCode(), now).first();
-    await q(env, "INSERT INTO team_members (player, team, role, joined) VALUES (?, ?, 'lead', ?)", me.id, t.id, now).run();
+    await env.DB.batch([q(env, "INSERT INTO team_members (player, team, role, joined) VALUES (?, ?, 'lead', ?)", me.id, t.id, now), closeInvites(env, me.id, 0)]);
     return detail(env, t.id, me, opts, now);
   }
   if (sub === '/join') {
@@ -117,7 +133,7 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
     const w = await waitFor(env, me, now); if (w) return { error: 'you left a team a moment ago: you can join another one later', status: 429, wait: w };
     const n = await q(env, 'SELECT COUNT(*) AS n FROM team_members WHERE team = ?', t.id).first();
     if (n.n >= MAX_MEMBERS) return { error: `that team is full (${MAX_MEMBERS} worms)`, status: 409 };
-    await q(env, "INSERT INTO team_members (player, team, role, joined) VALUES (?, ?, 'member', ?)", me.id, t.id, now).run();
+    await env.DB.batch([q(env, "INSERT INTO team_members (player, team, role, joined) VALUES (?, ?, 'member', ?)", me.id, t.id, now), closeInvites(env, me.id, t.id)]);
     return detail(env, t.id, me, opts, now);
   }
   if (sub === '/leave') {
@@ -147,6 +163,65 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
     return detail(env, mine.id, me, opts, now);
   }
   return null;
+}
+
+// ---- invitations from inside the game (Damian 2026-10-20: "send invitations to the team within the game, to other players").
+// Any member can invite a player who has no team. It waits on the player's Teams page (a dot on Friends), and the bot tells
+// them on Telegram when they allow bot messages (at most INVITE_DM_DAY a day, whoever sends them). Join or No thanks; after
+// a "no" that team can't ask again for INVITE_AGAIN. Load-test bots are never suggested.
+export const INVITE_DAY = 20, INVITE_DM_DAY = 3, INVITE_AGAIN = 3 * DAY, INVITE_KEEP = 14 * DAY;
+const closeInvites = (env, player, team) => q(env, 'UPDATE team_invites SET state = CASE WHEN team = ? THEN 1 ELSE 3 END WHERE player = ? AND state = 0', team, player);
+export async function inviteCount(env, player, now = Date.now()) {
+  const r = await q(env, 'SELECT COUNT(*) AS n FROM team_invites i JOIN teams t ON t.id = i.team WHERE i.player = ? AND i.state = 0 AND i.at > ?', player, now - INVITE_KEEP).first().catch(() => null);
+  return r ? r.n | 0 : 0;
+}
+async function myInvites(env, me, now) {
+  const { results } = await q(env, `SELECT i.id, i.at, s.name AS sname, t.id AS tid, t.name, t.tag, t.emoji, l.id AS logo, (SELECT COUNT(*) FROM team_members m WHERE m.team = t.id) AS members
+      FROM team_invites i JOIN teams t ON t.id = i.team JOIN players s ON s.id = i.sender LEFT JOIN team_logos l ON l.team = t.id
+      WHERE i.player = ? AND i.state = 0 AND i.at > ? ORDER BY i.at DESC LIMIT 10`, me.id, now - INVITE_KEEP).all();
+  return results.map(r => ({ id: r.id, at: r.at, from: r.sname, team: { id: r.tid, name: r.name, tag: r.tag, emoji: r.emoji, ...(r.logo ? { logo: r.logo } : {}), members: r.members } }));
+}
+async function suggest(env, me, opts, now) {
+  const mine = await teamOf(env, me.id); if (!mine) return { error: 'join a team first', status: 400 };
+  let online = [];
+  if (opts.lobby) try { online = ((await (await opts.lobby.fetch('https://lobby/ids')).json()).ids || []).filter(Number.isInteger) } catch (e) { }
+  const on = new Set(online), out = [], seen = new Set([me.id]);
+  const sel = `SELECT p.id, p.name, a.av, (SELECT 1 FROM team_invites i WHERE i.player = p.id AND i.team = ? AND i.state = 0 AND i.at > ?) AS invited FROM players p LEFT JOIN player_avatar a ON a.player = p.id`;
+  const free = 'p.id NOT IN (SELECT player FROM team_members) AND p.id NOT IN (SELECT player FROM sim_players)';
+  const add = async (why, sql, ...v) => { for (const r of (await q(env, sql, mine.id, now - INVITE_KEEP, ...v).all()).results) if (!seen.has(r.id)) { seen.add(r.id);
+    out.push({ id: r.id, name: r.name, ...(r.av ? { av: r.av } : {}), why, ...(on.has(r.id) ? { online: true } : {}), ...(r.invited ? { invited: true } : {}) }) } };
+  const name = String(opts.q || '').normalize('NFC').trim().slice(0, 20);
+  if (name) { if (name.length >= 2) await add('search', `${sel} WHERE p.name LIKE ? ESCAPE '!' AND ${free} ORDER BY length(p.name), p.id LIMIT 20`, name.replace(/[!%_]/g, '!$&') + '%'); return { players: out } }
+  await add('friend', `${sel} JOIN friends f ON f.friend = p.id AND f.player = ? WHERE ${free} LIMIT 30`, me.id);
+  const ids = online.filter(id => !seen.has(id)).slice(0, 90);
+  if (ids.length) await add('online', `${sel} WHERE p.id IN (${ids.map(() => '?').join(',')}) AND ${free} LIMIT 15`, ...ids);
+  await add('active', `${sel} JOIN cworm_scores c ON c.player = p.id WHERE c.week_start = ? AND c.week > 0 AND ${free} ORDER BY c.last DESC LIMIT 25`, weekStart(now));
+  return { players: out.slice(0, 50) };
+}
+async function invite(env, me, body, opts, now) {
+  const mine = await teamOf(env, me.id); if (!mine) return { error: 'join a team first', status: 400 };
+  const id = Number(body.id) || 0; if (!id || id === me.id) return { error: 'pick a player', status: 400 };
+  const p = await q(env, 'SELECT p.id, p.name, p.tg_id, m.remind, m.no_dm FROM players p LEFT JOIN player_meta m ON m.player = p.id WHERE p.id = ?', id).first();
+  if (!p) return { error: 'no such player', status: 404 };
+  const in_ = await q(env, 'SELECT team FROM team_members WHERE player = ?', id).first();
+  if (in_) return { error: in_.team === mine.id ? `${p.name} is already in your team` : `${p.name} is already in a team`, status: 409 };
+  const day = Math.floor(now / DAY) * DAY;
+  const [sent, open, no] = await Promise.all([q(env, 'SELECT COUNT(*) AS n FROM team_invites WHERE sender = ? AND at >= ?', me.id, day).first(),
+    q(env, 'SELECT 1 AS y FROM team_invites WHERE team = ? AND player = ? AND state = 0 AND at > ?', mine.id, id, now - INVITE_KEEP).first(),
+    q(env, 'SELECT 1 AS y FROM team_invites WHERE team = ? AND player = ? AND state = 2 AND at > ?', mine.id, id, now - INVITE_AGAIN).first()]);
+  if (open) return { ok: true, name: p.name, dm: false, already: true };
+  if (no) return { error: `${p.name} said no thanks. Your team can ask again in a few days.`, status: 409 };
+  if (sent.n >= INVITE_DAY) return { error: `that is ${INVITE_DAY} invitations today: try again tomorrow`, status: 429 };
+  let dm = 0;
+  if (p.tg_id != null && env.BOT_TOKEN && (p.remind == null || p.remind) && !p.no_dm && !(await isSim(env, id))) {
+    const n = await q(env, 'SELECT COUNT(*) AS n FROM team_invites WHERE player = ? AND dm = 1 AND at > ?', id, now - DAY).first();
+    const t = n.n < INVITE_DM_DAY && await q(env, 'SELECT code FROM teams WHERE id = ?', mine.id).first();
+    if (t) { const r = await tg(env, 'sendMessage', { chat_id: p.tg_id, text: `🛡️ ${me.name} invited you to join ${mine.emoji} ${mine.name} [${mine.tag}] in Crypto Worm Wars!\n\nEvery match you play scores for the team, and beating a rival team's worm online scores extra. (Play money, not real tokens.)\n\nTurn bot messages off with /stop or in the game's Settings.`,
+        reply_markup: { inline_keyboard: [[{ text: '🛡️ See the team', url: gameLink(opts.env || env, 't_' + t.code) }]] } }).catch(() => null);
+      if (r && r.ok) dm = 1; else if (r && r.error_code === 403) await q(env, 'UPDATE player_meta SET no_dm = 1 WHERE player = ?', id).run() }
+  }
+  await env.DB.batch([q(env, 'INSERT INTO team_invites (team, sender, player, at, dm) VALUES (?, ?, ?, ?, ?)', mine.id, me.id, id, now, dm), q(env, 'DELETE FROM team_invites WHERE at < ?', now - 30 * DAY)]);
+  return { ok: true, name: p.name, dm: !!dm };
 }
 
 // Grok looks at a team picture before anyone else sees it (PG-13 game, shown to every player).
@@ -190,7 +265,7 @@ async function leave(env, player, mine, now) {
   if (mine.role !== 'lead') return;
   const next = await q(env, 'SELECT player FROM team_members WHERE team = ? ORDER BY joined ASC LIMIT 1', mine.id).first();
   if (next) await env.DB.batch([q(env, "UPDATE team_members SET role = 'lead' WHERE player = ?", next.player), q(env, 'UPDATE teams SET owner = ? WHERE id = ?', next.player, mine.id)]);
-  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
+  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id), q(env, 'DELETE FROM team_invites WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
 }
 
 // Two accounts become one (index.js link: `a` folds into `b`). b's own team wins; points a earned move to b.
@@ -270,7 +345,7 @@ export async function adminTeams(env, arg) {
   }
   if (off) {
     const t = await q(env, 'SELECT id, name FROM teams WHERE id = ?', Number(off[1])).first(); if (!t) return `No team with id ${off[1]}.`;
-    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
+    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, 'DELETE FROM team_invites WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
     return `🚫 Removed the team ${t.name} (id ${t.id}). Its members are free to join another team.`;
   }
   const rows = (await table(env, 'week')).slice(0, 25);

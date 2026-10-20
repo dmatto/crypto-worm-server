@@ -59,7 +59,7 @@ import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepare
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
-import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo } from './teams.js';
+import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo, inviteCount } from './teams.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 export { Match, Lobby, Royale };
 
@@ -164,8 +164,8 @@ async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
   const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id);
-  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null;
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, ...(tinv ? { tinv } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -414,7 +414,7 @@ const app = {
       if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
       if (req.method !== 'GET' && req.method !== 'POST') return json({ error: 'not found' }, 404, cors);
       const tell = (photo, caption) => { const t = tellAdminsPhoto(env, photo, caption).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
-      const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), post: req.method === 'POST', tell, origin: env.PUBLIC_URL || url.origin });
+      const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), q: url.searchParams.get('q'), post: req.method === 'POST', tell, origin: env.PUBLIC_URL || url.origin });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }
