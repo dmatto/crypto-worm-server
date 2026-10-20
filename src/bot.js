@@ -3,7 +3,8 @@
 // /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
 // "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
 // the week that ended, with the payout lines and the score logs as files; /prize skip <id> and /prize unskip <id> take a
-// player out of the prize or let them back in).
+// player out of the prize or let them back in). /team shows a player's community team and its invite link, /teams the week's
+// top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js).
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -18,6 +19,7 @@ import { cleanup as feedCleanup } from './feed.js';
 import { holderCron } from './holders.js';
 import { makePack } from './stickers.js';
 import { wormOff, wormOn, wormCleanup } from './worms.js';
+import { teamMessage, teamBoard, adminTeams } from './teams.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward } from './growth.js';
@@ -50,6 +52,7 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Pick weapons from the bar at the bottom. Blast the coins in the dirt to buy bigger ones.\n' +
   '• The market chart sets the wind: green blows right, red blows left.\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
+  '🛡 /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
   '🎁 /invite gives you your invite link: +200 $CWORM for you and each friend who joins (play money).\n\n' +   // 200: INVITE_REWARD (growth.js loads after this file)
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
@@ -165,6 +168,7 @@ export async function webhook(req, env) {
     if (cmd === '/duel') await duel(env, m);
     else if (cmd === '/top') await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
     else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
+    else if ((cmd === '/teams' || cmd === '/team') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
     else if (cmd === '/setgroup' && await isAdmin(env, m.from)) {
       await setGroup(env, chat_id);
       await tg(env, 'sendMessage', { chat_id, text: '✅ Done. Every Monday the bot posts last week\'s top 10 here.' });
@@ -182,6 +186,14 @@ export async function webhook(req, env) {
   else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from)) });
   else if ((cmd === '/invite' || cmd === '/ref') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await inviteMessage(env, m.from) });
   else if (cmd === '/top' && env.DB) await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
+  else if (cmd === '/team' && env.DB) {                                                // community teams (teams.js): your team and its invite link
+    const p = m.from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    await tg(env, 'sendMessage', { chat_id, ...await teamMessage(env, p) });
+  }
+  else if (cmd === '/teams' && env.DB) {                                               // the week's top teams; admins get the full list, /teams off <id> removes one
+    if (await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await adminTeams(env, arg), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
+  }
   else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
   else if (cmd === '/stop') {
     if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET remind = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });

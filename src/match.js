@@ -24,6 +24,7 @@
 // players also goes to the live feed on Home (feed.js), load-test players' matches too.
 
 import { winRow } from './feed.js';
+import { teamClash } from './teams.js';
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
@@ -177,6 +178,7 @@ export class Match {
         this.env.DB.prepare('INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, ?, ?)').bind(m.players[0], m.players[1], w, reason, Date.now()),
         ...(w != null ? [this.env.DB.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').bind(w), this.env.DB.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').bind(l), winRow(this.env, w, l, reason)] : []),
       ]).catch(() => { });
+      if (w != null && reason === 'played') await teamClash(this.env, w, l).catch(() => { });   // beat a rival team's worm: points for your team
     }
   }
 }

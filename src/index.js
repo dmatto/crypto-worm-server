@@ -40,6 +40,7 @@
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
+//   GET  /teams, /teams/<id>, POST /teams/create, /teams/join, /teams/leave, /teams/kick, /teams/edit   community teams (see teams.js)
 //   GET  /worm, POST /worm/make, /worm/pick, /worm/remove, /worm/report, GET /worm/img/<id>.jpg   custom photo worms for holders (see
 //                                                               worms.js); the session's player.cw, ranking rows and match flags carry the portrait's id
 // The sign-in calls also take {src}: where a brand-new player came from (a link's source tag), kept on the new account.
@@ -58,6 +59,7 @@ import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepare
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
+import { handle as teamHandle, teamScore, teamOf, mergeTeams } from './teams.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 export { Match, Lobby, Royale };
 
@@ -78,6 +80,7 @@ async function addScore(env, me, amount, imported) {
     amount = Math.min(amount, SCORE_MAX, Math.max(0, SCORE_DAY - s.day));
     s.total += amount; s.week += amount; s.day += amount; s.last = now;
     await logScore(env, me.id, amount, now);                      // the weekly prize chart and its fair-play log
+    await teamScore(env, me.id, amount, now).catch(() => { });    // the same amount scores for the player's community team
   }
   await env.DB.prepare(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(player) DO UPDATE SET total = excluded.total, week_start = excluded.week_start, week = excluded.week, day_start = excluded.day_start, day = excluded.day, last = excluded.last, imported = excluded.imported`)
@@ -104,9 +107,9 @@ async function ranking(env, period, me, holders) {
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id";   // holder badge, avatar and custom worm next to the name
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av, tt.tag AS team', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team";   // holder badge, avatar, custom worm and team tag next to the name
 function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -160,8 +163,9 @@ async function signedIn(req, env) {
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
-  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id);
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id);
+  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.role === 'lead' ? { lead: true } : {}) } : null;
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -171,6 +175,7 @@ async function link(env, me, target) {
   if (!me || me.id === target.id) return target;
   if ((me.tg_id != null && target.tg_id != null) || (me.wallet && target.wallet)) return target;
   const a = me.id, b = target.id, q = (s, ...v) => env.DB.prepare(s).bind(...v);
+  await mergeTeams(env, a, b);                                                         // community team: the target's own team wins
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END WHERE id = ?',
@@ -401,6 +406,12 @@ const app = {
       if (await isSim(env, me.id)) return json({ on: false }, 200, cors);
       const tell = (photo, caption) => { const t = tellAdminsPhoto(env, photo, caption).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
       const r = await wormHandle(path, req, env, me, body, { tier: (await badge(env, me.id)).tier, tell, origin: env.PUBLIC_URL || url.origin });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
+    }
+    if (path === '/teams' || path.startsWith('/teams/')) {                                 // community teams (see teams.js)
+      if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
+      if (req.method !== 'GET' && req.method !== 'POST') return json({ error: 'not found' }, 404, cors);
+      const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), post: req.method === 'POST' });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/map' || path.startsWith('/map/')) { const r = await mapHandle(path, req, env, me, body, cors, ctx); if (r) return r }

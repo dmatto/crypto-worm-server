@@ -20,6 +20,7 @@ import { friendCode } from './auth.js';
 import { newCode } from './match.js';
 import { logPlayDay } from './prize.js';
 import { moments } from './feed.js';
+import { teamTopText } from './teams.js';
 
 export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
 // Invite & earn: on top of +200 for both when a friend finishes a first match, the inviter gets +300 when that friend has
@@ -260,7 +261,7 @@ export async function weekly(env, now = Date.now()) {
   const group = await kv.get(env, 'group'); if (!group) return;
   if (await kv.get(env, 'top_posted') === String(start)) return;
   await kv.set(env, 'top_posted', start);
-  const text = topText(await weekTop(env, start - 7 * DAY), 'Top 10 of last week');
+  const text = [topText(await weekTop(env, start - 7 * DAY), 'Top 10 of last week'), await teamTopText(env, start - 7 * DAY)].filter(Boolean).join('\n\n');   // and last week's top 3 community teams
   if (text) await tg(env, 'sendMessage', { chat_id: Number(group), text: text + '\n\nA new week has started. Tap Play to climb the ranking! 🪱', parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
 }

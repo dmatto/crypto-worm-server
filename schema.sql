@@ -304,3 +304,43 @@ CREATE TABLE IF NOT EXISTS royale_ping (   -- players who asked the bot for a me
   player INTEGER PRIMARY KEY,
   at     INTEGER NOT NULL
 );
+-- Community teams (src/teams.js, Damian 2026-10-20): a name, a short tag, an emoji, an invite code, maybe the community's
+-- Telegram group. Up to 50 members; the leader (role 'lead') can remove members. Team points: every play-money $CWORM a member
+-- banks scores for the team that week, plus CLASH points for online wins over a rival team's worm. Play money, no real prize.
+CREATE TABLE IF NOT EXISTS teams (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  tag     TEXT NOT NULL UNIQUE,
+  emoji   TEXT NOT NULL,
+  tg      TEXT,                            -- https://t.me/... of the team's own Telegram group, or NULL
+  owner   INTEGER NOT NULL,
+  code    TEXT NOT NULL UNIQUE,            -- the invite link's code (startapp=t_<code>)
+  created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_members (
+  player  INTEGER PRIMARY KEY,             -- one team per player
+  team    INTEGER NOT NULL,
+  role    TEXT NOT NULL DEFAULT 'member',  -- 'lead' or 'member'
+  joined  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS team_members_team ON team_members (team, joined);
+CREATE TABLE IF NOT EXISTS team_points (   -- points each member earned for their team, by week
+  team       INTEGER NOT NULL,
+  week_start INTEGER NOT NULL,
+  player     INTEGER NOT NULL,
+  pts        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (team, week_start, player)
+);
+CREATE INDEX IF NOT EXISTS team_points_week ON team_points (week_start, team);
+CREATE TABLE IF NOT EXISTS team_clash (    -- online wins over a rival team's member that scored CLASH points (the daily caps), kept 5 weeks
+  at     INTEGER NOT NULL,
+  winner INTEGER NOT NULL,
+  loser  INTEGER NOT NULL,
+  wteam  INTEGER NOT NULL,
+  lteam  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS team_clash_winner ON team_clash (winner, at);
+CREATE TABLE IF NOT EXISTS team_leave (    -- when a player last left (or was removed from) a team: a short wait before joining another
+  player  INTEGER PRIMARY KEY,
+  left_at INTEGER NOT NULL
+);
