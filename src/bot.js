@@ -52,7 +52,7 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Pick weapons from the bar at the bottom. Blast the coins in the dirt to buy bigger ones.\n' +
   '• The market chart sets the wind: green blows right, red blows left.\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
-  '🛡 /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
+  '🛡️ /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
   '🎁 /invite gives you your invite link: +200 $CWORM for you and each friend who joins (play money).\n\n' +   // 200: INVITE_REWARD (growth.js loads after this file)
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 

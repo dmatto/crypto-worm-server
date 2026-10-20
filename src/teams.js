@@ -185,27 +185,27 @@ export async function teamTopText(env, start) {
     WHERE p.week_start = ? GROUP BY t.id ORDER BY pts DESC LIMIT 3`, start).all().catch(() => ({ results: [] }));
   if (!results.length) return '';
   const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
-  return '🛡 <b>Top teams of last week</b>\n' + results.map((r, i) => `${['🥇', '🥈', '🥉'][i]} ${esc(r.emoji)} <b>${esc(r.name)}</b> [${esc(r.tag)}]: ${(r.pts | 0).toLocaleString('en-US')} points`).join('\n');
+  return '🛡️ <b>Top teams of last week</b>\n' + results.map((r, i) => `${['🥇', '🥈', '🥉'][i]} ${esc(r.emoji)} <b>${esc(r.name)}</b> [${esc(r.tag)}]: ${(r.pts | 0).toLocaleString('en-US')} points`).join('\n');
 }
 
 // the bot's /teams (players, and in groups): this week's top 10 teams
 export async function teamBoard(env, now = Date.now()) {
   const rows = (await table(env, 'week', now)).filter(r => r.pts > 0).slice(0, 10);
-  const head = '🛡 Teams this week\n\n';
-  if (!rows.length) return { text: head + 'No team has scored yet this week. Start a team or join one in the game (Friends > Teams), then win matches for it! 🪱\n\n(Play money in the game, not real tokens.)', reply_markup: { inline_keyboard: [[{ text: '🛡 Teams', url: gameLink(env, 'teams') }]] } };
+  const head = '🛡️ Teams this week\n\n';
+  if (!rows.length) return { text: head + 'No team has scored yet this week. Start a team or join one in the game (Friends > Teams), then win matches for it! 🪱\n\n(Play money in the game, not real tokens.)', reply_markup: { inline_keyboard: [[{ text: '🛡️ Teams', url: gameLink(env, 'teams') }]] } };
   return { text: head + rows.map(r => `${r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : r.rank + '.'} ${r.emoji} ${r.name} [${r.tag}]: ${r.pts.toLocaleString('en-US')} points`).join('\n') + '\n\nEvery match a member plays scores for the team. Beat a rival team\'s worm online for +' + CLASH + ' more!\n\n(Play money in the game, not real tokens.)',
-    reply_markup: { inline_keyboard: [[{ text: '🛡 Teams', url: gameLink(env, 'teams') }]] } };
+    reply_markup: { inline_keyboard: [[{ text: '🛡️ Teams', url: gameLink(env, 'teams') }]] } };
 }
 
 // the bot's /team: this player's team and its invite link
 export async function teamMessage(env, player) {
   const mine = player && await teamOf(env, player.id);
-  if (!mine) return { text: '🛡 Teams: join a team or start your own, then win matches for it. Every match a member plays scores for the team, and beating a rival team\'s worm online scores extra. Weekly Teams ranking!\n\nOpen the game: Friends > Teams.\n\n(Play money in the game, not real tokens.)', reply_markup: { inline_keyboard: [[{ text: '🛡 Teams', url: gameLink(env, 'teams') }]] } };
+  if (!mine) return { text: '🛡️ Teams: join a team or start your own, then win matches for it. Every match a member plays scores for the team, and beating a rival team\'s worm online scores extra. Weekly Teams ranking!\n\nOpen the game: Friends > Teams.\n\n(Play money in the game, not real tokens.)', reply_markup: { inline_keyboard: [[{ text: '🛡️ Teams', url: gameLink(env, 'teams') }]] } };
   const d = await detail(env, mine.id, player, { env });
   const link = d.team.link;
-  return { text: `🛡 ${mine.emoji} ${mine.name} [${mine.tag}]\nThis week: #${d.team.rank} with ${d.team.pts.toLocaleString('en-US')} points · ${d.team.members} worms\n\nInvite your community with this link:\n${link}\n\n(Play money in the game, not real tokens.)`,
+  return { text: `🛡️ ${mine.emoji} ${mine.name} [${mine.tag}]\nThis week: #${d.team.rank} with ${d.team.pts.toLocaleString('en-US')} points · ${d.team.members} worms\n\nInvite your community with this link:\n${link}\n\n(Play money in the game, not real tokens.)`,
     disable_web_page_preview: true,
-    reply_markup: { inline_keyboard: [[{ text: '📤 Share the team link', url: 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(`Join ${mine.emoji} ${mine.name} in Crypto Worm Wars and fight for our team! 🪱`) }], [{ text: '🛡 Open my team', url: gameLink(env, 'teams') }]] } };
+    reply_markup: { inline_keyboard: [[{ text: '📤 Share the team link', url: 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(`Join ${mine.emoji} ${mine.name} in Crypto Worm Wars and fight for our team! 🪱`) }], [{ text: '🛡️ Open my team', url: gameLink(env, 'teams') }]] } };
 }
 
 // /teams and /teamoff <id> (admins): the table, and taking down a team with an abusive name or link
@@ -217,6 +217,6 @@ export async function adminTeams(env, arg) {
     return `🚫 Removed the team ${t.name} (id ${t.id}). Its members are free to join another team.`;
   }
   const rows = (await table(env, 'week')).slice(0, 25);
-  if (!rows.length) return '🛡 No teams yet.';
-  return '🛡 Teams this week\n' + rows.map(r => `#${r.rank} ${r.emoji} ${r.name} [${r.tag}] · ${r.members} worms · ${r.pts.toLocaleString('en-US')} pts · id ${r.id}`).join('\n') + '\n\n/teams off <id> removes a team.';
+  if (!rows.length) return '🛡️ No teams yet.';
+  return '🛡️ Teams this week\n' + rows.map(r => `#${r.rank} ${r.emoji} ${r.name} [${r.tag}] · ${r.members} worms · ${r.pts.toLocaleString('en-US')} pts · id ${r.id}`).join('\n') + '\n\n/teams off <id> removes a team.';
 }
