@@ -36,7 +36,7 @@ globalThis.fetch = async (url, init) => {
   calls.push([method, JSON.parse(init.body)]);
   return Response.json({ ok: true, result: {} });
 };
-const { findPosts, postTime, parodyCron, parodyCommand, X_FOOTER } = await import('../src/parody.js');
+const { findPosts, postTime, parodyCron, parodyCommand, X_FOOTER, xIntent, chromePage } = await import('../src/parody.js');
 const { cron } = await import('../src/bot.js');
 
 function makeEnv() {
@@ -45,7 +45,7 @@ function makeEnv() {
   const DB = { prepare: q => stmt(q), batch: async l => { const r = []; for (const s of l) r.push(await s.run()); return r } };
   sql.prepare('INSERT INTO players (id, name, tg_id, created) VALUES (1, ?, 501, 0), (2, ?, 502, 0)').run('Damian', 'Other');
   sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('parody_seen', ?)").run(JSON.stringify([POSTS[5].id]));
-  return { DB, sql, BOT_TOKEN: '123:BOT', XAI_API_KEY: 'xai-test', SESSION_SECRET: 's', SITE_URL: 'https://play.test', ADMIN_PLAYERS: '1,2' };
+  return { DB, sql, BOT_TOKEN: '123:BOT', XAI_API_KEY: 'xai-test', SESSION_SECRET: 's', SITE_URL: 'https://play.test', PUBLIC_URL: 'https://api.test', ADMIN_PLAYERS: '1,2' };
 }
 const sent = () => calls.filter(c => c[0] === 'sendPhoto' || c[0] === 'sendMessage');
 
@@ -76,10 +76,12 @@ test('once a day from 12:00 UTC the admins get three parodies ready to post on X
   const first = photos[0][1];
   assert.equal(first.chat_id, 501); assert.equal(first.upload, 'JPEG1');
   assert.match(first.caption, /^caption 0\n\n🪱 Play free 👉 t\.me\/CryptoWormWarsBot\/play\?startapp=s_x\n\n— Parody of @cats \(❤️ 126K · 👁 1\.2M\): A cat at a desk/);
-  const post = new URL(first.reply_markup.inline_keyboard[0][0].url);
+  const via = new URL(first.reply_markup.inline_keyboard[0][0].url);                // through /x, which opens it in Chrome
+  assert.equal(via.origin + via.pathname, 'https://api.test/x');
+  const post = new URL(via.searchParams.get('u'));
   assert.equal(post.origin + post.pathname, 'https://x.com/intent/post');
   assert.equal(post.searchParams.get('text'), 'caption 0\n\n' + X_FOOTER + '\nhttps://x.com/cats/status/' + POSTS[0].id);
-  assert.equal(first.reply_markup.inline_keyboard[1][0].url, 'https://x.com/cats/status/' + POSTS[0].id);
+  assert.equal(new URL(first.reply_markup.inline_keyboard[1][0].url).searchParams.get('u'), 'https://x.com/cats/status/' + POSTS[0].id);
   assert.equal(photos[1][1].chat_id, 502); assert.equal(photos[1][1].photo, 'FILE' + (calls.indexOf(photos[0]) + 1), 'the second admin gets the uploaded photo by its file id');
   const seen = JSON.parse(env.sql.prepare("SELECT v FROM bot_kv WHERE k = 'parody_seen'").get().v);
   assert.deepEqual(seen.slice(0, 4), [POSTS[0].id, POSTS[1].id, POSTS[2].id, POSTS[5].id]);
@@ -110,4 +112,17 @@ test('when nothing is safe to joke about, the admins are told', async () => {
   await cron(env, NOW);
   assert.equal(calls.filter(c => c[0] === 'sendPhoto').length, 0);
   assert.match(sent().at(-1)[1].text, /No worm parodies this time: nothing viral/);
+});
+
+test('/x hands an X link to Chrome and refuses anything else', async () => {
+  const { default: worker } = await import('../src/index.js'), env = makeEnv();
+  const intent = xIntent({ caption: "Don't (ever) stop! *worm* 🪱 <b>", post: { url: 'https://x.com/cats/status/1' } });
+  const r = await worker.fetch(new Request('https://api.test/x?u=' + encodeURIComponent(intent)), env, {});
+  assert.equal(r.status, 200); assert.match(r.headers.get('content-type'), /text\/html/);
+  const html = await r.text();
+  assert.ok(html.includes(JSON.stringify(intent)), 'the link, as a JS string');
+  assert.match(html, /package=com\.android\.chrome/); assert.match(html, /googlechromes:\/\//);
+  assert.doesNotMatch(html, /<b>/);
+  for (const bad of ['https://evil.test/x.com/', 'javascript:alert(1)', 'https://x.com.evil.test/', 'https://x.com/"><script>'])
+    assert.equal(chromePage(new URL('https://api.test/x?u=' + encodeURIComponent(bad))).status, 400, bad);
 });

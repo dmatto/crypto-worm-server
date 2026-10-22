@@ -61,6 +61,7 @@ import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './pr
 import { feedResponse } from './feed.js';
 import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo, inviteCount } from './teams.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
+import { chromePage } from './parody.js';
 export { Match, Lobby, Royale };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -240,6 +241,7 @@ const app = {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST' } });
     if (path === '/telegram/webhook' && req.method === 'POST') return webhook(req, env);
     if (path === '/telegram/setup') return setup(req, env, url.origin);
+    if (path === '/x' && req.method === 'GET') return chromePage(url);                 // the parody buttons: open X in Chrome (parody.js)
     if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
     if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
     if (path === '/stats' && req.method === 'GET') return json({ players: await playerCount(env) }, 200, cors);

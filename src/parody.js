@@ -89,6 +89,25 @@ export async function drawParody(env, scene) {
 }
 
 export const xIntent = p => 'https://x.com/intent/post?text=' + encodeURIComponent(p.caption + '\n\n' + X_FOOTER + '\n' + p.post.url);
+// Telegram opens button links in its own browser, where nobody is signed in to X (Damian 2026-10-22: "make the link open on Chrome").
+// The buttons go through /x on this server, a tiny page that hands the X link to Chrome: an intent on Android, googlechromes:// on
+// iPhone, the link itself anywhere else. Only x.com links are passed on.
+const X_LINK = /^https:\/\/(x|twitter)\.com\/[\w\/?=&%.~+!*'()-]*$/;
+export const viaChrome = (env, u) => env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, '') + '/x?u=' + encodeURIComponent(u) : u;
+export function chromePage(url) {
+  const u = url.searchParams.get('u') || '';
+  if (!X_LINK.test(u)) return new Response('Not an X link', { status: 400 });
+  const js = JSON.stringify(u).replace(/</g, '\\u003c'), btn = 'display:inline-block;margin:10px;padding:14px 24px;border-radius:26px;font-weight:700;text-decoration:none';
+  return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Open X in Chrome</title></head>
+<body style="margin:0;padding:48px 20px;background:#0a1426;color:#fff;font:17px system-ui,sans-serif;text-align:center">
+<p>🪱 Opening X in Chrome…</p><p><a id="c" style="${btn};background:#1d9bf0;color:#fff" href="#">Open in Chrome</a></p>
+<p><a id="h" style="color:#9fb3c8" href="#">or open it here</a></p>
+<script>const u=${js},a=navigator.userAgent;let c=u;
+if(/Android/i.test(a)) c='intent://'+u.slice(8)+'#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url='+encodeURIComponent(u)+';end';
+else if(/iPhone|iPad|iPod/i.test(a)) c='googlechromes://'+u.slice(8);
+document.getElementById('c').href=c;document.getElementById('h').href=u;location.href=c;</script></body></html>`,
+    { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
+}
 const short = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : String(n);
 
 // The whole batch: find, write, draw, then hand each finished parody to send(picture bytes, caption, buttons).
@@ -102,7 +121,7 @@ export async function makeParodies(env, send, now = Date.now(), seen = []) {
     if (!pics[i]) continue;
     const s = p.post, stat = [s.likes && '❤️ ' + short(s.likes), s.views && '👁 ' + short(s.views)].filter(Boolean).join(' · ');
     const caption = `${p.caption}\n\n${X_FOOTER}\n\n— Parody of ${s.handle || 'a viral post'}${stat ? ' (' + stat + ')' : ''}: ${s.text ? '"' + s.text + '"' : s.what}`;
-    const buttons = [[{ text: '𝕏 Post on X', url: xIntent(p) }], [{ text: '🔗 See the original', url: s.url }]];
+    const buttons = [[{ text: '𝕏 Post on X', url: viaChrome(env, xIntent(p)) }], [{ text: '🔗 See the original', url: viaChrome(env, s.url) }]];
     if (await send(pics[i], caption.slice(0, 1000), buttons)) made.push({ id: s.id, url: s.url, caption: p.caption, idea: p.idea });
   }
   return { posts: posts.length, made };
