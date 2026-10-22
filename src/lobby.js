@@ -13,7 +13,7 @@
 // It also keeps the Live now list: matches in progress, which each match adds itself to when it starts and takes itself
 // off when it ends (see match.js). Entries older than LIVE_MAX_MS are dropped in case an end never arrived.
 //
-// It also keeps the one waiting spot for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
+// It also keeps the players waiting for Quick match (plain HTTP, see quick()). Every open game sits in the lobby, so it
 // also counts the players online: `online` is everyone connected (hidden players too), `playing` those in a match.
 //
 // And the one open Worm Royale room (royaleJoin): everyone who taps Drop in gets its code, so real players meet in the same
@@ -27,7 +27,7 @@ import { announce } from './growth.js';
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
 const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000,
-  BUSY_LOBBY = 40, LIST_GAP_MS = 1000, ROYALE_LATE_MS = 4000;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
+  BUSY_LOBBY = 40, LIST_GAP_MS = 1000, ROYALE_LATE_MS = 4000, QUICK_MS = 12000, QUICK_GAP = 2, QUICK_MAX = 50;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
 const open = ws => ws.readyState == null || ws.readyState === 1;   // a closing socket can still be listed until its close event has run
 
 export class Lobby {
@@ -48,7 +48,7 @@ export class Lobby {
     if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
     if (url.pathname === '/royale/join') return this.royaleJoin();
     if (url.pathname === '/royale/note' && req.method === 'POST') return this.royaleNote(await req.json().catch(() => ({})));
-    return this.quick(Number(url.searchParams.get('player')));
+    return this.quick(Number(url.searchParams.get('player')), url.searchParams);
   }
 
   // update notes: one batch per alarm (each alarm is a fresh run with its own call limit), again 1.5 s later while players remain
@@ -97,12 +97,20 @@ export class Lobby {
   royaleWait() { return Number(this.env.ROYALE_WAIT_MS) || ROYALE_WAIT_MS }                  // ROYALE_WAIT_MS in the env: a shorter wait for tests
   royaleLate() { return Math.min(ROYALE_LATE_MS, this.royaleWait() / 4) }
 
-  // Quick match: the first player gets a fresh match code and waits; the next player within 30 seconds gets the same code.
-  async quick(player) {
-    const w = await this.ctx.storage.get('waiting');
-    if (w && w.player !== player && Date.now() - w.at < 30000) { await this.ctx.storage.delete('waiting'); return Response.json({ code: w.code, side: 1 }) }
-    const code = newCode(); await this.ctx.storage.put('waiting', { code, player, at: Date.now() });
-    return Response.json({ code, side: 0 });
+  // Quick match (Damian 2026-10-22: "pick an opponent of the same level, players or bots with no difference"). A player who
+  // finds nobody waiting at their level (their $CWORM level, 0-29, within QUICK_GAP) gets a fresh match code and waits; a
+  // player who does gets that code and the waiting player's name and level. The game waits a few seconds, then plays a bot
+  // of the same level instead and takes its spot back (cancel). A level of -1 (an older game) matches anyone.
+  async quick(player, q) {
+    const now = Date.now(), lvl = q.has('lvl') ? Math.max(-1, Math.min(29, Math.trunc(Number(q.get('lvl'))) || 0)) : -1;
+    let list = ((await this.ctx.storage.get('quick')) || []).filter(w => w.player !== player && now - w.at < QUICK_MS);
+    const ok = w => w.lvl < 0 || lvl < 0 || Math.abs(w.lvl - lvl) <= QUICK_GAP;
+    const w = q.get('cancel') === '1' ? null : list.filter(ok).sort((a, b) => Math.abs(a.lvl - lvl) - Math.abs(b.lvl - lvl) || a.at - b.at)[0];
+    if (w) list = list.filter(x => x !== w);
+    else if (q.get('cancel') !== '1') list.push({ code: newCode(), player, lvl, name: String(q.get('name') || 'Worm').slice(0, 24), at: now });
+    await this.ctx.storage.put('quick', list.slice(-QUICK_MAX));
+    if (q.get('cancel') === '1') return Response.json({ ok: true });
+    return Response.json(w ? { code: w.code, side: 1, opp: { name: w.name, lvl: w.lvl } } : { code: list.at(-1).code, side: 0 });
   }
 
   async enter(req) {

@@ -55,6 +55,19 @@ test('lobby: quick match pairs two players on one code', async () => {
   assert.equal(one.side, 0); assert.equal(two.side, 1); assert.equal(one.code, two.code);
 });
 
+test('lobby: quick match pairs players of the same level, and a player who gave up is not matched', async () => {
+  const store = new Map(), c = { ...ctx(), storage: { get: async k => store.get(k), put: async (k, v) => void store.set(k, v), delete: async k => void store.delete(k) } }, l = new Lobby(c, {});
+  const q = async (id, lvl, more = '') => (await l.fetch(new Request(`https://lobby/?player=${id}&lvl=${lvl}&name=P${id}` + more))).json();
+  const low = await q(1, 2), high = await q(2, 12);
+  assert.equal(low.side, 0); assert.equal(high.side, 0); assert.notEqual(low.code, high.code);   // too far apart: both wait
+  const near = await q(3, 11);
+  assert.equal(near.side, 1); assert.equal(near.code, high.code); assert.deepEqual(near.opp, { name: 'P2', lvl: 12 });
+  assert.deepEqual(await q(1, 2, '&cancel=1'), { ok: true });                                         // player 1 played a bot instead
+  const late = await q(4, 3);
+  assert.equal(late.side, 0); assert.notEqual(late.code, low.code);
+  assert.equal((await q(5, 4)).code, late.code);
+});
+
 test('lobby: counts the players online, hidden ones too, and how many are in a game', async () => {
   const c = ctx(), l = new Lobby(c, {});
   const a = await enter(l, c, 1, 'Ana'), b = await enter(l, c, 2, 'Bo'); await enter(l, c, 3, 'Hid', true);

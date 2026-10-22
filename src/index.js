@@ -18,7 +18,7 @@
 //   GET  /lobby/ws?token=...[&hidden=1]                         websocket into the lobby (see lobby.js)
 //   GET  /online                                                -> {online, playing}  players with the game open now (no sign-in)
 //   POST /match/new                                             -> {code}      challenge a friend by link
-//   POST /match/quick                                           -> {code, side} quick match
+//   POST /match/quick {lvl, cancel}                             -> {code, side, opp?: {name, lvl}} quick match, same level
 //   GET  /match/<code>/ws?token=...                             websocket into the match
 //   GET  /match/<code>/watch                                    websocket to watch a match live (no sign-in, see match.js)
 //   GET  /live                                                  -> {live: [{code, names, cc, viewers, at}]}  matches being played now
@@ -429,7 +429,10 @@ const app = {
       return json({ on: !!(await env.DB.prepare('SELECT 1 AS y FROM royale_ping WHERE player = ?').bind(me.id).first()), tg: me.tg_id != null }, 200, cors);
     }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
-    if (path === '/match/quick' && req.method === 'POST') return json(await (await lobbyOf(env).fetch(`https://lobby/?player=${me.id}`)).json(), 200, cors);
+    if (path === '/match/quick' && req.method === 'POST') {                          // {lvl, cancel}: the player's $CWORM level, or take the waiting spot back
+      const q = new URLSearchParams({ player: me.id, name: me.name || 'Worm', ...(Number.isInteger(body.lvl) ? { lvl: body.lvl } : {}), ...(body.cancel ? { cancel: 1 } : {}) });
+      return json(await (await lobbyOf(env).fetch('https://lobby/?' + q)).json(), 200, cors);
+    }
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
     if (ws) {
       const h = new Headers(req.headers); h.set('x-player', String(me.id)); h.set('x-country', geo);   // country only, from Cloudflare, for the opponent's flag
