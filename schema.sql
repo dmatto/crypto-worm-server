@@ -394,3 +394,22 @@ CREATE TABLE IF NOT EXISTS chat_seen (     -- Team chat read so far (the dot on 
 CREATE TABLE IF NOT EXISTS chat_blocks (player INTEGER NOT NULL, blocked INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (player, blocked));
 CREATE TABLE IF NOT EXISTS chat_reports (msg INTEGER NOT NULL, player INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (msg, player));
 CREATE TABLE IF NOT EXISTS chat_mutes (player INTEGER PRIMARY KEY, until INTEGER NOT NULL, why TEXT);
+-- Private messages between friends (chat.js, Damian 2026-10-22): one row per pair of friends who wrote; the messages are in chat
+-- with room 'd<lower id>_<higher id>'.
+CREATE TABLE IF NOT EXISTS chat_dm (
+  room   TEXT PRIMARY KEY,
+  a      INTEGER NOT NULL,                 -- the lower player id
+  b      INTEGER NOT NULL,
+  last   INTEGER NOT NULL,                 -- the latest message id
+  lastp  INTEGER NOT NULL,                 -- who wrote it
+  at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_dm_a ON chat_dm (a, at);
+CREATE INDEX IF NOT EXISTS chat_dm_b ON chat_dm (b, at);
+-- Friend requests a player said no to (friends.js): the asker can't ask again for NO_DAYS.
+CREATE TABLE IF NOT EXISTS friend_no (
+  player INTEGER NOT NULL,                 -- who said no
+  other  INTEGER NOT NULL,                 -- who asked
+  at     INTEGER NOT NULL,
+  PRIMARY KEY (player, other)
+);

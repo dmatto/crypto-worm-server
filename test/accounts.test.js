@@ -85,17 +85,37 @@ test('stats: counts Telegram and wallet players and guests who started a game, n
   assert.equal(r.players, 4);
 });
 
-test('friends: a friend code adds both ways, an id one way, and remove works', async () => {
+test('friends: a friend code adds both ways; by id it is a request the other player accepts or turns down', async () => {
   const env = makeEnv();
-  const a = await call(env, '/auth/guest', {}), b = await call(env, '/auth/guest', {}), c = await call(env, '/auth/guest', {});
+  const a = await call(env, '/auth/guest', {}), b = await call(env, '/auth/guest', {}), c = await call(env, '/auth/guest', {}), d = await call(env, '/auth/guest', {});
   assert.equal((await call(env, '/friends/add', { code: 'NOPE1234' }, a.token)).status, 404);
-  assert.equal((await call(env, '/friends/add', { code: b.friendCode.toLowerCase() }, a.token)).friend.id, b.player.id);
+  const byCode = await call(env, '/friends/add', { code: b.friendCode.toLowerCase() }, a.token);
+  assert.equal(byCode.friend.id, b.player.id); assert.equal(byCode.state, 'friend');
   assert.deepEqual((await call(env, '/friends', undefined, b.token)).friends.map(f => f.id), [a.player.id]);
-  await call(env, '/friends/add', { id: c.player.id }, a.token);
-  assert.equal((await call(env, '/friends', undefined, a.token)).friends.length, 2);
-  assert.equal((await call(env, '/friends', undefined, c.token)).friends.length, 0);
+  // a asks c: c sees a request, a sees it as sent; neither is a friend yet
+  assert.equal((await call(env, '/friends/add', { id: c.player.id }, a.token)).state, 'sent');
+  let la = await call(env, '/friends', undefined, a.token), lc = await call(env, '/friends', undefined, c.token);
+  assert.deepEqual(la.friends.map(f => f.id), [b.player.id]); assert.deepEqual(la.sent.map(f => f.id), [c.player.id]);
+  assert.deepEqual(lc.friends, []); assert.deepEqual(lc.requests.map(f => f.id), [a.player.id]);
+  assert.equal((await call(env, '/me', undefined, c.token)).player.freq, 1, 'the dot on Friends');
+  // c says yes by adding a back
+  assert.equal((await call(env, '/friends/add', { id: a.player.id }, c.token)).state, 'friend');
+  lc = await call(env, '/friends', undefined, c.token);
+  assert.deepEqual(lc.friends.map(f => f.id), [a.player.id]); assert.deepEqual(lc.requests, []);
+  assert.equal((await call(env, '/me', undefined, c.token)).player.freq, undefined);
+  // d asks c, c says no: d can't ask again for a while
+  await call(env, '/friends/add', { id: c.player.id }, d.token);
+  assert.equal((await call(env, '/friends/no', { id: d.player.id }, c.token)).ok, true);
+  assert.deepEqual((await call(env, '/friends', undefined, c.token)).requests, []);
+  assert.deepEqual((await call(env, '/friends', undefined, d.token)).sent, []);
+  assert.equal((await call(env, '/friends/add', { id: c.player.id }, d.token)).status, 403);
+  // but c can still ask d, which makes them friends only when d says yes
+  assert.equal((await call(env, '/friends/add', { id: d.player.id }, c.token)).state, 'sent');
+  // removing a friend ends it both ways
   await call(env, '/friends/remove', { id: b.player.id }, a.token);
   assert.deepEqual((await call(env, '/friends', undefined, a.token)).friends.map(f => f.id), [c.player.id]);
+  assert.deepEqual((await call(env, '/friends', undefined, b.token)).friends, []);
+  assert.deepEqual((await call(env, '/friends', undefined, b.token)).requests, [], 'no request left behind');
 });
 
 test('feedback: stored with the linked wallet, checked, limited per day, and sent to the admins', async () => {

@@ -295,7 +295,8 @@ export async function reminders(env, now = Date.now()) {
   for (let i = 0; i < ids.length && sent < REMIND_MAX; i += 90) {
     const part = ids.slice(i, i + 90);
     const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id, f.friend, (SELECT name FROM players WHERE id = f.friend) AS fname FROM friends f
-        JOIN players p ON p.id = f.player JOIN player_meta m ON m.player = p.id WHERE f.friend IN (${part.map(() => '?').join(',')}) AND ${ok} LIMIT 200`).bind(...part).all();
+        JOIN players p ON p.id = f.player JOIN player_meta m ON m.player = p.id WHERE f.friend IN (${part.map(() => '?').join(',')}) AND ${ok}
+        AND EXISTS (SELECT 1 FROM friends g WHERE g.player = f.friend AND g.friend = f.player) LIMIT 200`).bind(...part).all();
     for (const r of results) {
       if (sent >= REMIND_MAX || done.has(r.id) || here.has(r.id)) continue; done.add(r.id);
       if (await send(env, r, `🟢 Your friend ${r.fname} is online in Crypto Worm Wars right now. Challenge them!`, gameLink(env))) sent++;

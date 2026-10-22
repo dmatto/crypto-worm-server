@@ -182,7 +182,7 @@ test('growth: the Monday top 10 goes to the group once, /sources is for admins, 
   calls.length = 0; await hook(env, msg('/sources', 55)); assert.equal(calls.length, 0);
   await hook(env, msg('/sources', 42)); assert.match(calls[0][1].text, /untagged/);
   // friend-online reminder: Ana is a friend of Dami, Dami is online, Ana was last here 3 hours ago
-  env.sql.prepare('INSERT INTO friends (player, friend, created) VALUES (?, ?, 0)').run(a.player.id, admin.player.id);
+  env.sql.prepare('INSERT INTO friends (player, friend, created) VALUES (?, ?, 0), (?, ?, 0)').run(a.player.id, admin.player.id, admin.player.id, a.player.id);   // friends both ways
   env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player = ?').run(Date.now() - 3 * 3600e3, a.player.id);
   const env2 = { ...env, LOBBY: makeEnv([admin.player.id]).LOBBY };
   const q = Math.floor(Date.now() / 9e5) * 9e5; calls.length = 0; await cron(env2, q); await cron(env2, q);

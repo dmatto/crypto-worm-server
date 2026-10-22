@@ -146,6 +146,58 @@ test('reports, blocks, admin mutes and deletes, player cards, cleanup; load-test
   assert.equal((await call(env, '/chat?room=w', undefined, c.token)).status, 403);
 });
 
+test('private messages: friends only (after a request and a yes), unread counts, a bot note when the friend is away, blocks', async () => {
+  const env = makeEnv(), a = await player(env, 0, 7001), b = await player(env, 0, 7002), c = await player(env, CHAT_PLAYED);
+  // not friends yet: no messages
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'hi' }, a.token)).code, 'friend');
+  sent.length = 0;
+  await call(env, '/friends/add', { id: b.player.id }, a.token);
+  let note = sent.find(x => x[0] === 'sendMessage');
+  assert.equal(note[1].chat_id, 7002); assert.match(note[1].text, /P7001 wants to be your friend/); assert.match(note[1].reply_markup.inline_keyboard[0][0].url, /startapp=freq$/);
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'hi' }, a.token)).code, 'friend', 'a request is not enough');
+  sent.length = 0; await call(env, '/friends/add', { id: a.player.id }, b.token);
+  note = sent.find(x => x[0] === 'sendMessage');
+  assert.equal(note[1].chat_id, 7001); assert.match(note[1].text, /P7002 accepted your friend request/); assert.match(note[1].reply_markup.inline_keyboard[0][0].url, new RegExp(`startapp=dm_${b.player.id}$`));
+  // friends: no match minimum for private messages, the same filter
+  sent.length = 0;
+  const m1 = await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'gg last night 🪱' }, a.token);
+  assert.equal(m1.status, 200); assert.equal(m1.msg.text, 'gg last night 🪱');
+  note = sent.find(x => x[0] === 'sendMessage');
+  assert.equal(note[1].chat_id, 7002, 'b is away: the bot tells them'); assert.match(note[1].text, /✉️ P7001 sent you a message in Crypto Worm Wars: gg last night 🪱/);
+  assert.match(note[1].reply_markup.inline_keyboard[0][0].url, new RegExp(`startapp=dm_${a.player.id}$`));
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'too fast' }, a.token)).code, 'slow');
+  later(env, 3000);
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'join t.me/scam' }, a.token)).code, 'link');
+  later(env, 3000); sent.length = 0;
+  await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'rematch?' }, a.token);
+  assert.equal(sent.filter(x => x[0] === 'sendMessage').length, 0, 'one bot note per chat every 2 hours');
+  assert.equal((await call(env, '/me', undefined, b.token)).player.dms, 1);
+  assert.equal((await call(env, '/chat/unread', undefined, b.token)).dms, 1);
+  let list = await call(env, '/chat/dms', undefined, b.token);
+  assert.deepEqual(list.dms.map(d => [d.with.id, d.text, d.mine, d.unread]), [[a.player.id, 'rematch?', false, true]]);
+  const open = await call(env, `/chat?room=d&with=${a.player.id}`, undefined, b.token);
+  assert.deepEqual(open.msgs.map(m => m.text), ['gg last night 🪱', 'rematch?']); assert.equal(open.with.name, 'P7001'); assert.equal(open.can, true); assert.equal(open.friend, true);
+  assert.equal((await call(env, '/me', undefined, b.token)).player.dms, undefined, 'read');
+  assert.deepEqual((await call(env, '/chat/dms', undefined, a.token)).dms.map(d => [d.with.id, d.mine, d.unread]), [[b.player.id, true, false]]);
+  // the room is the pair's: someone else asking for it gets their own, empty one
+  assert.deepEqual((await call(env, `/chat?room=d&with=${a.player.id}`, undefined, c.token)).msgs, []);
+  assert.equal((await call(env, `/chat?room=d&with=${a.player.id}`, undefined, c.token)).can, false);
+  assert.deepEqual((await call(env, '/chat?room=w', undefined, c.token)).msgs, [], 'private messages never show in World chat');
+  // blocking stops it both ways; removing the friend too
+  await call(env, '/chat/block', { id: a.player.id, on: true }, b.token); later(env, 3000);
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'hello?' }, a.token)).code, 'friend');
+  assert.deepEqual((await call(env, '/chat/dms', undefined, b.token)).dms, []);
+  await call(env, '/chat/block', { id: a.player.id, on: false }, b.token);
+  await call(env, '/friends/remove', { id: a.player.id }, b.token); later(env, 3000);
+  assert.equal((await call(env, '/chat/send', { room: 'd', to: b.player.id, text: 'hello?' }, a.token)).code, 'friend');
+  assert.equal((await call(env, `/chat?room=d&with=${b.player.id}`, undefined, a.token)).msgs.length, 2, 'the old messages stay readable');
+  const card = await call(env, `/chat/player?id=${b.player.id}`, undefined, a.token);
+  assert.equal(card.fstate, ''); assert.equal(card.friend, false);
+  await call(env, '/friends/add', { id: b.player.id }, a.token);
+  assert.equal((await call(env, `/chat/player?id=${b.player.id}`, undefined, a.token)).fstate, 'sent');
+  assert.equal((await call(env, `/chat/player?id=${a.player.id}`, undefined, b.token)).fstate, 'req');
+});
+
 test('the bot: /chatmute and /chatdel for admins only', async () => {
   const env = makeEnv(), admin = await player(env, 3, 9101), a = await player(env, 3, 9102);
   env.ADMIN_PLAYERS = String(admin.player.id);

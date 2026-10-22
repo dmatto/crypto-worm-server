@@ -49,24 +49,25 @@
 // Signing in with a wallet never asks for a transaction. Scores are for fun: the server never sends tokens or anything
 // of value.
 
-import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode, readFriendCode } from './auth.js';
+import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, newPlayer, seen, noteInvite, started, played, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
+import { weekStart, newPlayer, seen, started, played, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
 import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo, inviteCount } from './teams.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 import { chromePage } from './parody.js';
-import { handle as chatHandle, teamUnread } from './chat.js';
+import { handle as friendsHandle, requestCount } from './friends.js';
+import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 export { Match, Lobby, Royale };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
-const MAX_FRIENDS = 200, LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
+const LOGIN_CODE_MS = 10 * 60 * 1000, MAX_FEEDBACK = 1500, FEEDBACK_PER_DAY = 10;
 const SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const SCORE_MAX = 600, SCORE_DAY = 6000, SCORE_GAP_MS = 8000, SCORE_IMPORT_MAX = 3000;
 async function addScore(env, me, amount, imported) {
@@ -166,8 +167,8 @@ async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
   const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id);
-  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id), tchat = tm ? await teamUnread(env, p.id, tm.id) : 0;
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id), tchat = tm ? await teamUnread(env, p.id, tm.id) : 0, dms = await dmUnread(env, p.id), freq = await requestCount(env, p.id);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}), ...(dms ? { dms } : {}), ...(freq ? { freq } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -308,26 +309,10 @@ const app = {
       return json({ code, expires }, 200, cors);
     }
 
-    if (path === '/friends' && req.method === 'GET') {
-      const { results } = await env.DB.prepare('SELECT p.id, p.name, p.wins, p.losses FROM friends f JOIN players p ON p.id = f.friend WHERE f.player = ? ORDER BY p.name LIMIT ?').bind(me.id, MAX_FRIENDS).all();
-      let online = new Set();
-      if (results.length) { const r = await (await lobbyOf(env).fetch('https://lobby/online?ids=' + results.map(f => f.id).join(','))).json(); online = new Set(r.online) }
-      return json({ friends: results.map(f => ({ ...f, online: online.has(f.id) })) }, 200, cors);
-    }
-    if (path === '/friends/add' && req.method === 'POST') {
-      const byCode = body.code != null, id = byCode ? await readFriendCode(body.code, env.SESSION_SECRET) : Number(body.id);
-      const f = id && id !== me.id && await playerById(env, id);
-      if (!f) return json({ error: byCode ? 'that friend code is wrong' : 'no such player' }, 404, cors);
-      const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM friends WHERE player = ?').bind(me.id).first();
-      if (n.n >= MAX_FRIENDS) return json({ error: 'friend list is full' }, 400, cors);
-      const add = (a, b) => env.DB.prepare('INSERT OR IGNORE INTO friends (player, friend, created) VALUES (?, ?, ?)').bind(a, b, Date.now());
-      await env.DB.batch(byCode ? [add(me.id, f.id), add(f.id, me.id)] : [add(me.id, f.id)]);
-      const invited = byCode && await noteInvite(env, me, f.id);                            // a brand-new player who came through a friend link
-      return json({ friend: { id: f.id, name: f.name, wins: f.wins, losses: f.losses }, invited }, 200, cors);
-    }
-    if (path === '/friends/remove' && req.method === 'POST') {
-      await env.DB.prepare('DELETE FROM friends WHERE player = ? AND friend = ?').bind(me.id, Number(body.id)).run();
-      return json({ ok: true }, 200, cors);
+    if (path === '/friends' || path.startsWith('/friends/')) {                             // friends and friend requests (see friends.js)
+      const wait = p => { if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p };
+      const r = await friendsHandle(path, env, me, body, { lobby: lobbyOf(env), post: req.method === 'POST', wait: ctx && ctx.waitUntil ? wait : null });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
 
     if (path === '/lobby/ws') {
@@ -423,7 +408,7 @@ const app = {
     if (path === '/chat' || path.startsWith('/chat/')) {                                   // World and Team chat (see chat.js)
       if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
       const wait = p => { if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p };
-      const r = await chatHandle(path, env, me, body, { room: url.searchParams.get('room'), after: url.searchParams.get('after'), id: url.searchParams.get('id'),
+      const r = await chatHandle(path, env, me, body, { room: url.searchParams.get('room'), after: url.searchParams.get('after'), id: url.searchParams.get('id'), with: url.searchParams.get('with'),
         post: req.method === 'POST', lobby: lobbyOf(env), wait: ctx && ctx.waitUntil ? wait : null });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
