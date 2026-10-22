@@ -413,3 +413,15 @@ CREATE TABLE IF NOT EXISTS friend_no (
   at     INTEGER NOT NULL,
   PRIMARY KEY (player, other)
 );
+-- Every START in the bot's chat (bot.js, Damian 2026-10-22): an account only exists once the game opens, so this shows who read
+-- the welcome and never played, and holds the one "your first battle is waiting" reminder.
+CREATE TABLE IF NOT EXISTS bot_starts (
+  tg_id  INTEGER PRIMARY KEY,
+  first  INTEGER NOT NULL,                 -- the first START
+  last   INTEGER NOT NULL,                 -- the latest START
+  n      INTEGER NOT NULL DEFAULT 1,       -- how many times they sent it
+  src    TEXT,                             -- the source tag of a /start s_<tag> link
+  lang   TEXT,                             -- the language the welcome went out in
+  nudged INTEGER NOT NULL DEFAULT 0        -- when the reminder went out (negative: it failed; -1: they sent /stop; 0: not yet)
+);
+CREATE INDEX IF NOT EXISTS bot_starts_first ON bot_starts (nudged, first);

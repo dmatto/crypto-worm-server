@@ -273,7 +273,10 @@ export async function sourcesText(env, now = Date.now()) {
       SUM(p.created > ?) AS n7, SUM(p.created > ? AND COALESCE(m.played, 0) >= 1) AS p17, SUM(p.created > ? AND COALESCE(m.played, 0) >= 3) AS p37
       FROM players p LEFT JOIN player_meta m ON m.player = p.id GROUP BY s ORDER BY n7 DESC, n DESC LIMIT 40`).bind(wk, wk, wk).all();
   if (!results.length) return 'No players yet.';
-  return '📊 <b>Where new players come from</b>\nnew players · finished 1+ · finished 3+ matches\n\n' +
+  const b = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(EXISTS (SELECT 1 FROM players p WHERE p.tg_id = b.tg_id)) AS opened, SUM(nudged > 0) AS nudged,
+      SUM(nudged > 0 AND EXISTS (SELECT 1 FROM players p WHERE p.tg_id = b.tg_id AND p.created > b.nudged)) AS back FROM bot_starts b WHERE first > ?`).bind(wk).first().catch(() => null);
+  const starts = b && b.n ? `🤖 <b>Bot START, last 7 days</b>: ${b.n | 0} people · ${b.opened | 0} opened the game · ${b.nudged | 0} got the reminder, ${b.back | 0} of them came\n\n` : '';
+  return starts + '📊 <b>Where new players come from</b>\nnew players · finished 1+ · finished 3+ matches\n\n' +
     results.map(r => `<b>${esc(r.s)}</b>\n  last 7 days: ${r.n7 | 0} · ${r.p17 | 0} · ${r.p37 | 0}\n  all time: ${r.n | 0} · ${r.p1 | 0} · ${r.p3 | 0}`).join('\n') +
     '\n\n<i>"untagged" are players from before tracking started (Oct 8). Tag a link with ?startapp=s_yourtag.</i>';
 }

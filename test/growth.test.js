@@ -81,7 +81,7 @@ test('growth: invite week: the inviter gets +1,500 per friend, the friend +200; 
     calls.length = 0; await hook(env, msg('/invite', 42));
     assert.match(calls[0][1].text, /\+1,500 \$CWORM for you \(invite week, until Sunday 25 October\)\n• \+200 \$CWORM for your friend/);
     calls.length = 0; await hook(env, msg('/start', 42));
-    assert.match(calls[0][1].text, /Invite week: \+1,500 \$CWORM for every friend you bring/);
+    assert.equal(calls[0][1].reply_markup.inline_keyboard[1][0].text, '👥 Invite friends: +1,500 play $CWORM per friend');   // the welcome's invite button
     // after the week: +200 again, and friends paid during it still show +1,500
     PROMO.until = Date.now() - 1;
     const kid2 = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid2.token); await call(env, '/played', { mode: 'cpu' }, kid2.token);
@@ -192,6 +192,26 @@ test('growth: the Monday top 10 goes to the group once, /sources is for admins, 
   assert.equal(env.sql.prepare('SELECT remind FROM player_meta WHERE player = ?').get(a.player.id).remind, 0);
   assert.equal((await call(env, '/me', undefined, a.token)).player.remind, false);
   assert.equal((await call(env, '/me/remind', { on: true }, a.token)).remind, true);
+});
+
+test('growth: every START is logged; one reminder an hour later, in their language, only if they never opened the game', async () => {
+  const env = makeEnv(); await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') }); calls.length = 0;   // player 1 = admin
+  const start = (id, lang, arg = '') => hook(env, { message: { chat: { id, type: 'private' }, from: { id, first_name: 'Ana', language_code: lang }, text: '/start' + arg } });
+  await start(71, 'es-ES', ' s_promo'); await start(72, 'en'); await start(73, 'pt-br'); await start(71, 'es');
+  assert.match(calls[0][1].text, /^🪱 ¡Bienvenido, Ana!/); assert.equal(calls[0][1].reply_markup.inline_keyboard[0][0].text, '🎮 Jugar ahora');
+  assert.match(calls[0][1].reply_markup.inline_keyboard[0][0].url, /startapp=s_promo$/);
+  assert.deepEqual(env.sql.prepare('SELECT tg_id, n, src, lang, nudged FROM bot_starts ORDER BY tg_id').all().map(r => ({ ...r })),
+    [{ tg_id: 71, n: 2, src: 'promo', lang: 'es', nudged: 0 }, { tg_id: 72, n: 1, src: null, lang: 'en', nudged: 0 }, { tg_id: 73, n: 1, src: null, lang: 'pt', nudged: 0 }]);
+  await call(env, '/auth/telegram', { initData: tgInit(72, 'Bo') });                  // 72 opened the game
+  await hook(env, msg('/stop', 73));                                                   // 73 asked for no messages
+  const later = Date.now() + 61 * 60e3, q = Math.floor(later / 9e5) * 9e5 + 9e5;
+  calls.length = 0; await cron(env, Date.now()); assert.equal(calls.filter(c => c[0] === 'sendMessage').length, 0);   // not an hour yet
+  calls.length = 0; await cron(env, q); await cron(env, q + 9e5);
+  const sent = calls.filter(c => c[0] === 'sendMessage');
+  assert.equal(sent.length, 1); assert.equal(sent[0][1].chat_id, 71); assert.match(sent[0][1].text, /primera batalla/);
+  assert.match(sent[0][1].reply_markup.inline_keyboard[0][0].url, /startapp=s_promo$/);
+  calls.length = 0; await hook(env, msg('/sources', 42));
+  assert.match(calls[0][1].text, /Bot START, last 7 days<\/b>: 3 people · 1 opened the game · 1 got the reminder, 0 of them came/);
 });
 
 test('growth: a week that rolls over is kept for the top 10', async () => {

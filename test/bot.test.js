@@ -13,7 +13,7 @@ test('bot: /start sends the welcome picture with a Play button, falls back to te
   calls.length = 0;
   assert.equal((await webhook(update('/start', 'wrong'), env)).status, 403); assert.equal(calls.length, 0);
   await webhook(update('/start m_ABCDEF'), env);
-  assert.equal(calls[0][0], 'sendPhoto'); assert.match(calls[0][1].caption, /Welcome to Crypto Worm Wars, Ana!/);
+  assert.equal(calls[0][0], 'sendPhoto'); assert.match(calls[0][1].caption, /^🪱 Welcome, Ana!\n\n.*\n\n👇 Tap Play now/); assert.equal(calls[0][1].caption.split('\n').length, 5);   // short: Play shows without scrolling
   assert.equal(calls[0][1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/Bot/play');
   calls.length = 0; await webhook(update('/start'), { ...env, WELCOME_PHOTO: 'broken' });
   assert.deepEqual(calls.map(c => c[0]), ['sendPhoto', 'sendMessage']);
