@@ -3,7 +3,7 @@
 // Crypto Worm parody of the best three and draws each one with Grok Imagine from the brand character. The bot sends them to the
 // admins with the post text and a "Post on X" button that opens X with the text ready and the original post quoted; the picture
 // is saved from Telegram and added by hand. Nothing is ever posted by itself. Admins: /parody makes a batch now, /parody off|on
-// stops or restarts the daily one. About $0.90 of xAI a day (the X search is most of it).
+// stops or restarts the daily one. About $1 to $1.50 of xAI a day (the X search is most of it).
 import { xai } from './worms.js';
 
 export const PARODY_HOUR = 12, PARODIES = 3;
@@ -35,9 +35,10 @@ const WRITE = n => 'You write parodies for Crypto Worm, the mascot of $CWORM, an
   'objects: never a real person, a real face or a look-alike of anyone famous, and no logos, brand names, words, letters or numbers in the picture. ' +
   'Describe the setting, the composition and his expression in 2 or 3 sentences.\n' +
   '- "caption": the X post: the original post\'s own text rewritten as a Crypto Worm parody, so it reads almost like the original. Keep its ' +
-  'wording, sentence structure, length, line breaks, capital letters, punctuation and emojis, and change only the few words that turn it ' +
-  'into a joke about Crypto Worm, worms, $CWORM or crypto, like a classic parody of a famous line. If the post has no text, write one short ' +
-  'line in the style of its format. At most 200 characters. $CWORM at most once, no extra hashtags. No financial advice, price predictions or ' +
+  'wording, sentence structure, length, line breaks, capital letters, punctuation and emojis, and swap a few words (usually 2 to 5) so it ' +
+  'becomes a clear, funny joke about Crypto Worm, crypto or meme coins, like a classic parody of a famous line: swapping one word for ' +
+  '"worm" alone is not enough. Always in English: parody the English translation of a post in another language. If the post has no text, ' +
+  'write one short line in the style of its format. At most 200 characters. $CWORM at most once, no extra hashtags. No financial advice, price predictions or ' +
   '"buy" calls, never joke about a person\'s looks: punch at the situation.\n' +
   `Skip any post about ${AVOID}.\n` +
   'Answer with JSON only: {"parodies":[{"url":"<the post url, exactly as given>","idea":"...","scene":"...","caption":"..."}]}';
@@ -56,7 +57,7 @@ const num = v => Math.max(0, Math.round(Number(String(v ?? '').replace(/[, ]/g, 
 export async function findPosts(env, now = Date.now(), seen = [], model = FIND_MODEL) {
   const today = new Date(now).toISOString().slice(0, 10), since = new Date(now - DAY).toISOString().slice(0, 10);
   const d = await xai(env, 'responses', { model, input: [{ role: 'user', content: FIND(today, since) }],
-    tools: [{ type: 'x_search', from_date: since, to_date: today }], max_tool_calls: 8 });
+    tools: [{ type: 'x_search', from_date: since, to_date: today }], max_tool_calls: 6 });
   const msg = (d.output || []).filter(o => o.type === 'message').flatMap(o => o.content || []);
   const cited = new Set(msg.flatMap(c => c.annotations || []).map(a => statusId(a.url)).filter(Boolean));
   const r = json(msg.map(c => c.text || '').join('\n')) || {}, old = new Set(seen);
