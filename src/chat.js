@@ -12,6 +12,7 @@
 //   POST /chat/report {id}           -> {ok, hidden}
 //   POST /chat/block {id, on}        -> {ok, blocked: [ids]}
 //   GET  /chat/blocks                -> {blocked: [{id, name}]}
+//   GET  /chat/unread                -> {tchat}   unread Team chat messages, without reading them
 //   GET  /chat/player?id=            -> a player's card: {id, name, av?, cc?, team?, wins, losses, played, since, friend, blocked, invite, online?}
 import { xai } from './worms.js';
 import { teamOf } from './teams.js';
@@ -179,6 +180,7 @@ async function card(env, me, id, opts) {
 export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
   if (path === '/chat') return load(env, me, opts.room === 't' ? 't' : 'w', Math.max(0, Number(opts.after) || 0), now);
   if (path === '/chat/player') return card(env, me, Number(opts.id) || 0, opts);
+  if (path === '/chat/unread') { const t = await teamOf(env, me.id); return { tchat: t ? await teamUnread(env, me.id, t.id) : 0 } }
   if (path === '/chat/blocks') {
     const { results } = await q(env, 'SELECT p.id, p.name FROM chat_blocks b JOIN players p ON p.id = b.blocked WHERE b.player = ? ORDER BY b.at DESC LIMIT 200', me.id).all();
     return { blocked: results };

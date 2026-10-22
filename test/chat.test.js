@@ -98,6 +98,8 @@ test('Team chat: members only, unread dot in the session, bot note to members wh
   sent.length = 0; await call(env, '/chat/send', { room: 't', text: 'anyone?' }, a.token);
   assert.equal(sent.filter(x => x[0] === 'sendMessage').length, 0, 'one bot note per member every 12 hours');
   assert.equal((await call(env, '/me', undefined, b.token)).player.tchat, 2);
+  assert.equal((await call(env, '/chat/unread', undefined, b.token)).tchat, 2, 'the light check the game makes now and then');
+  assert.equal((await call(env, '/chat/unread', undefined, b.token)).tchat, 2, 'and it does not mark them read');
   assert.equal((await call(env, '/me', undefined, a.token)).player.tchat, undefined, 'your own messages are read');
   const r = await call(env, '/chat?room=t', undefined, b.token);
   assert.deepEqual(r.msgs.map(m => m.text), ['raid at 8?', 'anyone?']); assert.equal(r.team.name, 'Worm Gang');
