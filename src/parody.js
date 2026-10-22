@@ -23,7 +23,8 @@ const FIND = (today, since) => `Today is ${today} (UTC). Use X search to find th
   'crypto, AI and tech, gaming, internet trends, sports moments, movies, TV and music, animals and funny everyday moments. ' +
   `Keep only posts that are safe and fun to parody with a cartoon worm. Skip ${AVOID}. ` +
   'Prefer posts with a clear funny or iconic moment, a meme format anyone gets, or a big crypto or tech moment. ' +
-  'Answer with JSON only: {"posts":[{"url":"https://x.com/<handle>/status/<id>","handle":"@...","what":"what the post says or shows, one line",' +
+  'Answer with JSON only: {"posts":[{"url":"https://x.com/<handle>/status/<id>","handle":"@...","text":"the post\'s own text, word for word ' +
+  '(empty if it has none)","what":"what the post says or shows, one line",' +
   '"likes":0,"reposts":0,"views":0,"topic":"..."}]} with up to 12 posts, most viral first.';
 const WRITE = n => 'You write parodies for Crypto Worm, the mascot of $CWORM, an honest community meme coin on Solana that never rugs, and of ' +
   'Crypto Worm Wars, a free Worms-style artillery game in Telegram. Crypto Worm is a pink cartoon worm in a green army helmet with a gold star ' +
@@ -33,8 +34,11 @@ const WRITE = n => 'You write parodies for Crypto Worm, the mascot of $CWORM, an
   '- "scene": a picture prompt where Crypto Worm recreates the moment or meme of the post as a worm. Only cartoon worms, cartoon animals and ' +
   'objects: never a real person, a real face or a look-alike of anyone famous, and no logos, brand names, words, letters or numbers in the picture. ' +
   'Describe the setting, the composition and his expression in 2 or 3 sentences.\n' +
-  '- "caption": the X post, at most 180 characters, a punchline that works next to the quoted original. At most one hashtag and one emoji, ' +
-  '$CWORM at most once. No financial advice, price predictions or "buy" calls, never joke about a person\'s looks: punch at the situation.\n' +
+  '- "caption": the X post: the original post\'s own text rewritten as a Crypto Worm parody, so it reads almost like the original. Keep its ' +
+  'wording, sentence structure, length, line breaks, capital letters, punctuation and emojis, and change only the few words that turn it ' +
+  'into a joke about Crypto Worm, worms, $CWORM or crypto, like a classic parody of a famous line. If the post has no text, write one short ' +
+  'line in the style of its format. At most 200 characters. $CWORM at most once, no extra hashtags. No financial advice, price predictions or ' +
+  '"buy" calls, never joke about a person\'s looks: punch at the situation.\n' +
   `Skip any post about ${AVOID}.\n` +
   'Answer with JSON only: {"parodies":[{"url":"<the post url, exactly as given>","idea":"...","scene":"...","caption":"..."}]}';
 const LOOK = 'Use the cartoon character from this image exactly as he is: a pink worm in a green army helmet with a round gold star coin badge, ' +
@@ -59,19 +63,19 @@ export async function findPosts(env, now = Date.now(), seen = [], model = FIND_M
   const posts = (Array.isArray(r.posts) ? r.posts : []).map(p => ({ ...p, id: statusId(p.url) }))
     .filter(p => p.id && cited.has(p.id) && !old.has(p.id) && now - postTime(p.id) < 1.5 * DAY && postTime(p.id) < now + 6e5)
     .map(p => ({ id: p.id, url: 'https://x.com/' + String(p.handle || 'i').replace(/^@/, '').replace(/[^\w]/g, '') + '/status/' + p.id,
-      handle: String(p.handle || '').slice(0, 40), what: String(p.what || '').slice(0, 300), topic: String(p.topic || '').slice(0, 60),
+      handle: String(p.handle || '').slice(0, 40), text: String(p.text || '').trim().slice(0, 500), what: String(p.what || '').slice(0, 300), topic: String(p.topic || '').slice(0, 60),
       likes: num(p.likes), reposts: num(p.reposts), views: num(p.views) }));
   return { posts, cost: d.usage && d.usage.cost_in_usd_ticks || 0 };
 }
 
 // 2. The parodies: an idea, a picture prompt and the post text for the best few.
 export async function writeParodies(env, posts, n = PARODIES) {
-  const list = posts.map(p => `- ${p.url} (${p.handle}, ${p.likes} likes, ${p.views} views, ${p.topic}): ${p.what}`).join('\n');
+  const list = posts.map(p => `- ${p.url} (${p.handle}, ${p.likes} likes, ${p.views} views, ${p.topic}): ${p.what}\n  Its text: ${p.text ? JSON.stringify(p.text) : '(none)'}`).join('\n');
   const d = await xai(env, 'chat/completions', { model: MODEL, response_format: { type: 'json_object' },
     messages: [{ role: 'system', content: WRITE(n) }, { role: 'user', content: list }] });
   const r = json(d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || {}, by = new Map(posts.map(p => [p.id, p]));
   return (Array.isArray(r.parodies) ? r.parodies : []).map(x => ({ post: by.get(statusId(x.url)), idea: String(x.idea || '').slice(0, 300),
-    scene: String(x.scene || '').slice(0, 1200), caption: String(x.caption || '').trim().slice(0, 220) }))
+    scene: String(x.scene || '').slice(0, 1200), caption: String(x.caption || '').trim().slice(0, 240) }))
     .filter(x => x.post && x.scene && x.caption).slice(0, n);
 }
 
@@ -96,7 +100,7 @@ export async function makeParodies(env, send, now = Date.now(), seen = []) {
   for (const [i, p] of parodies.entries()) {
     if (!pics[i]) continue;
     const s = p.post, stat = [s.likes && '❤️ ' + short(s.likes), s.views && '👁 ' + short(s.views)].filter(Boolean).join(' · ');
-    const caption = `${p.caption}\n\n${X_FOOTER}\n\n— Parody of ${s.handle || 'a viral post'}${stat ? ' (' + stat + ')' : ''}: ${s.what}`;
+    const caption = `${p.caption}\n\n${X_FOOTER}\n\n— Parody of ${s.handle || 'a viral post'}${stat ? ' (' + stat + ')' : ''}: ${s.text ? '"' + s.text + '"' : s.what}`;
     const buttons = [[{ text: '𝕏 Post on X', url: xIntent(p) }], [{ text: '🔗 See the original', url: s.url }]];
     if (await send(pics[i], caption.slice(0, 1000), buttons)) made.push({ id: s.id, url: s.url, caption: p.caption, idea: p.idea });
   }
