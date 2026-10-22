@@ -3,11 +3,12 @@
 // Crypto Worm parody of the best three and draws each one with Grok Imagine from the brand character. The bot sends them to the
 // admins with the post text and a "Post on X" button that opens X with the text ready and the original post quoted; the picture
 // is saved from Telegram and added by hand. Nothing is ever posted by itself. Admins: /parody makes a batch now, /parody off|on
-// stops or restarts the daily one. About $1 to $1.50 of xAI a day (the X search is most of it).
+// stops or restarts the daily one. About $0.30 to $0.50 of xAI a day: the X search bills each post it reads, so it runs on a
+// non-reasoning model, which reads about 60 posts instead of 130 to 300 (Damian 2026-10-22: "too much X post finding").
 import { xai } from './worms.js';
 
-export const PARODY_HOUR = 12, PARODIES = 3;
-const FIND_MODEL = 'grok-4.7', MODEL = 'grok-4.7', IMAGE_MODEL = 'grok-imagine-image-2.0', DAY = 864e5, KEEP_SEEN = 60;
+export const PARODY_HOUR = 12, PARODIES = 3, SEARCHES = 3;
+const FIND_MODEL = 'grok-4.20-0309-non-reasoning', MODEL = 'grok-4.7', IMAGE_MODEL = 'grok-imagine-image-2.0', DAY = 864e5, KEEP_SEEN = 60;
 export const X_FOOTER = '🪱 Play free 👉 t.me/CryptoWormWarsBot/play?startapp=s_x';
 const site = env => (env.SITE_URL || env.MENU_URL || 'https://play.cryptoworm.io/').replace(/\/+$/, '');
 const kv = {
@@ -54,10 +55,10 @@ const num = v => Math.max(0, Math.round(Number(String(v ?? '').replace(/[, ]/g, 
 
 // 1. Grok's X search: the day's viral posts. Only posts X search really returned (their ids are in its citations), posted in the last
 // 36 hours and not used before are kept.
-export async function findPosts(env, now = Date.now(), seen = [], model = FIND_MODEL) {
+export async function findPosts(env, now = Date.now(), seen = [], model = FIND_MODEL, searches = SEARCHES) {
   const today = new Date(now).toISOString().slice(0, 10), since = new Date(now - DAY).toISOString().slice(0, 10);
   const d = await xai(env, 'responses', { model, input: [{ role: 'user', content: FIND(today, since) }],
-    tools: [{ type: 'x_search', from_date: since, to_date: today }], max_tool_calls: 6 });
+    tools: [{ type: 'x_search', from_date: since, to_date: today }], max_tool_calls: searches });
   const msg = (d.output || []).filter(o => o.type === 'message').flatMap(o => o.content || []);
   const cited = new Set(msg.flatMap(c => c.annotations || []).map(a => statusId(a.url)).filter(Boolean));
   const r = json(msg.map(c => c.text || '').join('\n')) || {}, old = new Set(seen);
@@ -66,7 +67,7 @@ export async function findPosts(env, now = Date.now(), seen = [], model = FIND_M
     .map(p => ({ id: p.id, url: 'https://x.com/' + String(p.handle || 'i').replace(/^@/, '').replace(/[^\w]/g, '') + '/status/' + p.id,
       handle: String(p.handle || '').slice(0, 40), text: String(p.text || '').trim().slice(0, 500), what: String(p.what || '').slice(0, 300), topic: String(p.topic || '').slice(0, 60),
       likes: num(p.likes), reposts: num(p.reposts), views: num(p.views) }));
-  return { posts, cost: d.usage && d.usage.cost_in_usd_ticks || 0 };
+  return { posts, cost: d.usage && d.usage.cost_in_usd_ticks || 0, read: d.usage && d.usage.server_side_tool_usage_details && d.usage.server_side_tool_usage_details.x_posts_fetched || 0 };
 }
 
 // 2. The parodies: an idea, a picture prompt and the post text for the best few.
@@ -112,8 +113,8 @@ const short = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n
 
 // The whole batch: find, write, draw, then hand each finished parody to send(picture bytes, caption, buttons).
 export async function makeParodies(env, send, now = Date.now(), seen = []) {
-  const { posts } = await findPosts(env, now, seen);
-  if (posts.length < 1) return { posts: 0, made: [] };
+  const { posts, cost, read } = await findPosts(env, now, seen), spent = { search: Math.round(cost / 1e8) / 100, read };   // the search's cost in USD, X posts it read
+  if (posts.length < 1) return { posts: 0, made: [], spent };
   const parodies = await writeParodies(env, posts);
   const pics = await Promise.all(parodies.map(p => drawParody(env, p.scene).catch(() => null)));
   const made = [];
@@ -124,7 +125,7 @@ export async function makeParodies(env, send, now = Date.now(), seen = []) {
     const buttons = [[{ text: '𝕏 Post on X', url: viaChrome(env, xIntent(p)) }], [{ text: '🔗 See the original', url: viaChrome(env, s.url) }]];
     if (await send(pics[i], caption.slice(0, 1000), buttons)) made.push({ id: s.id, url: s.url, caption: p.caption, idea: p.idea });
   }
-  return { posts: posts.length, made };
+  return { posts: posts.length, made, spent };
 }
 
 async function upload(env, chat_id, bytes, caption, buttons) {
@@ -156,7 +157,7 @@ export async function parodyCron(env, now, admins, tg) {
   let r; try { r = await makeParodies(env, send, now, seen) } catch (e) { r = { error: String(e && e.message || e) } }
   if (r.made && r.made.length) await kv.set(env, 'parody_seen', JSON.stringify([...r.made.map(m => m.id), ...seen].slice(0, KEEP_SEEN)));
   else for (const chat_id of to) await tg(env, 'sendMessage', { chat_id, text: '🪱 No worm parodies this time' + (r.error ? ' (Grok: ' + r.error.slice(0, 200) + ')' : ': nothing viral was safe to joke about.') + ' Send /parody to try again.' });
-  await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody ' + JSON.stringify({ posts: r.posts, made: (r.made || []).length, error: r.error })).run().catch(() => { });
+  await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody ' + JSON.stringify({ posts: r.posts, made: (r.made || []).length, spent: r.spent, error: r.error })).run().catch(() => { });
 }
 // /parody (admins): now | off | on
 export async function parodyCommand(env, arg) {
