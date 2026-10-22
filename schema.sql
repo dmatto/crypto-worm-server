@@ -371,3 +371,26 @@ CREATE TABLE IF NOT EXISTS team_logo_log ( -- every upload, for the daily limit 
   why     TEXT
 );
 CREATE INDEX IF NOT EXISTS team_logo_log_team ON team_logo_log (team, at);
+
+-- World and Team chat (chat.js)
+CREATE TABLE IF NOT EXISTS chat (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  room    TEXT NOT NULL,                    -- 'w' (World) or 't<team id>'
+  player  INTEGER NOT NULL,
+  text    TEXT NOT NULL,
+  at      INTEGER NOT NULL,
+  hidden  INTEGER NOT NULL DEFAULT 0        -- 1: taken down (reports, an admin or a mute)
+);
+CREATE INDEX IF NOT EXISTS chat_room ON chat (room, id);
+CREATE INDEX IF NOT EXISTS chat_player ON chat (player, at);
+CREATE TABLE IF NOT EXISTS chat_seen (     -- Team chat read so far (the dot on Friends) and the last bot note about it
+  player  INTEGER NOT NULL,
+  room    TEXT NOT NULL,
+  last    INTEGER NOT NULL DEFAULT 0,       -- the newest message id read
+  seen_at INTEGER NOT NULL DEFAULT 0,       -- when the room was last open
+  dm      INTEGER NOT NULL DEFAULT 0,       -- when the bot last told them about new messages
+  PRIMARY KEY (player, room)
+);
+CREATE TABLE IF NOT EXISTS chat_blocks (player INTEGER NOT NULL, blocked INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (player, blocked));
+CREATE TABLE IF NOT EXISTS chat_reports (msg INTEGER NOT NULL, player INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (msg, player));
+CREATE TABLE IF NOT EXISTS chat_mutes (player INTEGER PRIMARY KEY, until INTEGER NOT NULL, why TEXT);

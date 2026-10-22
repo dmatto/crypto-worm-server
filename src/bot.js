@@ -6,6 +6,7 @@
 // player out of the prize or let them back in). /team shows a player's community team and its invite link, /teams the week's
 // top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /parody (admins)
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
+// /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -22,6 +23,7 @@ import { makePack } from './stickers.js';
 import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { teamMessage, teamBoard, adminTeams } from './teams.js';
 import { parodyCron, parodyCommand } from './parody.js';
+import { chatAdmin, chatCleanup } from './chat.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward } from './growth.js';
@@ -74,7 +76,7 @@ export async function tg(env, method, body) {
 }
 
 // Admins are the players listed in ADMIN_PLAYERS (account ids, comma separated); the bot reaches them through their Telegram id.
-async function adminTgIds(env) {
+export async function adminTgIds(env) {
   const ids = String(env.ADMIN_PLAYERS || '').split(',').map(Number).filter(n => n > 0);
   if (!ids.length) return [];
   const { results } = await env.DB.prepare(`SELECT tg_id FROM players WHERE tg_id IS NOT NULL AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
@@ -220,6 +222,7 @@ export async function webhook(req, env) {
       await tg(env, 'sendMessage', { chat_id, text: p ? `🚫 Removed ${p.name}'s custom worm (player ${p.id}). They can't make a new one now.\n/wormon ${p.id} lets them again.` : 'No custom worm with that id. Copy it from the message with the picture: /wormoff <id>' }) }
     else await tg(env, 'sendMessage', { chat_id, text: a && await wormOn(env, a) ? `✅ Player ${a} can make custom worms again.` : 'Nothing to undo for that player. Use /wormon <player id>.' });
   }
+  else if ((cmd === '/chatdel' || cmd === '/chatmute') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await chatAdmin(env, cmd, arg) });   // chat.js
   else if (cmd === '/parody' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await parodyCommand(env, arg) });   // parody.js
   else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
   else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
@@ -310,7 +313,7 @@ export async function cron(env, now = Date.now()) {
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
-  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [weekly, reminders, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
