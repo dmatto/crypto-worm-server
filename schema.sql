@@ -425,3 +425,10 @@ CREATE TABLE IF NOT EXISTS bot_starts (
   nudged INTEGER NOT NULL DEFAULT 0        -- when the reminder went out (negative: it failed; -1: they sent /stop; 0: not yet)
 );
 CREATE INDEX IF NOT EXISTS bot_starts_first ON bot_starts (nudged, first);
+-- The Community burn teaser on Home (burn.js, Damian 2026-10-23): who opened the "Coming soon" card and who tapped "I want this".
+-- Nothing is burned yet.
+CREATE TABLE IF NOT EXISTS burn_votes (
+  player INTEGER PRIMARY KEY,
+  opened INTEGER NOT NULL,                 -- when they first opened the card
+  want   INTEGER NOT NULL DEFAULT 0        -- when they tapped "I want this" (0: not yet)
+);

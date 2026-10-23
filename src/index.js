@@ -35,6 +35,7 @@
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all&holders=1                    -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
+//   GET  /burn, POST /burn/open, /burn/vote                      the Community burn teaser on Home: nothing burned yet, "I want this" votes (see burn.js)
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
@@ -64,6 +65,7 @@ import { handle as wormHandle, image as wormImage, mine as wormMine, admins as w
 import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
 import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
+import { handle as burnHandle } from './burn.js';
 export { Match, Lobby, Royale };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -385,6 +387,10 @@ const app = {
       if (await isSim(env, me.id)) return json({ on: false }, 200, cors);                  // never for simulated players
       const r = await prizeHandle(path, env, me, body); if (!r) return json({ error: 'not found' }, 404, cors);
       return json(r.error ? { error: r.error } : r, r.status || 200, cors);
+    }
+    if (path === '/burn' || path.startsWith('/burn/')) {                                    // the Community burn teaser (see burn.js)
+      const r = await burnHandle(path, env, me, req.method, await isSim(env, me.id));
+      return r ? json(r, 200, cors) : json({ error: 'not found' }, 404, cors);
     }
     if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);

@@ -8,6 +8,7 @@
 // top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /parody (admins)
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
+// /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js).
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -23,6 +24,7 @@ import { holderCron } from './holders.js';
 import { makePack } from './stickers.js';
 import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { teamMessage, teamBoard, adminTeams } from './teams.js';
+import { votesText as burnVotes } from './burn.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
@@ -239,6 +241,7 @@ export async function webhook(req, env) {
       await tg(env, 'sendMessage', { chat_id, text: today ? '📣 Queued. A note already went out today, so this one goes to the group and every player tomorrow (one note a day).' : '📣 Sending now to the group and every Telegram player (except those who sent /stop).' }) }
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
+  else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
     const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
     if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));

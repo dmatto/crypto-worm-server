@@ -214,6 +214,21 @@ test('growth: every START is logged; one reminder an hour later, in their langua
   assert.match(calls[0][1].text, /Bot START, last 7 days<\/b>: 3 people · 1 opened the game · 1 got the reminder, 0 of them came/);
 });
 
+test('burn teaser: one vote per player, opens counted, bots ignored, /burnvotes for admins', async () => {
+  const env = makeEnv(); calls.length = 0;
+  const admin = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') }), a = await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana') });
+  const bot = await call(env, '/auth/guest', {}); env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(bot.player.id);
+  assert.deepEqual(await call(env, '/burn', undefined, a.token), { status: 200, soon: true, burned: 0, goal: 1000000, votes: 0, mine: false });
+  await call(env, '/burn/open', {}, a.token); await call(env, '/burn/open', {}, admin.token);
+  const v = await call(env, '/burn/vote', {}, a.token); assert.equal(v.votes, 1); assert.equal(v.mine, true);
+  assert.equal((await call(env, '/burn/vote', {}, a.token)).votes, 1);                     // once per player
+  assert.equal((await call(env, '/burn/vote', {}, bot.token)).votes, 1);                   // load-test bots don't count
+  assert.equal((await call(env, '/burn', undefined, admin.token)).mine, false);
+  calls.length = 0; await hook(env, msg('/burnvotes', 55)); assert.equal(calls.length, 0);   // admins only
+  await hook(env, msg('/burnvotes', 42));
+  assert.match(calls[0][1].text, /Opened the card: 2 players\nTapped "I want this": 1 \(50% of those who opened it\)/); assert.match(calls[0][1].text, /\d{4}-\d\d-\d\d: 1/);
+});
+
 test('growth: a week that rolls over is kept for the top 10', async () => {
   const env = makeEnv();
   const a = await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana') });
