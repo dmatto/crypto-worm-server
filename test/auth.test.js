@@ -40,6 +40,8 @@ test('solana: verifies a wallet signature over the sign-in message', async () =>
   const other = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
   const bad = b58(new Uint8Array(await crypto.subtle.sign('Ed25519', other.privateKey, new TextEncoder().encode(message))));
   assert.equal(await verifySolana({ address, message, signature: bad }, 'example.app', 'S'), false);
+  assert.doesNotMatch(message, /wants you to sign in/);                                            // Phantom would check it as a SIWS request
+  assert.match(message, /example\.app/);
 });
 
 test('session tokens', async () => {
@@ -48,4 +50,12 @@ test('session tokens', async () => {
   assert.equal(await readToken(t, 'other'), null);
   assert.equal(await readToken(t.replace(/^7\./, '8.'), 'sec'), null);
   assert.equal(await readToken(t, 'sec', Date.now() / 1000 + 31 * 86400), null);
+});
+
+test('friend codes: round trip, and a changed code is refused', async () => {
+  const { friendCode, readFriendCode } = await import('../src/auth.js');
+  const code = await friendCode(1234, 's');
+  assert.equal(await readFriendCode(code.toLowerCase(), 's'), 1234);
+  assert.equal(await readFriendCode(code, 'other'), null);
+  assert.equal(await readFriendCode((1235).toString(36).toUpperCase() + code.slice(-4), 's'), null);
 });
