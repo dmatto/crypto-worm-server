@@ -425,6 +425,13 @@ CREATE TABLE IF NOT EXISTS bot_starts (
   nudged INTEGER NOT NULL DEFAULT 0        -- when the reminder went out (negative: it failed; -1: they sent /stop; 0: not yet)
 );
 CREATE INDEX IF NOT EXISTS bot_starts_first ON bot_starts (nudged, first);
+-- W and L for matches played on the phone (growth.js result, Damian 2026-10-23): when this player's last one was counted,
+-- so a match can only count once every 20 s.
+CREATE TABLE IF NOT EXISTS wl_last (
+  player INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL
+);
+
 -- The Community burn teaser on Home (burn.js, Damian 2026-10-23): who opened the "Coming soon" card and who tapped "I want this".
 -- Nothing is burned yet.
 CREATE TABLE IF NOT EXISTS burn_votes (

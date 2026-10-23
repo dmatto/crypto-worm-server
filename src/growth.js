@@ -5,6 +5,8 @@
 //   POST /started  {mode}                -> {ok}        the game started a match or a mini game (counted once per player)
 //   POST /played   {mode, feed?}         -> {played, rewards: [{amount, reason, note}]}   the game finished a match (any mode); feed:
 //                                                      up to 3 of its best moments for the live feed on Home (see feed.js)
+//   POST /result   {mode, won}           -> {counted, wins, losses}   a match won or lost on this phone (CPU, quick-match bot,
+//                                                      Daily island, campaign, Worm World, Royale): the W and L next to the name
 //   POST /rewards                        -> {rewards}   play money the server owes this player (invite rewards), claimed once
 //   GET  /invites                        -> {joined, counted, loyal, earned, next, milestones, friends, shared}   the Invite page
 //   POST /share/done {via}               -> {bonus, rewards}   the player shared their invite link: +30 once per UTC day
@@ -137,6 +139,21 @@ export async function played(env, me, mode, cc, feed) {
   if (r && r.played === LOYAL_MATCHES && r.invited_by) await payLoyal(env, me, r);
   if (r && feed) await moments(env, me, mode, feed, now).catch(() => 0);          // the match's best moments, for the live feed on Home
   return { played: m ? m.played : 0, rewards: await claim(env, me.id) };
+}
+
+// W and L for every kind of match (Damian 2026-10-23: "I want that every type of match is counted"). Online 1-on-1 matches
+// and online Royale wins are counted by the server itself (match.js, royale.js); everything else the game reports here when
+// it ends: matches against the CPU, quick-match bots, Daily island, campaign missions, Worm World battles, solo Royale, and an
+// online Royale knock-out. Two players on one phone don't count (both sides are the same player). At most one every 20 s.
+export const RESULT_MODES = new Set(['cpu', 'bot', 'daily', 'camp', 'map', 'royale']);
+export async function result(env, me, mode, won) {
+  const now = Date.now();
+  if (!RESULT_MODES.has(mode) || typeof won !== 'boolean') return { counted: false, wins: me.wins | 0, losses: me.losses | 0 };
+  const ok = await env.DB.prepare('INSERT INTO wl_last (player, at) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET at = excluded.at WHERE wl_last.at < ? RETURNING at')
+    .bind(me.id, now, now - PLAYED_GAP_MS).first();
+  if (!ok) return { counted: false, wins: me.wins | 0, losses: me.losses | 0 };
+  const p = await env.DB.prepare('UPDATE players SET wins = wins + ?, losses = losses + ? WHERE id = ? RETURNING wins, losses').bind(won ? 1 : 0, won ? 0 : 1, me.id).first();
+  return { counted: true, wins: p ? p.wins : 0, losses: p ? p.losses : 0 };
 }
 
 export async function setRemind(env, me, on) {

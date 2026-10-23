@@ -91,6 +91,18 @@ test('growth: invite week: the inviter gets +1,500 per friend, the friend +200; 
   } finally { PROMO.until = 0 }
 });
 
+test('growth: W and L from matches on the phone: every kind counts, one every 20 s, two players on one phone and junk do not', async () => {
+  const env = makeEnv(), me = await call(env, '/auth/guest', {});
+  assert.deepEqual(await call(env, '/result', { mode: 'cpu', won: true }, me.token), { status: 200, counted: true, wins: 1, losses: 0 });
+  assert.equal((await call(env, '/result', { mode: 'camp', won: false }, me.token)).counted, false);      // 20 s gap
+  env.sql.prepare('UPDATE wl_last SET at = at - 21000').run();
+  assert.deepEqual(await call(env, '/result', { mode: 'royale', won: false }, me.token), { status: 200, counted: true, wins: 1, losses: 1 });
+  env.sql.prepare('UPDATE wl_last SET at = at - 21000').run();
+  for (const b of [{ mode: '2p', won: true }, { mode: 'online', won: true }, { mode: 'cpu', won: 'yes' }, { mode: 'cpu' }]) assert.equal((await call(env, '/result', b, me.token)).counted, false);
+  assert.equal((await call(env, '/result', { mode: 'cpu', won: true })).status, 401);
+  const p = (await call(env, '/me', undefined, me.token)).player; assert.deepEqual([p.wins, p.losses], [1, 1]);
+});
+
 test('growth: at most 10 rewarded invites per inviter a day', async () => {
   const env = makeEnv();
   const host = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
