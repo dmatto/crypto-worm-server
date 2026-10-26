@@ -141,9 +141,9 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
 
 // A club that isn't in the list. Grok says whether it is a real football club and gives its usual name, country and colors.
 const SUGGEST_CHECK = 'A player of a football game wants to support a club that is not in our list. Is this a real, existing football (soccer) club '
-  + '(any level: national league, regional league, women\'s club, fan-owned club)? Answer JSON {"real": true|false, "name": "the club\'s common name in Latin letters, '
-  + 'max 30 characters", "cc": "ISO 3166 two-letter country code (ENG, SCO, WAL or NIR for the UK nations)", "city": "home city", "colors": ["#rrggbb", "#rrggbb"] the two main '
-  + 'home kit colors, "same": "if this is the same club as one of the listed near matches, its id, else null"}. Say real: false for a made-up name, a joke, an insult, '
+  + '(any level: national league, regional league, women\'s club, fan-owned club)? Answer JSON {"real": true|false, "name": "the club\'s official full name as the club writes it, in Latin letters with its accents, '
+  + 'max 60 characters", "cc": "ISO 3166 two-letter country code (ENG, SCO, WAL or NIR for the UK nations)", "city": "home city", "colors": ["#rrggbb", "#rrggbb"] the club colors '
+  + 'it is known for, 2 or 3 of them, the main one first, "same": "if this is the same club as one of the listed near matches, its id, else null"}. Say real: false for a made-up name, a joke, an insult, '
   + 'a national team, a person, a company or anything that is not a football club.';
 async function suggest(env, me, body, opts, now) {
   const name = String(body.name || '').normalize('NFC').replace(/\s+/g, ' ').trim().slice(0, 40), country = String(body.country || '').replace(/\s+/g, ' ').trim().slice(0, 40);
@@ -163,13 +163,13 @@ async function suggest(env, me, body, opts, now) {
     return { error: 'we could not check that club right now: try again in a minute', status: 502 } }
   if (!ok) return { error: 'we could not find that club: check the name, or pick it from the list', status: 422 };
   if (same) { const e = await setClub(env, me, same.id, now); return e || { ok: true, club: same, found: true } }
-  const cc = String(v.cc || '').toUpperCase().replace(/^(GB|UK)$/, 'ENG'), clean = String(v.name || name).replace(/\s+/g, ' ').trim().slice(0, 30);
+  const cc = String(v.cc || '').toUpperCase().replace(/^(GB|UK)$/, 'ENG'), clean = String(v.name || name).replace(/\s+/g, ' ').trim().slice(0, 60);
   if (!/^[A-Z]{2,3}$/.test(cc) || clean.length < 2) return { error: 'we could not find that club: check the name, or pick it from the list', status: 422 };
-  const c = (Array.isArray(v.colors) ? v.colors : []).filter(x => /^#[0-9a-fA-F]{6}$/.test(x)).slice(0, 2).map(x => x.slice(1).toLowerCase());
+  const c = (Array.isArray(v.colors) ? v.colors : []).filter(x => /^#[0-9a-fA-F]{6}$/.test(x)).slice(0, 3).map(x => x.slice(1).toLowerCase());
   const slug = fold(clean).replace(/ /g, '-').slice(0, 28).replace(/-+$/, ''), id = 'x' + cc.toLowerCase().slice(0, 3) + '-' + slug;
   if (!ID.test(id)) return { error: 'we could not find that club: check the name, or pick it from the list', status: 422 };
   await q(env, `INSERT INTO club_extra (id, name, cc, c, city, player, at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'on') ON CONFLICT(id) DO NOTHING`,
-    id, clean, cc, c.length === 2 ? c.join(',') : null, String(v.city || '').slice(0, 40) || null, me.id, now).run();
+    id, clean, cc, c.length >= 2 ? c.join(',') : null, String(v.city || '').slice(0, 40) || null, me.id, now).run();
   extraAt = 0;
   const club = await clubInfo(env, id); if (!club) return { error: 'that club can not be picked', status: 403 };
   const e = await setClub(env, me, id, now); if (e) return e;
@@ -182,8 +182,8 @@ export function search(text, n = 8) {
   const f = fold(text); if (!f) return [];
   const out = [];
   for (const id in CLUBS) {
-    const r = CLUBS[id], name = fold(r[0]);
-    const score = name === f ? 0 : name.startsWith(f) ? 1 : (' ' + name).includes(' ' + f) ? 2 : name.includes(f) ? 3 : -1;
+    const r = CLUBS[id], sc = name => name === f ? 0 : name.startsWith(f) ? 1 : (' ' + name).includes(' ' + f) ? 2 : name.includes(f) ? 3 : -1;
+    const a = sc(fold(r[0])), b = r[4] ? sc(fold(r[4])) : -1, score = a < 0 ? b : b < 0 ? a : Math.min(a, b);
     if (score >= 0) out.push([score, r[3] < 0 ? 99 : r[3], id]);
   }
   return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]).slice(0, n).map(x => lite(x[2]));

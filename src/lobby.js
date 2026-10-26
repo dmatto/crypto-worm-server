@@ -30,7 +30,7 @@ const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.te
 const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000,
   BUSY_LOBBY = 40, LIST_GAP_MS = 1000, ROYALE_LATE_MS = 4000, QUICK_MS = 12000, QUICK_GAP = 2, QUICK_MAX = 50;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
 // the football club from index.js's x-club header ({id, n, c} as JSON), for the club colors next to a name
-function clubFrom(h) { try { const c = JSON.parse(decodeURIComponent(String(h || ''))); return c && typeof c.id === 'string' && typeof c.n === 'string' ? { id: c.id.slice(0, 48), n: c.n.slice(0, 40), c: Array.isArray(c.c) ? c.c.slice(0, 2) : null } : null } catch { return null } }
+function clubFrom(h) { try { const c = JSON.parse(decodeURIComponent(String(h || ''))); return c && typeof c.id === 'string' && typeof c.n === 'string' ? { id: c.id.slice(0, 48), n: c.n.slice(0, 64), c: Array.isArray(c.c) ? c.c.slice(0, 3).filter(x => /^#[0-9a-f]{6}$/i.test(x)) : null } : null } catch { return null } }
 const open = ws => ws.readyState == null || ws.readyState === 1;   // a closing socket can still be listed until its close event has run
 
 export class Lobby {

@@ -192,7 +192,7 @@ export class Match {
 // a club from index.js's x-club header ({id, n, c} as JSON), checked for shape
 function clubFrom(h) {
   try { const c = JSON.parse(decodeURIComponent(String(h || ''))); if (!c || typeof c.id !== 'string' || typeof c.n !== 'string') return null;
-    return { id: c.id.slice(0, 48), n: c.n.slice(0, 40), c: Array.isArray(c.c) ? c.c.slice(0, 2).filter(x => /^#[0-9a-f]{6}$/i.test(x)) : null } } catch { return null }
+    return { id: c.id.slice(0, 48), n: c.n.slice(0, 64), c: Array.isArray(c.c) ? c.c.slice(0, 3).filter(x => /^#[0-9a-f]{6}$/i.test(x)) : null } } catch { return null }
 }
 const derbyOf = club => club && club[0] && club[1] ? derbyName(club[0].id, club[1].id) : null;
 
