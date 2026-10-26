@@ -41,6 +41,7 @@
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /result, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
 //   GET  /holder, POST /holder/refresh, /holder/chest, /holder/toast   $CWORM holder rewards (see holders.js); the session carries `holder` too
+//   GET  /clubs, POST /me/club {id}, POST /clubs/suggest {name, country}   the football club a player supports, the club war (see clubs.js)
 //   GET  /teams, /teams/<id>, POST /teams/create, /teams/join, /teams/leave, /teams/kick, /teams/edit, /teams/logo, GET /teams/logo/<id>.jpg   community teams (see teams.js)
 //   GET  /worm, POST /worm/make, /worm/pick, /worm/remove, /worm/report, GET /worm/img/<id>.jpg   custom photo worms for holders (see
 //                                                               worms.js); the session's player.cw, ranking rows and match flags carry the portrait's id
@@ -54,7 +55,7 @@ import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySo
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
 import { Royale } from './royale.js';
-import { webhook, setup, cron, tellAdmins, tellAdminsPhoto } from './bot.js';
+import { webhook, setup, cron, tellAdmins, tellAdminsPhoto, tellAdminsText } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { weekStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
@@ -66,6 +67,7 @@ import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
 import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
+import { handle as clubHandle, clubScore, clubOf, clubsInfo, sessionClub, setClub, mergeClubs } from './clubs.js';
 export { Match, Lobby, Royale };
 
 const json = (body, status = 200, cors = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...cors } });
@@ -86,6 +88,7 @@ async function addScore(env, me, amount, imported) {
     s.total += amount; s.week += amount; s.day += amount; s.last = now;
     await logScore(env, me.id, amount, now);                      // the weekly prize chart and its fair-play log
     await teamScore(env, me.id, amount, now).catch(() => { });    // the same amount scores for the player's community team
+    await clubScore(env, me.id, amount, now).catch(() => { });    // and for the football club they support (double on its derby day)
   }
   await env.DB.prepare(`INSERT INTO cworm_scores (player, total, week_start, week, day_start, day, last, imported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(player) DO UPDATE SET total = excluded.total, week_start = excluded.week_start, week = excluded.week, day_start = excluded.day_start, day = excluded.day, last = excluded.last, imported = excluded.imported`)
@@ -106,15 +109,17 @@ async function ranking(env, period, me, holders) {
     : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
   if (holders) rows = rows.filter(r => r.tier > 0);
   const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...(holders ? { holders: true } : {}), ...place(rows, me, wormAdmins(env)) };
+  const shown = [...out.top, ...(out.me ? [out.me] : [])], clubs = await clubsInfo(env, shown.map(r => r.club)).catch(() => new Map());
+  for (const r of shown) if (r.club) { const c = clubs.get(r.club); if (c) r.club = { id: c.id, n: c.n, c: c.c }; else delete r.club }   // the club's name and colors
   if (period === 'week') {                                        // 🎟️ next to players who did every weekly prize step
     const t = await tickets(env, [...out.top.map(r => r.id), ...(out.me ? [out.me.id] : [])]).catch(() => new Set());
     for (const r of [...out.top, ...(out.me ? [out.me] : [])]) if (t.has(r.id)) r.ticket = true;
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av, tt.tag AS team', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team";   // holder badge, avatar, custom worm and team tag next to the name
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av, tt.tag AS team, pc.club AS club', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team LEFT JOIN player_club pc ON pc.player = p.id";   // holder badge, avatar, custom worm, team tag and football club next to the name
 function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.club ? { club: r.club } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -157,6 +162,8 @@ const publicPlayer = p => p && { id: p.id, name: p.name, tg: p.tg_id != null, wa
 
 async function playerById(env, id) { return env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(id).first() }
 const AVATAR = /^[a-z0-9]{2,16}$/;
+// a player's club for the match and lobby servers, as JSON {id, n, c} ('' for none): they show it and spot derbies
+const clubHeader = (env, id) => clubOf(env, id).then(c => c ? encodeURIComponent(JSON.stringify({ id: c.id, n: c.n, c: c.c })) : '').catch(() => '');
 const avatarOf = (env, id) => env.DB.prepare('SELECT av FROM player_avatar WHERE player = ?').bind(id).first().then(r => r ? r.av : null).catch(() => null);
 
 async function signedIn(req, env) {
@@ -168,9 +175,9 @@ async function signedIn(req, env) {
 async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
-  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id);
+  const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id), club = await sessionClub(env, p.id).catch(() => null);
   const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id), tchat = tm ? await teamUnread(env, p.id, tm.id) : 0, dms = await dmUnread(env, p.id), freq = await requestCount(env, p.id);
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}), ...(dms ? { dms } : {}), ...(freq ? { freq } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, club, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}), ...(dms ? { dms } : {}), ...(freq ? { freq } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -181,6 +188,7 @@ async function link(env, me, target) {
   if ((me.tg_id != null && target.tg_id != null) || (me.wallet && target.wallet)) return target;
   const a = me.id, b = target.id, q = (s, ...v) => env.DB.prepare(s).bind(...v);
   await mergeTeams(env, a, b);                                                         // community team: the target's own team wins
+  await mergeClubs(env, a, b).catch(() => { });                                       // football club: the target's own pick wins
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
@@ -323,6 +331,7 @@ const app = {
       h.set('x-player', String(me.id)); h.set('x-name', encodeURIComponent(me.name)); h.set('x-wins', String(me.wins)); h.set('x-losses', String(me.losses));
       h.set('x-country', geo);
       const hb = await badge(env, me.id); h.set('x-tier', String(hb.tier)); h.set('x-stars', String(hb.stars)); h.set('x-toast', hb.toast ? '1' : '0');   // holder badge, vouched for by the server
+      h.set('x-club', await clubHeader(env, me.id));                                          // the football club they support
       const u = new URL(req.url); if (await isSim(env, me.id)) u.searchParams.set('hidden', '1');   // simulated players count as online but can't be challenged
       return lobbyOf(env).fetch(new Request(u.toString(), { headers: h }));
     }
@@ -345,6 +354,12 @@ const app = {
       const av = String(body.av || '');
       if (!AVATAR.test(av)) return json({ error: 'pick one of the avatars' }, 400, cors);
       await env.DB.prepare('INSERT INTO player_avatar (player, av) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET av = excluded.av').bind(me.id, av).run();
+      return session(env, me, cors, false);
+    }
+    if (path === '/me/club' && req.method === 'POST') {                                    // the football club this player supports (clubs.js)
+      if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
+      const r = await setClub(env, me, body.id == null ? null : String(body.id).slice(0, 48));
+      if (r) { const { status, ...out } = r; return json(out, status || 400, cors) }
       return session(env, me, cors, false);
     }
     // Disconnect the wallet. Only for accounts that also sign in with Telegram: for a wallet-only account the wallet is the
@@ -413,6 +428,12 @@ const app = {
       const r = await teamHandle(path, env, me, body, { lobby: lobbyOf(env), period: url.searchParams.get('period'), q: url.searchParams.get('q'), post: req.method === 'POST', tell, origin: env.PUBLIC_URL || url.origin });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
+    if (path === '/clubs' || path.startsWith('/clubs/')) {                                 // football clubs and the club war (see clubs.js)
+      const tell = text => { const t = tellAdminsText(env, text).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
+      if (req.method === 'POST' && await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
+      const r = await clubHandle(path, env, me, body, { post: req.method === 'POST', tell, cc: geo || null });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
+    }
     if (path === '/chat' || path.startsWith('/chat/')) {                                   // World and Team chat (see chat.js)
       if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
       const wait = p => { if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p };
@@ -438,7 +459,8 @@ const app = {
     }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);
     if (path === '/match/quick' && req.method === 'POST') {                          // {lvl, cancel}: the player's $CWORM level, or take the waiting spot back
-      const q = new URLSearchParams({ player: me.id, name: me.name || 'Worm', ...(Number.isInteger(body.lvl) ? { lvl: body.lvl } : {}), ...(body.cancel ? { cancel: 1 } : {}) });
+      const club = body.cancel ? null : await clubOf(env, me.id).catch(() => null);          // Quick match pairs rival clubs' fans first (a derby)
+      const q = new URLSearchParams({ player: me.id, name: me.name || 'Worm', ...(Number.isInteger(body.lvl) ? { lvl: body.lvl } : {}), ...(body.cancel ? { cancel: 1 } : {}), ...(club ? { club: club.id } : {}) });
       return json(await (await lobbyOf(env).fetch('https://lobby/?' + q)).json(), 200, cors);
     }
     const ws = path.match(/^\/match\/([A-Z2-9]{6})\/ws$/);
@@ -448,6 +470,7 @@ const app = {
       h.set('x-cw', (await wormMine(env, me.id, hb.tier)) || '');                            // and their custom worm, while they hold
       h.set('x-av', (await avatarOf(env, me.id)) || '');                                     // the avatar they picked, for the battle's corners
       h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
+      h.set('x-club', await clubHeader(env, me.id));                                          // their football club: the scarf, the name tag, a derby
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }
     return json({ error: 'not found' }, 404, cors);

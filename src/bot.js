@@ -5,7 +5,9 @@
 // "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
 // the week that ended, with the payout lines and the score logs as files; /prize skip <id> and /prize unskip <id> take a
 // player out of the prize or let them back in). /team shows a player's community team and its invite link, /teams the week's
-// top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /parody (admins)
+// top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /clubs: the
+// football club war this week (also in groups); admins also see clubs players added, /clubs off <id> takes one off; /derby (admins)
+// calls a derby day and posts it to the group (clubs.js). /parody (admins)
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
 // /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js).
@@ -24,6 +26,7 @@ import { holderCron } from './holders.js';
 import { makePack } from './stickers.js';
 import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { teamMessage, teamBoard, adminTeams } from './teams.js';
+import { clubBoard, adminClubs, derbyCommand, postDerby } from './clubs.js';
 import { votesText as burnVotes } from './burn.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
@@ -132,6 +135,12 @@ export async function tellAdminsPhoto(env, photo, caption) {
   }
 }
 
+// A plain note for every admin (a club a player added, see clubs.js).
+export async function tellAdminsText(env, text) {
+  if (!env.BOT_TOKEN) return;
+  for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: String(text).slice(0, 4000), disable_web_page_preview: true });
+}
+
 // /feedback (admins only): every message so far as a spreadsheet, plus one line per tester with their wallet, for the airdrop.
 const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
 const toCsv = rows => '\ufeff' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
@@ -200,6 +209,7 @@ export async function webhook(req, env) {
     else if (cmd === '/top') await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
     else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
     else if ((cmd === '/teams' || cmd === '/team') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
+    else if ((cmd === '/clubs' || cmd === '/club') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await clubBoard(env) });
     else if (cmd === '/setgroup' && await isAdmin(env, m.from)) {
       await setGroup(env, chat_id);
       await tg(env, 'sendMessage', { chat_id, text: '✅ Done. Every Monday the bot posts last week\'s top 10 here.' });
@@ -227,6 +237,16 @@ export async function webhook(req, env) {
   else if (cmd === '/teams' && env.DB) {                                               // the week's top teams; admins get the full list, /teams off <id> removes one
     if (await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await adminTeams(env, arg), disable_web_page_preview: true });
     else await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
+  }
+  else if ((cmd === '/clubs' || cmd === '/club') && env.DB) {                         // football clubs (clubs.js): the club war; admins also see added clubs, /clubs off <id>
+    if (await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await adminClubs(env, arg), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, ...await clubBoard(env) });
+  }
+  else if (cmd === '/derby' && env.DB && await isAdmin(env, m.from)) {                // admins: a derby day, posted to the group
+    const p = await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    const r = await derbyCommand(env, arg, p && p.id);
+    const posted = r.post ? await postDerby(env, r.post) : null;
+    await tg(env, 'sendMessage', { chat_id, text: r.text + (r.post ? (posted ? '\n\n📣 Posted in the community group.' : '\n\nThe group post did not go out: is the bot set up in the group (/setgroup)?') : '') });
   }
   else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
   else if (cmd === '/stop') {

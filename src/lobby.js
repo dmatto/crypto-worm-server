@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st}], online, playing, live: [{code, names, cc, viewers, at, ids}], royale: {n, left} | null}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st, club?: {id, n, c}}], online, playing, live: [{code, names, cc, viewers, at, ids}], royale: {n, left} | null}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}    whale {name, tier}
 //
 // tier and st are the player's $CWORM holder tier (0-5) and hold stars (0-4), from the server (see holders.js). A Whale or Big
@@ -23,11 +23,14 @@
 import { newCode } from './match.js';
 import { ROYALE_WAIT_MS } from './royale.js';
 import { announce } from './growth.js';
+import { derbyName } from './clubs.js';
 
 // Two-letter country from Cloudflare (by connection), for the flag next to a player's name; null when unknown.
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
 const LIVE_MAX = 50, LIVE_MAX_MS = 40 * 60 * 1000, MAX_LIST = 100, MAX_MSG = 1024, CHALLENGE_GAP_MS = 1500, NOTIFY_GAP_MS = 5 * 60 * 1000, WHALE_GAP_MS = 3 * 60 * 1000,
   BUSY_LOBBY = 40, LIST_GAP_MS = 1000, ROYALE_LATE_MS = 4000, QUICK_MS = 12000, QUICK_GAP = 2, QUICK_MAX = 50;   // with this many connected, list updates are bundled: at most one a second (else every join sends one to everyone)
+// the football club from index.js's x-club header ({id, n, c} as JSON), for the club colors next to a name
+function clubFrom(h) { try { const c = JSON.parse(decodeURIComponent(String(h || ''))); return c && typeof c.id === 'string' && typeof c.n === 'string' ? { id: c.id.slice(0, 48), n: c.n.slice(0, 40), c: Array.isArray(c.c) ? c.c.slice(0, 2) : null } : null } catch { return null } }
 const open = ws => ws.readyState == null || ws.readyState === 1;   // a closing socket can still be listed until its close event has run
 
 export class Lobby {
@@ -101,22 +104,25 @@ export class Lobby {
   // finds nobody waiting at their level (their $CWORM level, 0-29, within QUICK_GAP) gets a fresh match code and waits; a
   // player who does gets that code and the waiting player's name and level. The game waits a few seconds, then plays a bot
   // of the same level instead and takes its spot back (cancel). A level of -1 (an older game) matches anyone.
+  // Football clubs (clubs.js): among the players waiting at the level, a fan of a rival club comes first (a derby), and the
+  // answer carries the opponent's club.
   async quick(player, q) {
     const now = Date.now(), lvl = q.has('lvl') ? Math.max(-1, Math.min(29, Math.trunc(Number(q.get('lvl'))) || 0)) : -1;
     let list = ((await this.ctx.storage.get('quick')) || []).filter(w => w.player !== player && now - w.at < QUICK_MS);
     const ok = w => w.lvl < 0 || lvl < 0 || Math.abs(w.lvl - lvl) <= QUICK_GAP;
-    const w = q.get('cancel') === '1' ? null : list.filter(ok).sort((a, b) => Math.abs(a.lvl - lvl) - Math.abs(b.lvl - lvl) || a.at - b.at)[0];
+    const club = String(q.get('club') || '').slice(0, 48) || null, derby = w => derbyName(club, w.club) ? 0 : 1;
+    const w = q.get('cancel') === '1' ? null : list.filter(ok).sort((a, b) => derby(a) - derby(b) || Math.abs(a.lvl - lvl) - Math.abs(b.lvl - lvl) || a.at - b.at)[0];
     if (w) list = list.filter(x => x !== w);
-    else if (q.get('cancel') !== '1') list.push({ code: newCode(), player, lvl, name: String(q.get('name') || 'Worm').slice(0, 24), at: now });
+    else if (q.get('cancel') !== '1') list.push({ code: newCode(), player, lvl, name: String(q.get('name') || 'Worm').slice(0, 24), at: now, ...(club ? { club } : {}) });
     await this.ctx.storage.put('quick', list.slice(-QUICK_MAX));
     if (q.get('cancel') === '1') return Response.json({ ok: true });
-    return Response.json(w ? { code: w.code, side: 1, opp: { name: w.name, lvl: w.lvl } } : { code: list.at(-1).code, side: 0 });
+    return Response.json(w ? { code: w.code, side: 1, opp: { name: w.name, lvl: w.lvl }, ...(derbyName(club, w.club) ? { derby: derbyName(club, w.club) } : {}) } : { code: list.at(-1).code, side: 0 });
   }
 
   async enter(req) {
     const h = req.headers, id = Number(h.get('x-player')), n = (k, max) => Math.max(0, Math.min(max, Number(h.get(k)) || 0));
     const me = { id, name: decodeURIComponent(h.get('x-name') || 'Worm').slice(0, 40), wins: Number(h.get('x-wins')) || 0, losses: Number(h.get('x-losses')) || 0,
-      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')), tier: n('x-tier', 5), st: n('x-stars', 4) };
+      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')), tier: n('x-tier', 5), st: n('x-stars', 4), club: clubFrom(h.get('x-club')) };
     for (const old of this.ctx.getWebSockets(String(id))) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(id)]);
@@ -161,7 +167,7 @@ export class Lobby {
     this.listTimer = setTimeout(() => { this.listTimer = null; this.listAt = Date.now(); this.sendList() }, Math.max(0, (this.listAt || 0) + LIST_GAP_MS - Date.now()));
   }
   sendList(except) {
-    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0 }));
+    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st, club }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0, ...(club ? { club } : {}) }));
     const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [], royale: this.royaleOpen() });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except && open(ws)) try { ws.send(out) } catch { }
   }

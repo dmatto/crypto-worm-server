@@ -84,3 +84,14 @@ test('lobby: each player carries their country for the flag, unknown as null', a
   const a = await at(1, 'Ana', 'uy'); await at(2, 'Bo', 'XX');
   assert.deepEqual(last(a, 'list').players.map(p => [p.name, p.cc]), [['Ana', 'UY'], ['Bo', null]]);
 });
+
+test('lobby: Quick match pairs a rival club\'s fan first (a derby), and says so', async () => {
+  const store = new Map(), c = { ...ctx(), storage: { get: async k => store.get(k), put: async (k, v) => void store.set(k, v), delete: async k => void store.delete(k) } }, l = new Lobby(c, {});
+  const q = async (id, lvl, club = '') => (await l.fetch(new Request(`https://lobby/?player=${id}&lvl=${lvl}&name=P${id}` + (club ? '&club=' + club : '')))).json();
+  const now = Date.now(); store.set('quick', [{ code: 'AAAAAA', player: 1, lvl: 5, name: 'P1', at: now }, { code: 'BBBBBB', player: 2, lvl: 6, name: 'P2', at: now, club: 'eng-liverpool' },
+    { code: 'CCCCCC', player: 3, lvl: 7, name: 'P3', at: now, club: 'uy-nacional-de-montevideo' }]);   // three players waiting
+  const me = await q(4, 5, 'uy-ca-penarol');
+  assert.equal(me.code, 'CCCCCC'); assert.ok(me.derby);                               // the rival's fan, though others are closer in level
+  const next = await q(5, 5);
+  assert.equal(next.code, 'AAAAAA'); assert.equal(next.derby, undefined);
+});

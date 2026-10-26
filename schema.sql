@@ -439,3 +439,58 @@ CREATE TABLE IF NOT EXISTS burn_votes (
   opened INTEGER NOT NULL,                 -- when they first opened the card
   want   INTEGER NOT NULL DEFAULT 0        -- when they tapped "I want this" (0: not yet)
 );
+
+-- Football clubs (src/clubs.js, Damian 2026-10-26): the club each player supports (one; changes once a week), the club war's
+-- weekly points (fans' banked play money plus online wins over other clubs' fans, more for a derby), derby days the admins call,
+-- and clubs players asked for that weren't in the list (src/clubs-data.js). Names and colors only, never crests. Play money, no prize.
+CREATE TABLE IF NOT EXISTS player_club (
+  player  INTEGER PRIMARY KEY,
+  club    TEXT NOT NULL,                   -- an id from clubs-data.js (cc-slug) or club_extra (x<cc>-slug)
+  at      INTEGER NOT NULL                 -- when it was picked: it can change again CHANGE_MS later
+);
+CREATE INDEX IF NOT EXISTS player_club_club ON player_club (club);
+CREATE TABLE IF NOT EXISTS club_points (
+  club       TEXT NOT NULL,
+  week_start INTEGER NOT NULL,             -- Monday 00:00 UTC
+  player     INTEGER NOT NULL,             -- the fan who earned them
+  pts        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (club, week_start, player)
+);
+CREATE INDEX IF NOT EXISTS club_points_week ON club_points (week_start, club);
+CREATE INDEX IF NOT EXISTS club_points_player ON club_points (player);
+CREATE TABLE IF NOT EXISTS club_wins (       -- online wins over another club's fan, for the daily limits (kept 35 days)
+  at      INTEGER NOT NULL,
+  winner  INTEGER NOT NULL,
+  loser   INTEGER NOT NULL,
+  wclub   TEXT,
+  lclub   TEXT,
+  derby   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS club_wins_winner ON club_wins (winner, at);
+CREATE TABLE IF NOT EXISTS derby_days (
+  day     INTEGER PRIMARY KEY,             -- UTC day number (ms / 86400000)
+  a       TEXT NOT NULL,
+  b       TEXT NOT NULL,
+  name    TEXT,                            -- the derby's name, when the two are known rivals
+  admin   INTEGER,                         -- the admin's player id
+  at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS club_extra (      -- clubs players added through "My club isn't here" (checked by Grok)
+  id      TEXT PRIMARY KEY,
+  name    TEXT NOT NULL,
+  cc      TEXT NOT NULL,
+  c       TEXT,                            -- 'rrggbb,rrggbb'
+  city    TEXT,
+  player  INTEGER,                         -- who asked for it
+  at      INTEGER NOT NULL,
+  state   TEXT NOT NULL DEFAULT 'on'       -- 'off': an admin took it off (/clubs off <id>)
+);
+CREATE TABLE IF NOT EXISTS club_suggest (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  name    TEXT NOT NULL,
+  country TEXT,
+  at      INTEGER NOT NULL,
+  result  TEXT                             -- added | same <id> | no | unchecked
+);
+CREATE INDEX IF NOT EXISTS club_suggest_player ON club_suggest (player, at);

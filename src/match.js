@@ -13,7 +13,9 @@
 // The server adds: took {} to the phone that took over and lost {} to the quiet one, seat {side}, resume {start,side,auth,s,carves}, back {side}, gone {side}, over {winner,reason},
 // flags {cc:[country,country], tier:[0-5,0-5], cw:[id,id], av:[id,id]} (two-letter codes from Cloudflare, null when unknown; $CWORM
 // holder tiers from the server, for the badge and the whale entrance; custom worm portraits, see worms.js; the avatar each player
-// picked, for the corners of the battle) to both phones whenever one connects.
+// picked, for the corners of the battle) to both phones whenever one connects. flags also carry club:[{id,n,c},{id,n,c}] (the football
+// club each player supports, from index.js; null for none) and derby (the derby's name when the two clubs are rivals, else null).
+// After a finished match the winner gets clubpts {pts, derby} when the win scored for their club (see clubs.js).
 //
 // Viewers (GET /match/<code>/watch) watch a match live without playing. They get watch {start,s,carves,names,cc,viewers}
 // (or wait {} until the match starts, then watch), every f and auth the players send, chat {id,side}, over, and
@@ -25,6 +27,7 @@
 
 import { winRow } from './feed.js';
 import { teamClash } from './teams.js';
+import { clubWin, derbyName, lite as clubLite } from './clubs.js';
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
@@ -45,7 +48,7 @@ export class Match {
     const out = typeof msg === 'string' ? msg : JSON.stringify(msg);
     for (const ws of [...this.viewers(), ...(players ? [this.sock(0), this.sock(1)] : [])]) if (ws) try { ws.send(out) } catch { }
   }
-  watchMsg(m) { return { t: 'watch', start: m.start, s: m.state, carves: m.carves, names: m.names || [null, null], cc: m.cc || [null, null], av: m.av || [null, null], cw: m.cw || [null, null], viewers: this.viewers().length } }
+  watchMsg(m) { return { t: 'watch', start: m.start, s: m.state, carves: m.carves, names: m.names || [null, null], cc: m.cc || [null, null], av: m.av || [null, null], cw: m.cw || [null, null], club: m.club || [null, null], derby: derbyOf(m.club), viewers: this.viewers().length } }
   countViewers(gone) {                                                // tell everyone, and keep the Live now list roughly up to date
     const n = this.viewers().filter(w => w !== gone).length; this.spread({ t: 'viewers', n }, true);
     const m = this.mem; if (m && m.start && !m.done && Date.now() - (this.liveAt || 0) > 5000) { this.liveAt = Date.now(); this.live({ viewers: n }) }
@@ -83,13 +86,14 @@ export class Match {
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
     m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; (m.sim = m.sim || [0, 0])[side] = req.headers.get('x-sim') === '1' ? 1 : 0; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0));
     const cw = String(req.headers.get('x-cw') || ''); (m.cw = m.cw || [null, null])[side] = /^[a-z0-9]{12,24}$/.test(cw) ? cw : null;
-    const av = String(req.headers.get('x-av') || ''); (m.av = m.av || [null, null])[side] = /^[a-z0-9]{2,16}$/.test(av) ? av : null; await this.save();
+    const av = String(req.headers.get('x-av') || ''); (m.av = m.av || [null, null])[side] = /^[a-z0-9]{2,16}$/.test(av) ? av : null;
+    (m.club = m.club || [null, null])[side] = clubFrom(req.headers.get('x-club')); await this.save();
     const old = this.sock(side); if (old) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(side)]);
     pair[1].send(JSON.stringify(m.start ? { t: 'resume', side, start: m.start, auth: m.holder === side, s: m.state, carves: m.carves } : { t: 'seat', side }));
     if (m.start) this.tell(1 - side, { t: 'back', side });
-    const flags = { t: 'flags', cc: m.cc, tier: m.tier, cw: m.cw, av: m.av }; this.tell(0, flags); this.tell(1, flags);
+    const flags = { t: 'flags', cc: m.cc, tier: m.tier, cw: m.cw, av: m.av, club: m.club, derby: derbyOf(m.club) }; this.tell(0, flags); this.tell(1, flags);
     m.last = Date.now(); await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -115,7 +119,8 @@ export class Match {
         if (msg.bot && typeof msg.bot === 'object') {                 // vs a bot: the bot's name and country, on the team it plays
           const bt = msg.bot.team === 0 ? 0 : 1, cc = String(msg.bot.cc || '').toUpperCase(); m.bot = true;
           m.names = m.names || [null, null]; m.cc = m.cc || [null, null];
-          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]]; m.tier = [(m.tier || [0, 0])[1], (m.tier || [0, 0])[0]]; m.cw = [(m.cw || [null, null])[1], (m.cw || [null, null])[0]]; m.av = [(m.av || [null, null])[1], (m.av || [null, null])[0]] }
+          if (bt === 0) { m.names = [m.names[1], m.names[0]]; m.cc = [m.cc[1], m.cc[0]]; m.tier = [(m.tier || [0, 0])[1], (m.tier || [0, 0])[0]]; m.cw = [(m.cw || [null, null])[1], (m.cw || [null, null])[0]]; m.av = [(m.av || [null, null])[1], (m.av || [null, null])[0]]; m.club = [(m.club || [null, null])[1], (m.club || [null, null])[0]] }
+          const bc = typeof msg.bot.club === 'string' && clubLite(msg.bot.club); (m.club = m.club || [null, null])[bt] = bc ? { id: bc.id, n: bc.n, c: bc.c } : null;   // the club the bot supports (from the list)
           (m.tier = m.tier || [0, 0])[bt] = 0; (m.cw = m.cw || [null, null])[bt] = null; (m.av = m.av || [null, null])[bt] = /^[a-z0-9]{2,16}$/.test(String(msg.bot.av || '')) ? msg.bot.av : null;
           m.names[bt] = String(msg.bot.name || 'Worm').slice(0, 24); m.cc[bt] = /^[A-Z]{2}$/.test(cc) ? cc : null;
         }
@@ -179,9 +184,17 @@ export class Match {
         ...(w != null ? [this.env.DB.prepare('UPDATE players SET wins = wins + 1 WHERE id = ?').bind(w), this.env.DB.prepare('UPDATE players SET losses = losses + 1 WHERE id = ?').bind(l), winRow(this.env, w, l, reason)] : []),
       ]).catch(() => { });
       if (w != null && reason === 'played') await teamClash(this.env, w, l).catch(() => { });   // beat a rival team's worm: points for your team
+      if (w != null && reason === 'played') { const r = await clubWin(this.env, w, l).catch(() => ({ pts: 0 })); if (r.pts) this.tell(winner, { t: 'clubpts', pts: r.pts, derby: r.derby || null }) }   // and another club's fan: points for your club
     }
   }
 }
+
+// a club from index.js's x-club header ({id, n, c} as JSON), checked for shape
+function clubFrom(h) {
+  try { const c = JSON.parse(decodeURIComponent(String(h || ''))); if (!c || typeof c.id !== 'string' || typeof c.n !== 'string') return null;
+    return { id: c.id.slice(0, 48), n: c.n.slice(0, 40), c: Array.isArray(c.c) ? c.c.slice(0, 2).filter(x => /^#[0-9a-f]{6}$/i.test(x)) : null } } catch { return null }
+}
+const derbyOf = club => club && club[0] && club[1] ? derbyName(club[0].id, club[1].id) : null;
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export function newCode() { const b = crypto.getRandomValues(new Uint8Array(6)); return [...b].map(x => CODE_CHARS[x % 32]).join('') }
