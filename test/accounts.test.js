@@ -50,6 +50,12 @@ test('accounts: a login code moves a device onto the same account, and a guest o
   const web = await call(env, '/auth/code/redeem', { code }, guest.token);
   assert.equal(web.player.id, tg.player.id); assert.equal(web.player.wins, 3);
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM players').get().n, 1);
+  const g2 = await call(env, '/auth/guest', {}), old = Date.now() - 20 * 864e5;           // an older guest with checked matches: its age and matches come along
+  env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(old, g2.player.id);
+  env.sql.prepare('INSERT INTO run_log (player, at, secs, credit) VALUES (?, ?, ?, ?)').run(g2.player.id, Date.now(), 120, 180);
+  const c2 = await call(env, '/auth/code', {}, tg.token); await call(env, '/auth/code/redeem', { code: c2.code }, g2.token);
+  assert.equal(env.sql.prepare('SELECT created FROM players WHERE id = ?').get(tg.player.id).created, old);
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM run_log WHERE player = ?').get(tg.player.id).n, 1);
   assert.equal((await call(env, '/auth/code/redeem', { code })).status, 404);    // codes work once
 });
 

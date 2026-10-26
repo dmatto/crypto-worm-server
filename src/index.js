@@ -183,8 +183,8 @@ async function link(env, me, target) {
   await mergeTeams(env, a, b);                                                         // community team: the target's own team wins
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
-    q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END WHERE id = ?',
-      me.tg_id, me.wallet, me.wins, me.losses, me.tg_id, me.name, b),
+    q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
+      me.tg_id, me.wallet, me.wins, me.losses, me.tg_id, me.name, a, b),           // the older account's age counts (weekly prize: 8 days old)
     q('INSERT OR IGNORE INTO friends (player, friend, created) SELECT ?, friend, created FROM friends WHERE player = ? AND friend != ?', b, a, b),
     q('INSERT OR IGNORE INTO friends (player, friend, created) SELECT player, ?, created FROM friends WHERE friend = ? AND player != ?', b, a, b),
     q('DELETE FROM friends WHERE player = ? OR friend = ?', a, a),
@@ -201,6 +201,7 @@ async function link(env, me, target) {
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
     q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
     q('UPDATE score_log SET player = ? WHERE player = ?', b, a),                        // weekly prize: points, play days, steps
+    q('UPDATE run_log SET player = ? WHERE player = ?', b, a), q('UPDATE royale_log SET player = ? WHERE player = ?', b, a),   // and the matches the server saw, which let those points count
     q('UPDATE OR IGNORE play_days SET player = ? WHERE player = ?', b, a), q('DELETE FROM play_days WHERE player = ?', a),
     q('UPDATE OR IGNORE prize_entry SET player = ? WHERE player = ?', b, a), q('DELETE FROM prize_entry WHERE player = ?', a),
     q('UPDATE OR IGNORE player_meta SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_meta WHERE player = ?', a),
