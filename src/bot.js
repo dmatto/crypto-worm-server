@@ -364,6 +364,8 @@ export async function cron(env, now = Date.now()) {
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
+  const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);
+  if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
   for (const job of quarter ? [weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
@@ -378,6 +380,18 @@ async function stickerPack(env) {
     if (r.link && !r.error) for (const chat_id of admins)
       await tg(env, 'sendMessage', { chat_id, text: `🪱 The Crypto Worm sticker pack is ready: ${r.count} stickers.\n${r.link}` });
   } catch (e) { await log('stickers error ' + (e && e.message)) }
+}
+// A few one-off messages to chosen players (Damian 2026-10-27: winners without a wallet). bot_kv 'dm_once' holds
+// [{chat_id, text}], each sent once with the Play button; the cron deletes the key first, and bot_log gets who got it.
+export async function dmOnce(env, v) {
+  let list; try { list = JSON.parse(v) } catch { list = [] }
+  const out = [];
+  for (const d of (Array.isArray(list) ? list : []).slice(0, 50)) {
+    if (!d || d.chat_id == null || !d.text) continue;
+    const r = await tg(env, 'sendMessage', { chat_id: d.chat_id, text: String(d.text).slice(0, 4000), reply_markup: { inline_keyboard: [[{ text: d.play || '🎮 Play', url: gameLink(env, d.src ? 's_' + d.src : null) }]] } });
+    out.push(d.chat_id + (r && r.ok ? ' ok' : ' ' + ((r && r.description) || 'no answer')));
+  }
+  await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), ('dm_once ' + out.join(', ')).slice(0, 4000)).run().catch(() => { });
 }
 // One reminder for people who started the bot but never opened the game (Damian 2026-10-22): an hour after their first START,
 // in their language, with the Play button; never a second one, and none after /stop.

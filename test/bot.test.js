@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { webhook, setup } from '../src/bot.js';
+import { webhook, setup, dmOnce } from '../src/bot.js';
 
 const env = { BOT_TOKEN: '123:BOT', SESSION_SECRET: 's', GAME_LINK: 'https://t.me/Bot/play', WELCOME_PHOTO: 'https://x.test/welcome.jpg' };
 const secret = createHash('sha256').update('webhook:s').digest('hex').slice(0, 48);
@@ -44,4 +44,15 @@ test('bot: /feedback sends admins the spreadsheet and everyone else a pointer to
   const csv = await docs[0].get('document').text();
   assert.match(docs[0].get('caption'), /1 messages from 1 testers, 1 with a wallet/);
   assert.match(csv, /"Bo, ""the"" worm"/); assert.match(csv, /"fun\nbut hard"/);
+});
+
+test('bot: dm_once sends each listed message once with a Play button and logs who got it', async () => {
+  const logs = [], DB = { prepare: q => ({ bind: (...v) => ({ run: async () => { logs.push(v[1]) } }) }) };
+  calls.length = 0;
+  await dmOnce({ ...env, DB }, JSON.stringify([{ chat_id: 11, text: 'Hi 1' }, { chat_id: 12, text: 'Hi 2', play: '🎮 Jouer', src: 'prize' }, { text: 'no chat' }]));
+  assert.deepEqual(calls.map(c => [c[0], c[1].chat_id, c[1].text]), [['sendMessage', 11, 'Hi 1'], ['sendMessage', 12, 'Hi 2']]);
+  assert.equal(calls[1][1].reply_markup.inline_keyboard[0][0].text, '🎮 Jouer');
+  assert.equal(calls[1][1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/Bot/play?startapp=s_prize');
+  assert.equal(logs[0], 'dm_once 11 ok, 12 ok');
+  calls.length = 0; await dmOnce({ ...env, DB }, 'not json'); assert.equal(calls.length, 0);
 });
