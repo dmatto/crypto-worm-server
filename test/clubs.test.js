@@ -32,12 +32,16 @@ const pts = (env, club) => env.sql.prepare('SELECT COALESCE(SUM(pts), 0) AS n FR
 const ago = (env, player, ms) => env.sql.prepare('UPDATE player_club SET at = ? WHERE player = ?').run(Date.now() - ms, player);
 
 test('clubs: the list has the big clubs with their derbies, and search finds them by name', () => {
-  assert.equal(C.lite(PENAROL).n, 'CA Peñarol'); assert.equal(C.lite(PENAROL).cc, 'UY'); assert.equal(C.lite('xx-nope'), null);
+  assert.equal(C.lite(PENAROL).n, 'Club Atlético Peñarol'); assert.equal(C.lite(PENAROL).cc, 'UY'); assert.equal(C.lite('xx-nope'), null);
   assert.ok(C.derbyName(PENAROL, NACIONAL)); assert.equal(C.derbyName(PENAROL, NACIONAL), C.derbyName(NACIONAL, PENAROL));
   assert.ok(C.derbyName(BOCA, RIVER)); assert.equal(C.derbyName(PENAROL, LIVERPOOL), null); assert.equal(C.derbyName(PENAROL, PENAROL), null);
   assert.ok(C.rivalsOf(PENAROL).some(r => r.id === NACIONAL && r.d));
   assert.equal(C.search('penarol')[0].id, PENAROL); assert.equal(C.search('Boca Juniors')[0].id, BOCA);   // accents don't matter; the exact name first
   assert.deepEqual(C.search(''), []);
+  // official names and real colors (Damian 2026-10-27): the name people use still finds the club
+  assert.equal(C.lite(NACIONAL).n, 'Club Nacional de Football'); assert.deepEqual(C.lite(NACIONAL).c, ['#ffffff', '#0033a0', '#d50032']);
+  assert.equal(C.search('Nacional de Montevideo')[0].id, NACIONAL); assert.equal(C.search('Club Nacional de Football')[0].id, NACIONAL);
+  assert.equal(C.lite('de-sabener-strasse-51-57-81547'), null);                                         // stadium addresses are gone from the list
 });
 
 test('clubs: pick a club, it rides along in the session with its rivals, and it changes once a week (a wrong tap is free)', async () => {
@@ -45,7 +49,7 @@ test('clubs: pick a club, it rides along in the session with its rivals, and it 
   assert.equal(a.player.club, null);
   assert.equal((await call(env, '/me/club', { id: 'xx-not-a-club' }, a.token)).status, 400);
   const s = await call(env, '/me/club', { id: PENAROL }, a.token);
-  assert.equal(s.status, 200); assert.equal(s.player.club.id, PENAROL); assert.equal(s.player.club.n, 'CA Peñarol'); assert.equal(s.player.club.c.length, 2);
+  assert.equal(s.status, 200); assert.equal(s.player.club.id, PENAROL); assert.equal(s.player.club.n, 'Club Atlético Peñarol'); assert.equal(s.player.club.c.length, 2);
   assert.ok(s.player.club.rivals.some(r => r.id === NACIONAL)); assert.equal(s.player.club.change, 0);
   assert.equal((await call(env, '/me/club', { id: NACIONAL }, a.token)).player.club.id, NACIONAL);         // right after picking: free to fix
   ago(env, a.player.id, C.UNDO_MS + 1000);
@@ -121,7 +125,7 @@ test('clubs: the ranking shows each player\'s club, and merged accounts keep the
   const env = makeEnv(), a = await guest(env), b = await guest(env);
   await call(env, '/me/club', { id: BOCA }, a.token); await call(env, '/score', { amount: 50 }, a.token); await call(env, '/score', { amount: 70 }, b.token);
   const r = await call(env, '/ranking?period=week', undefined, b.token);
-  assert.deepEqual(r.top.find(x => x.id === a.player.id).club, { id: BOCA, n: 'Boca Juniors', c: C.lite(BOCA).c });
+  assert.deepEqual(r.top.find(x => x.id === a.player.id).club, { id: BOCA, n: 'Club Atlético Boca Juniors', c: C.lite(BOCA).c });
   assert.equal(r.top.find(x => x.id === b.player.id).club, undefined);
   await C.mergeClubs(env, a.player.id, b.player.id);
   assert.equal((await C.clubOf(env, b.player.id)).id, BOCA); assert.equal(await C.clubOf(env, a.player.id), null);
@@ -135,7 +139,7 @@ test('clubs: /derby asks which club when a name fits several, takes ids, and the
   assert.match((await C.derbyCommand(env, 'just one club', 1)).text, /vs/);
   const t = await C.derbyCommand(env, `${BOCA} vs ${RIVER} tomorrow`, 1);
   assert.match(t.text, /tomorrow/); assert.equal(t.day, Math.floor(Date.now() / 864e5) + 1);
-  assert.match((await C.derbyCommand(env, '', 1)).text, /Boca Juniors vs River Plate/);
+  assert.match((await C.derbyCommand(env, '', 1)).text, /Club Atlético Boca Juniors vs Club Atlético River Plate/);
   // last week's club war in the Monday group post
   const start = weekStart(), last = start - 7 * 864e5;
   env.sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('group', '-100')").run();
@@ -143,7 +147,7 @@ test('clubs: /derby asks which club when a name fits several, takes ids, and the
   env.sql.prepare('INSERT INTO week_scores (week_start, player, cworm) VALUES (?, ?, ?)').run(last, a.player.id, 900);
   sent.length = 0; await weekly(env, start + 10 * 60e3);
   const post = sent.find(s => s[0] === 'sendMessage')[1].text;
-  assert.match(post, /Club war: top clubs of last week[\s\S]*🥇 <b>Boca Juniors<\/b>: 900 points[\s\S]*🥈 <b>River Plate<\/b>: 300/);
+  assert.match(post, /Club war: top clubs of last week[\s\S]*🥇 <b>Club Atlético Boca Juniors<\/b>: 900 points[\s\S]*🥈 <b>Club Atlético River Plate<\/b>: 300/);
 });
 
 test('clubs: the bot shows the club war, and admins call a derby day that goes to the group', async () => {

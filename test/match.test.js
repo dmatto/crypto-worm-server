@@ -143,7 +143,7 @@ test('match: each phone gets both players\' football clubs and the derby\'s name
   const c2 = ctx(), b = new Match(c2, {});
   await b.fetch(new Request('https://x/match/BCDEFG/ws', { headers: { Upgrade: 'websocket', 'x-player': '11', 'x-club': club('uy-ca-penarol', 'CA Peñarol') } }));
   await b.webSocketMessage(c2.socks.get('0'), JSON.stringify({ t: 'start', seed: 1, bot: { name: 'MateHodler', cc: 'UY', team: 1, club: 'uy-nacional-de-montevideo' } }));
-  assert.equal(b.mem.club[1].n, 'Nacional de Montevideo'); assert.equal(b.watchMsg(b.mem).club[0].id, 'uy-ca-penarol'); assert.ok(b.watchMsg(b.mem).derby);
+  assert.equal(b.mem.club[1].n, 'Club Nacional de Football'); assert.equal(b.watchMsg(b.mem).club[0].id, 'uy-ca-penarol'); assert.ok(b.watchMsg(b.mem).derby);
   const c3 = ctx(), x = new Match(c3, {});
   await x.fetch(new Request('https://x/match/CDEFGH/ws', { headers: { Upgrade: 'websocket', 'x-player': '11' } }));
   await x.webSocketMessage(c3.socks.get('0'), JSON.stringify({ t: 'start', seed: 1, bot: { name: 'B', team: 0, club: 'made-up-club' } }));
