@@ -32,7 +32,7 @@ import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
-  INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward } from './growth.js';
+  INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
 
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears worm battles, free right here in Telegram. Aim, fire and blast the Bear worms off the island. ' +
@@ -87,16 +87,16 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• The market chart sets the wind: green blows right, red blows left.\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
   '🛡️ /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
-  '🎁 /invite gives you your invite link: +200 $CWORM for you and each friend who joins (play money).\n\n' +   // 200: INVITE_REWARD (growth.js loads after this file)
+  '🎁 /invite: the fastest way to earn $CWORM. +2,000 for you for each friend who joins and plays, +500 for them (play money).\n\n' +   // perFriend() and INVITE_REWARD (growth.js loads after this file)
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
 // The Play button carries a source tag from the /start link (t.me/<bot>?start=s_<tag>), and the invite button the player's friend code.
 const shareUrl = (link, text) => 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text);
-export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and we both get +200 $CWORM in the game (play money).';
+export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and get +500 $CWORM in the game to start (play money).';   // 500: INVITE_REWARD
 function buttons(env, src, invite, lang) {
   const play = gameLink(env, src ? 's_' + src : null), share = invite || env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play', t = WELCOME[welcomeLang(lang)];
   return { inline_keyboard: [[{ text: t.play, url: play }],
-    [{ text: t.invite.replace('$1', (promoOn() ? inviterReward() : INVITE_REWARD).toLocaleString('en-US')), url: shareUrl(share, invite ? SHARE_TEXT : 'Fight me in Crypto Worm Wars! 🪱') }],
+    [{ text: t.invite.replace('$1', perFriend().toLocaleString('en-US')), url: shareUrl(share, invite ? SHARE_TEXT : 'Fight me in Crypto Worm Wars! 🪱') }],
     [{ text: t.group, url: COMMUNITY.group }, { text: t.x, url: COMMUNITY.x }]] };
 }
 
@@ -186,8 +186,9 @@ async function inviteLink(env, from) {
 async function inviteMessage(env, from) {
   const p = from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
   const ladder = MILESTONES.map(x => `${x.n} friends: +${x.amount.toLocaleString('en-US')}${x.skin ? ' + ' + x.skin + ' skin' : ''}`).join('\n');
-  const how = `🎁 Invite friends, earn $CWORM\n\nFor every friend who opens your link and finishes a first match:\n• +${inviterReward().toLocaleString('en-US')} $CWORM for you${promoOn() ? ' (invite week, until Sunday 25 October)' : ''}\n• +${INVITE_REWARD} $CWORM for your friend\n` +
-    `• +${LOYAL_REWARD} more for you when they have played ${LOYAL_MATCHES} matches\n\nBonuses:\n${ladder}\n\n`;
+  const f = n => n.toLocaleString('en-US');
+  const how = `🎁 Invite friends: the fastest way to earn $CWORM\n\nEvery friend who opens your link and plays is worth +${f(perFriend())} $CWORM to you (a match pays about 50):\n` +
+    `• +${f(inviterReward())} when they finish a first match${promoOn() ? ' (invite week)' : ''}\n• +${f(LOYAL_REWARD)} more when they have played ${LOYAL_MATCHES} matches\n• Your friend gets +${f(INVITE_REWARD)} to start\n\nBonuses:\n${ladder}\n\n`;
   if (!p) return { text: how + 'Open the game once to get your own invite link, then send /invite again.\n\n(Play money in the game, not real tokens.)',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } };
   const link = gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)), r = await invites(env, p);

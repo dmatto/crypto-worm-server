@@ -52,11 +52,11 @@ test('growth: a source tag sticks to a new account; a friend link pays both play
   assert.equal(add.invited, true);
   assert.equal(env.sql.prepare('SELECT source FROM player_meta WHERE player = ?').get(kid.player.id).source, 'promo_oct');   // first touch wins
   const first = await call(env, '/played', { mode: 'cpu' }, kid.token);
-  assert.equal(first.played, 1); assert.deepEqual(first.rewards.map(r => [r.amount, r.reason]), [[200, 'invited']]);
-  assert.ok(calls.some(([m, b]) => m === 'sendMessage' && b.chat_id === 42 && /\+200 \$CWORM/.test(b.text) && /Play money/.test(b.text)));
+  assert.equal(first.played, 1); assert.deepEqual(first.rewards.map(r => [r.amount, r.reason]), [[500, 'invited']]);
+  assert.ok(calls.some(([m, b]) => m === 'sendMessage' && b.chat_id === 42 && /\+1,000 \$CWORM for you, and \+500 for /.test(b.text) && /you get \+1,000 more/.test(b.text) && /Play money/.test(b.text)));
   assert.equal((await call(env, '/played', { mode: 'cpu' }, kid.token)).played, 1);        // 20 s gap between counted matches
   const got = await call(env, '/rewards', {}, host.token);
-  assert.deepEqual(got.rewards.map(r => [r.amount, r.reason, r.note]), [[200, 'invite', kid.player.name]]);
+  assert.deepEqual(got.rewards.map(r => [r.amount, r.reason, r.note]), [[1000, 'invite', kid.player.name]]);
   assert.deepEqual((await call(env, '/rewards', {}, host.token)).rewards, []);           // claimed once
   // an old account (or one that already played) can't be counted as an invite
   env.sql.prepare('UPDATE player_meta SET last_played = 0').run();
@@ -65,29 +65,29 @@ test('growth: a source tag sticks to a new account; a friend link pays both play
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM cworm_scores').get().n, 0);
 });
 
-test('growth: invite week: the inviter gets +1,500 per friend, the friend +200; the Invite page and /invite say so; off after it ends', async () => {
+test('growth: invite week: the inviter gets +1,500 per friend, the friend +500; the Invite page and /invite say so; off after it ends', async () => {
   const env = makeEnv(); calls.length = 0; PROMO.until = PROMO_UNTIL;
   try {
     assert.ok(PROMO.until === Date.UTC(2026, 9, 26) && PROMO.amount === 1500);
     PROMO.until = Date.now() + 864e5;
     const host = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
     const kid = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid.token);
-    assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, kid.token)).rewards.map(r => [r.amount, r.reason]), [[200, 'invited']]);
+    assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, kid.token)).rewards.map(r => [r.amount, r.reason]), [[500, 'invited']]);
     const dm = calls.find(([m, b]) => m === 'sendMessage' && b.chat_id === 42)[1];
-    assert.match(dm.text, /Invite week: \+1,500 \$CWORM for you, and \+200 for /); assert.match(dm.text, /Play money/);
+    assert.match(dm.text, /Invite week: \+1,500 \$CWORM for you, and \+500 for /); assert.match(dm.text, /Play money/);
     const page = await call(env, '/invites', undefined, host.token);
     assert.deepEqual(page.rewards.map(r => [r.amount, r.reason]), [[1500, 'invite']]);
-    assert.equal(page.inviterReward, 1500); assert.equal(page.promoUntil, PROMO.until); assert.equal(page.earned, 1500); assert.equal(page.friends[0].paid, 1500);
+    assert.equal(page.inviterReward, 1500); assert.equal(page.perFriend, 2500); assert.equal(page.promoUntil, PROMO.until); assert.equal(page.earned, 1500); assert.equal(page.friends[0].paid, 1500);
     calls.length = 0; await hook(env, msg('/invite', 42));
-    assert.match(calls[0][1].text, /\+1,500 \$CWORM for you \(invite week, until Sunday 25 October\)\n• \+200 \$CWORM for your friend/);
+    assert.match(calls[0][1].text, /worth \+2,500 \$CWORM to you/); assert.match(calls[0][1].text, /• \+1,500 when they finish a first match \(invite week\)\n• \+1,000 more when they have played 5 matches\n• Your friend gets \+500 to start/);
     calls.length = 0; await hook(env, msg('/start', 42));
-    assert.equal(calls[0][1].reply_markup.inline_keyboard[1][0].text, '👥 Invite friends: +1,500 play $CWORM per friend');   // the welcome's invite button
-    // after the week: +200 again, and friends paid during it still show +1,500
+    assert.equal(calls[0][1].reply_markup.inline_keyboard[1][0].text, '👥 Invite friends: +2,500 play $CWORM per friend');   // the welcome's invite button
+    // after the week: +1,000 again, and friends paid during it still show +1,500
     PROMO.until = Date.now() - 1;
     const kid2 = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid2.token); await call(env, '/played', { mode: 'cpu' }, kid2.token);
     const after = await call(env, '/invites', undefined, host.token);
-    assert.equal(after.inviterReward, 200); assert.equal(after.promoUntil, 0); assert.deepEqual(after.rewards.map(r => r.amount), [200]);
-    assert.deepEqual(after.friends.map(f => f.paid).sort((a, b) => a - b), [200, 1500]);
+    assert.equal(after.inviterReward, 1000); assert.equal(after.perFriend, 2000); assert.equal(after.promoUntil, 0); assert.deepEqual(after.rewards.map(r => r.amount), [1000]);
+    assert.deepEqual(after.friends.map(f => f.paid).sort((a, b) => a - b), [1000, 1500]);
   } finally { PROMO.until = 0 }
 });
 
@@ -111,7 +111,7 @@ test('growth: at most 10 rewarded invites per inviter a day', async () => {
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM player_meta WHERE invite_paid = 0').get().n, 1);
 });
 
-test('growth: invite & earn: +300 when a friend plays 5 matches, friend-count bonuses once, the Invite page, the daily share bonus, /invite', async () => {
+test('growth: invite & earn: +1,000 when a friend plays 5 matches, friend-count bonuses once, the Invite page, the daily share bonus, /invite', async () => {
   const env = makeEnv(); calls.length = 0;
   const host = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
   const kids = [];
@@ -123,21 +123,22 @@ test('growth: invite & earn: +300 when a friend plays 5 matches, friend-count bo
   const dm3 = calls.filter(([m, b]) => m === 'sendMessage' && b.chat_id === 42).pop()[1];
   assert.match(dm3.text, /3 friends! Bonus \+500 \$CWORM and the invite-only Coral crew skin/); assert.match(dm3.text, /Next bonus: \+1,000 \$CWORM at 5 friends \(2 to go\)/); assert.match(dm3.text, /Play money/);
   assert.equal(dm3.reply_markup.inline_keyboard[0][1].url, 'https://t.me/CryptoWormWarsBot/play?startapp=invite');
-  // the first friend keeps playing: +300 at the 5th counted match, once
+  // the first friend keeps playing: +1,000 more at the 5th counted match, once
   const k0 = kids[0], play = () => { env.sql.prepare('UPDATE player_meta SET last_played = 0 WHERE player = ?').run(k0.player.id); return call(env, '/played', { mode: 'cpu' }, k0.token) };
   for (let i = 0; i < 6; i++) await play();
-  assert.deepEqual(rew().filter(r => r[1] === 'loyal'), [[300, 'loyal', k0.player.name]]);
+  assert.deepEqual(rew().filter(r => r[1] === 'loyal'), [[1000, 'loyal', k0.player.name]]);
   assert.ok(calls.some(([m, b]) => m === 'sendMessage' && b.chat_id === 42 && /has played 5 matches/.test(b.text)));
   // the Invite page: counts, friends, earnings, and it hands back what's waiting
   const page = await call(env, '/invites', undefined, host.token);
-  assert.equal(page.joined, 4); assert.equal(page.counted, 3); assert.equal(page.loyal, 1); assert.equal(page.earned, 3 * 200 + 500 + 300);
+  assert.equal(page.joined, 4); assert.equal(page.counted, 3); assert.equal(page.loyal, 1); assert.equal(page.earned, 3 * 1000 + 500 + 1000);
   assert.deepEqual(page.next, { n: 5, amount: 1000 }); assert.deepEqual(page.milestones.map(x => x.got), [true, false, false, false, false]);
   assert.deepEqual(page.friends.map(f => f.state).sort(), ['loyal', 'played', 'played', 'waiting']);
-  assert.equal(page.rewards.reduce((s, r) => s + r.amount, 0), 3 * 200 + 500 + 300); assert.equal(page.shared, false);
+  assert.deepEqual(page.friends.filter(f => f.state === 'loyal').map(f => [f.paid, f.loyalPaid]), [[1000, 1000]]); assert.equal(page.perFriend, 2000);
+  assert.equal(page.rewards.reduce((s, r) => s + r.amount, 0), 3 * 1000 + 500 + 1000); assert.equal(page.shared, false);
   assert.deepEqual((await call(env, '/invites', undefined, host.token)).rewards, []);
   // a friend from before the bonuses (5+ matches, no loyal bonus yet) is paid when the page opens
   env.sql.prepare('UPDATE player_meta SET played = 7 WHERE player = ?').run(kids[1].player.id);
-  assert.deepEqual((await call(env, '/invites', undefined, host.token)).rewards.map(r => [r.amount, r.reason]), [[300, 'loyal']]);
+  assert.deepEqual((await call(env, '/invites', undefined, host.token)).rewards.map(r => [r.amount, r.reason]), [[1000, 'loyal']]);
   assert.deepEqual((await call(env, '/invites', undefined, host.token)).rewards, []);
   // the share bonus: once a UTC day
   const s1 = await call(env, '/share/done', { via: 'tg' }, host.token); assert.equal(s1.bonus, true); assert.deepEqual(s1.rewards.map(r => [r.amount, r.reason]), [[30, 'share']]);
@@ -148,13 +149,13 @@ test('growth: invite & earn: +300 when a friend plays 5 matches, friend-count bo
   // /invite in the bot: the link, the ladder and the friends so far
   calls.length = 0; await hook(env, msg('/invite', 42));
   const [m, b] = calls[0]; assert.equal(m, 'sendMessage');
-  assert.match(b.text, /\+200 \$CWORM for you/); assert.match(b.text, /3 played, 1 still to finish a first match/); assert.match(b.text, /startapp=f_/); assert.match(b.text, /not real tokens/);
+  assert.match(b.text, /the fastest way to earn \$CWORM/); assert.match(b.text, /worth \+2,000 \$CWORM to you/); assert.match(b.text, /• \+1,000 when they finish a first match\n/); assert.match(b.text, /3 played, 1 still to finish a first match/); assert.match(b.text, /startapp=f_/); assert.match(b.text, /not real tokens/);
   assert.match(b.reply_markup.inline_keyboard[0][0].url, /^https:\/\/t\.me\/share\/url\?url=/);
   calls.length = 0; await hook(env, msg('/invite', 999)); assert.match(calls[0][1].text, /Open the game once/);
   // an invite card for Telegram's share dialog
   calls.length = 0; await call(env, '/share/prepare', { kind: 'invite' }, host.token);
   const [, p] = calls.find(c => c[0] === 'savePreparedInlineMessage');
-  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg'); assert.match(p.result.caption, /we both get \+200 \$CWORM in the game \(play money\)/);
+  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg?v=1028'); assert.match(p.result.caption, /get \+500 \$CWORM in the game to start \(play money\)/);
 });
 
 test('growth: challenge cards, inline mode and group duels carry Play links', async () => {

@@ -25,16 +25,20 @@ import { moments } from './feed.js';
 import { teamTopText } from './teams.js';
 import { clubTopText } from './clubs.js';
 
-export const INVITE_REWARD = 200, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
-// Invite & earn: on top of +200 for both when a friend finishes a first match, the inviter gets +300 when that friend has
-// played 5 matches, and a bonus at 3, 5, 10, 25 and 50 friends (friends who finished a first match). Three of the bonuses
-// unlock invite-only skins in the game's store. Sharing the invite link pays +30 once a day. All play money.
-export const LOYAL_REWARD = 300, LOYAL_MATCHES = 5, SHARE_BONUS = 30;
+// Invite & earn (Damian 2026-10-28: inviting new players is the fastest way to earn $CWORM in the game, and the game says so):
+// the inviter gets +1,000 when a friend who opened their link finishes a first match and +1,000 more when that friend has
+// played 5 matches, so one real friend is worth +2,000 (a match pays about 57). The friend gets +500 to start (INVITE_REWARD).
+// On top: a bonus at 3, 5, 10, 25 and 50 friends (friends who finished a first match), three of them unlocking invite-only
+// skins in the game's store, and +30 once a day for sharing the invite link. All play money, outside the ranking, team
+// points and the weekly prize, and at most 10 friends a day pay.
+export const INVITE_REWARD = 500, INVITER_REWARD = 1000, INVITES_PER_DAY = 10, NEW_ACCOUNT_MS = 864e5, PLAYED_GAP_MS = 20000;
+export const LOYAL_REWARD = 1000, LOYAL_MATCHES = 5, SHARE_BONUS = 30;
 // Invite week (Damian 2026-10-18: "This week you get 1500 cworm if you bring a friend"): until the end of Sunday 25 October
-// (UTC) the inviter gets +1,500 instead of +200 for each friend who finishes a first match; the friend still gets +200.
+// (UTC) the inviter got +1,500 for each friend who finished a first match. Over; set a new `until` for the next one.
 export const PROMO = { amount: 1500, until: Date.UTC(2026, 9, 26) };
 export const promoOn = (now = Date.now()) => now < PROMO.until;
-export const inviterReward = (now = Date.now()) => promoOn(now) ? PROMO.amount : INVITE_REWARD;
+export const inviterReward = (now = Date.now()) => promoOn(now) ? PROMO.amount : INVITER_REWARD;
+export const perFriend = (now = Date.now()) => inviterReward(now) + LOYAL_REWARD;      // what one real friend is worth to the inviter
 export const MILESTONES = [{ n: 3, amount: 500, skin: 'Coral crew' }, { n: 5, amount: 1000 }, { n: 10, amount: 2500, skin: 'Ambassador' },
   { n: 25, amount: 5000, skin: 'Influencer' }, { n: 50, amount: 10000 }];
 const DAY = 864e5, REMIND_GAP = 20 * 3600e3, ACTIVE_MS = 7 * DAY, RECENT_MS = 2 * 3600e3, REMIND_MAX = 100, DAILY_HOUR = 16;
@@ -60,7 +64,7 @@ export function seen(env, id, cc) {
 const meta = (env, id) => env.DB.prepare('SELECT * FROM player_meta WHERE player = ?').bind(id).first();
 
 // A friend link added `me` as someone's friend. When `me` is a brand-new account that hasn't finished a match yet, the
-// friend becomes their inviter: both get the invite reward once `me` finishes a first match.
+// friend becomes their inviter: the inviter gets INVITER_REWARD and `me` INVITE_REWARD once `me` finishes a first match.
 export async function noteInvite(env, me, inviter) {
   if (!me || !inviter || me.id === inviter || Date.now() - me.created > NEW_ACCOUNT_MS) return false;
   await env.DB.prepare('INSERT OR IGNORE INTO player_meta (player, last_seen) VALUES (?, ?)').bind(me.id, Date.now()).run();
@@ -105,16 +109,16 @@ async function payInvite(env, me, m) {
     env.DB.prepare('UPDATE player_meta SET invite_paid = ? WHERE player = ?').bind(now, me.id)]);
   const ms = await payMilestones(env, inviter.id);
   await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n` +
-    (mine === INVITE_REWARD ? `+${INVITE_REWARD} $CWORM for each of you. ` : `Invite week: +${fmt(mine)} $CWORM for you, and +${INVITE_REWARD} for ${me.name}. `) +
-    `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${LOYAL_REWARD} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
+    `${promoOn(now) ? 'Invite week: ' : ''}+${fmt(mine)} $CWORM for you, and +${fmt(INVITE_REWARD)} for ${me.name}. ` +
+    `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${fmt(LOYAL_REWARD)} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
     `Friends so far: ${ms.n}. ${nextLine(ms.n)}\n\nIt all lands in your game wallet next time you open the game. (Play money, not real tokens.)`);
 }
-// A friend who came through an invite kept playing: +300 for the inviter, once per friend.
+// A friend who came through an invite kept playing: +LOYAL_REWARD for the inviter, once per friend.
 async function payLoyal(env, me, m) {
   if (!(m.invite_paid > 0)) return;
   const inviter = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(m.invited_by).first();
   if (!inviter || !await once(env, inviter.id, 'loyal:' + me.id, LOYAL_REWARD, 'loyal', me.name)) return;
-  await dm(env, inviter, `🔥 ${me.name} has played ${LOYAL_MATCHES} matches since joining with your invite! +${LOYAL_REWARD} $CWORM for you. (Play money, not real tokens.)`);
+  await dm(env, inviter, `🔥 ${me.name} has played ${LOYAL_MATCHES} matches since joining with your invite! +${fmt(LOYAL_REWARD)} $CWORM for you. (Play money, not real tokens.)`);
 }
 
 // The game started a match or a mini game. The first start puts the player in the players count on Home (GET /stats),
@@ -180,8 +184,9 @@ export async function rateReward(env, id, rating, text) {
 // the rewards waiting for this player.
 export async function invites(env, me) {
   const { results } = await env.DB.prepare(`SELECT p.id, p.name, p.created, m.played, m.invite_paid,
-      (SELECT amount FROM rewards WHERE player = ? AND reason = 'invite' AND created = m.invite_paid LIMIT 1) AS amount FROM player_meta m JOIN players p ON p.id = m.player
-      WHERE m.invited_by = ? ORDER BY p.created DESC LIMIT 200`).bind(me.id, me.id).all();
+      (SELECT amount FROM rewards WHERE player = ? AND reason = 'invite' AND created = m.invite_paid LIMIT 1) AS amount,
+      (SELECT amount FROM rewards WHERE player = ? AND reason = 'loyal' AND note = p.name ORDER BY id DESC LIMIT 1) AS loyal_amount FROM player_meta m JOIN players p ON p.id = m.player
+      WHERE m.invited_by = ? ORDER BY p.created DESC LIMIT 200`).bind(me.id, me.id, me.id).all();
   const owed = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES);
   if (owed.length) { const { results: got } = await env.DB.prepare("SELECT k FROM reward_once WHERE player = ? AND k LIKE 'loyal:%'").bind(me.id).all(), have = new Set(got.map(g => g.k));
     for (const r of owed) if (!have.has('loyal:' + r.id)) await once(env, me.id, 'loyal:' + r.id, LOYAL_REWARD, 'loyal', r.name) }
@@ -189,10 +194,10 @@ export async function invites(env, me) {
   const n = results.filter(r => r.invite_paid > 0).length, loyal = results.filter(r => r.invite_paid > 0 && r.played >= LOYAL_MATCHES).length;
   const e = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM rewards WHERE player = ? AND reason IN ('invite', 'loyal', 'milestone')").bind(me.id).first();
   const shared = !!await env.DB.prepare('SELECT 1 FROM reward_once WHERE player = ? AND k = ?').bind(me.id, 'share:' + utcDay()).first();
-  return { reward: INVITE_REWARD, inviterReward: inviterReward(), promoUntil: promoOn() ? PROMO.until : 0, loyalReward: LOYAL_REWARD, loyalAt: LOYAL_MATCHES, shareBonus: SHARE_BONUS, perDay: INVITES_PER_DAY,
+  return { reward: INVITE_REWARD, inviterReward: inviterReward(), perFriend: perFriend(), promoUntil: promoOn() ? PROMO.until : 0, loyalReward: LOYAL_REWARD, loyalAt: LOYAL_MATCHES, shareBonus: SHARE_BONUS, perDay: INVITES_PER_DAY,
     joined: results.length, counted: n, loyal, earned: e ? e.s : 0, shared, next: nextMilestone(n), rewards: await claim(env, me.id),
     milestones: MILESTONES.map(x => ({ ...x, got: n >= x.n })),
-    friends: results.slice(0, 50).map(r => ({ name: r.name, at: r.created, played: Math.min(r.played, LOYAL_MATCHES), paid: r.amount || 0,
+    friends: results.slice(0, 50).map(r => ({ name: r.name, at: r.created, played: Math.min(r.played, LOYAL_MATCHES), paid: r.amount || 0, loyalPaid: r.loyal_amount || 0,
       state: r.invite_paid > 0 ? (r.played >= LOYAL_MATCHES ? 'loyal' : 'played') : r.invite_paid === 0 ? 'capped' : 'waiting' })) };
 }
 // The player shared their invite link (the game says so when Telegram or the phone's share sheet reports it went out).
@@ -202,9 +207,9 @@ export async function shareDone(env, me) {
 }
 
 // ---- share cards ----
-const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg' };
+const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg?v=1028' };   // ?v=: Telegram keeps old pictures by URL (the invite card changed 2026-10-28)
 export const cardUrl = (env, k) => site(env) + '/cards/' + CARDS[k];
-export const INVITE_LINE = `🎁 Join with my link and we both get +${INVITE_REWARD} $CWORM in the game (play money).`;
+export const INVITE_LINE = `🎁 Join with my link and get +${INVITE_REWARD} $CWORM in the game to start (play money).`;
 export function challengeCaption(kind, hp) {
   hp = Math.max(0, Math.min(300, Math.round(Number(hp) || 0)));
   if (kind === 'win') return `🏆 I just won a Crypto Worm Wars battle${hp ? ` with ${hp} HP left` : ''}. Think you can beat me? Tap Play and fight me! 🪱`;
@@ -216,7 +221,7 @@ async function cardResult(env, player, kind, hp, id) {
   const code = player ? await friendCode(player.id, env.SESSION_SECRET) : null, img = cardUrl(env, kind === 'win' ? 'win' : kind === 'invite' ? 'invite' : 'duel');
   const inv = kind === 'invite';
   return { type: 'photo', id: id || crypto.randomUUID().slice(0, 32), photo_url: img, thumbnail_url: img, photo_width: 1280, photo_height: 720,
-    title: inv ? 'Invite a friend' : 'Duel me', description: inv ? `You both get +${INVITE_REWARD} $CWORM in the game` : 'Send a challenge card with a Play button',
+    title: inv ? 'Invite a friend' : 'Duel me', description: inv ? `+${INVITE_REWARD} $CWORM for your friend, up to +${fmt(perFriend())} for you` : 'Send a challenge card with a Play button',
     caption: challengeCaption(kind, hp) + (code ? '\n\n' + INVITE_LINE : ''),
     reply_markup: { inline_keyboard: [[{ text: inv ? '🎮 Play with me' : '🎮 Play', url: gameLink(env, code ? 'f_' + code : null) }]] } };
 }
