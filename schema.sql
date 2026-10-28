@@ -494,3 +494,30 @@ CREATE TABLE IF NOT EXISTS club_suggest (
   result  TEXT                             -- added | same <id> | no | unchecked
 );
 CREATE INDEX IF NOT EXISTS club_suggest_player ON club_suggest (player, at);
+CREATE TABLE IF NOT EXISTS wagers (          -- Challenges: best of 3 online matches for a play-money $CWORM stake each (see wager.js)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  p0       INTEGER NOT NULL,               -- who posted it
+  p1       INTEGER,                        -- who took it
+  stake    INTEGER NOT NULL,               -- what each of them puts in; the winner gets both
+  state    TEXT NOT NULL,                  -- open | taken (game 1 not started yet) | playing | done | off (ended with nothing put in)
+  w0       INTEGER NOT NULL DEFAULT 0,     -- games won by p0 and by p1
+  w1       INTEGER NOT NULL DEFAULT 0,
+  games    INTEGER NOT NULL DEFAULT 0,     -- games finished, draws too
+  code     TEXT,                           -- the match code of the current game
+  here0    INTEGER,                        -- when p0 / p1 opened the current game's match
+  here1    INTEGER,
+  live     INTEGER,                        -- when the current game started (NULL: not started yet)
+  started  INTEGER,                        -- when game 1 started: the stakes are in
+  paid0    INTEGER,                        -- when each phone reported spending its stake
+  paid1    INTEGER,
+  winner   INTEGER,                        -- player id; NULL with state done: ended even, both stakes back
+  why      TEXT,                           -- won | even | forfeit | noshow | stuck | cancelled | expired
+  created  INTEGER NOT NULL,
+  taken    INTEGER,
+  deadline INTEGER NOT NULL,               -- open: expiry; taken / playing: the current game must start (or end) by then
+  ended    INTEGER
+);
+CREATE INDEX IF NOT EXISTS wagers_state ON wagers (state, deadline);
+CREATE INDEX IF NOT EXISTS wagers_code ON wagers (code);
+CREATE INDEX IF NOT EXISTS wagers_p0 ON wagers (p0, state);
+CREATE INDEX IF NOT EXISTS wagers_p1 ON wagers (p1, state);

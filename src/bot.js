@@ -30,6 +30,7 @@ import { clubBoard, adminClubs, derbyCommand, postDerby } from './clubs.js';
 import { votesText as burnVotes } from './burn.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
+import { sweep as wagerSweep } from './wager.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
@@ -362,6 +363,7 @@ export async function cron(env, now = Date.now()) {
   const quarter = new Date(now).getUTCMinutes() % 15 === 0;                       // the cron runs every minute: update notes then, the rest every 15 minutes
   if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
+  if (env.DB) try { await wagerSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'wager sweep error ' + (e && e.message)).run().catch(() => { }) }   // Challenges past their deadline
   if (!env.BOT_TOKEN || !env.DB) return;
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack

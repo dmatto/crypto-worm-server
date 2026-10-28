@@ -4,7 +4,7 @@
 // get the challenge as a Telegram message from the bot instead, when they are a friend and have a Telegram account.
 //
 //   client -> lobby   challenge {to: id | 'random'}    decline {code, from}    cancel {code, to}    busy {on}
-//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st, club?: {id, n, c}}], online, playing, live: [{code, names, cc, viewers, at, ids}], royale: {n, left} | null}    sent {code, to, online, notified}    none    challenged {code, from}
+//   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st, club?: {id, n, c}}], online, playing, live: [{code, names, cc, viewers, at, ids, pot?}], royale: {n, left} | null, wagers}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}    whale {name, tier}
 //
 // tier and st are the player's $CWORM holder tier (0-5) and hold stars (0-4), from the server (see holders.js). A Whale or Big
@@ -19,6 +19,10 @@
 // And the one open Worm Royale room (royaleJoin): everyone who taps Drop in gets its code, so real players meet in the same
 // match. A room opens with the first player and starts ROYALE_WAIT_MS later (see royale.js); its count of players waiting and
 // time left go out with the list as royale {n, left}, for the Royale card on Home.
+//
+// Challenges (wager.js): the number of open ones goes out with the list as wagers (POST /wagers {n} when it changes), and
+// POST /tell {id, msg} passes a message to one player's game (wager {ev: 'taken'|'off'|'done', ...}), answering {ok} when they
+// had it open.
 
 import { newCode } from './match.js';
 import { ROYALE_WAIT_MS } from './royale.js';
@@ -40,6 +44,7 @@ export class Lobby {
     const url = new URL(req.url);
     if (!this.liveList) this.liveList = await this.live();
     if (this.royale === undefined) this.royale = (await this.ctx.storage.get('royale')) || null;
+    if (this.wagers === undefined) this.wagers = (await this.ctx.storage.get('wagers')) || 0;
     if (req.headers.get('Upgrade') === 'websocket') return this.enter(req);
     if (url.pathname === '/online') {
       const here = new Set(this.players().map(p => p.id));
@@ -50,6 +55,12 @@ export class Lobby {
     if (url.pathname === '/ids') return Response.json({ ids: this.players().map(p => p.id) });   // visible players, for the bot's "friend is online" reminders
     if (url.pathname === '/live') return req.method === 'POST' ? this.setLive(await req.json().catch(() => ({}))) : Response.json({ live: await this.live() });
     if (url.pathname === '/royale/join') return this.royaleJoin();
+    if (url.pathname === '/tell' && req.method === 'POST') { const b = await req.json().catch(() => ({})); return Response.json({ ok: !!b.msg && this.tell(Number(b.id), b.msg) }) }
+    if (url.pathname === '/wagers' && req.method === 'POST') {
+      const n = Math.max(0, Number((await req.json().catch(() => ({}))).n) | 0);
+      if (n !== this.wagers) { this.wagers = n; await this.ctx.storage.put('wagers', n); this.broadcast() }
+      return Response.json({ ok: true });
+    }
     if (url.pathname === '/royale/note' && req.method === 'POST') return this.royaleNote(await req.json().catch(() => ({})));
     return this.quick(Number(url.searchParams.get('player')), url.searchParams);
   }
@@ -73,7 +84,8 @@ export class Lobby {
     else { const old = all[code] || {}, s = v => (v == null ? null : String(v).slice(0, 40));
       all[code] = { code, names: (Array.isArray(b.names) ? b.names : [null, null]).slice(0, 2).map(s), cc: (Array.isArray(b.cc) ? b.cc : [null, null]).slice(0, 2).map(country),
         viewers: Math.max(0, Number(b.viewers) || 0), at: Number(b.at) || old.at || now,
-        ids: (Array.isArray(b.ids) ? b.ids : old.ids || []).slice(0, 2).map(v => (Number.isInteger(v) ? v : null)) } }   // who is playing, so the player list can offer Watch
+        ids: (Array.isArray(b.ids) ? b.ids : old.ids || []).slice(0, 2).map(v => (Number.isInteger(v) ? v : null)),   // who is playing, so the player list can offer Watch
+        ...(Number.isInteger(b.pot) && b.pot > 0 ? { pot: b.pot } : old.pot ? { pot: old.pot } : {}) } }   // a Challenges game: its pot
     await this.ctx.storage.put('live', all);
     const was = (this.liveList || []).length, codes = new Set((this.liveList || []).map(l => l.code));
     this.liveList = await this.live();
@@ -168,7 +180,7 @@ export class Lobby {
   }
   sendList(except) {
     const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st, club }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0, ...(club ? { club } : {}) }));
-    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [], royale: this.royaleOpen() });
+    const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [], royale: this.royaleOpen(), wagers: this.wagers || 0 });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except && open(ws)) try { ws.send(out) } catch { }
   }
 

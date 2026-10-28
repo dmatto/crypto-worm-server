@@ -36,6 +36,7 @@
 //   GET  /ranking?period=week|all&holders=1                    -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
 //   GET  /burn, POST /burn/open, /burn/vote                      the Community burn teaser on Home: nothing burned yet, "I want this" votes (see burn.js)
+//   GET  /wagers, POST /wager/new, /wager/take, /wager/cancel, /wager/paid   Challenges: best of 3 for a play-money stake (see wager.js)
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
@@ -67,6 +68,7 @@ import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
 import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
+import { handle as wagerHandle, room as wagerRoom } from './wager.js';
 import { handle as clubHandle, clubScore, clubOf, clubsInfo, sessionClub, setClub, mergeClubs } from './clubs.js';
 export { Match, Lobby, Royale };
 
@@ -197,6 +199,7 @@ async function link(env, me, target) {
     q('INSERT OR IGNORE INTO friends (player, friend, created) SELECT player, ?, created FROM friends WHERE friend = ? AND player != ?', b, a, b),
     q('DELETE FROM friends WHERE player = ? OR friend = ?', a, a),
     q('UPDATE matches SET p0 = ? WHERE p0 = ?', b, a), q('UPDATE matches SET p1 = ? WHERE p1 = ?', b, a), q('UPDATE matches SET winner = ? WHERE winner = ?', b, a),
+    q('UPDATE wagers SET p0 = ? WHERE p0 = ?', b, a), q('UPDATE wagers SET p1 = ? WHERE p1 = ?', b, a), q('UPDATE wagers SET winner = ? WHERE winner = ?', b, a),   // Challenges
     q('UPDATE login_codes SET player = ? WHERE player = ?', b, a),
     q('UPDATE feedback SET player = ? WHERE player = ?', b, a),                          // feedback follows the merged account, for the airdrop list
     q('UPDATE OR IGNORE nicknames SET player = ? WHERE player = ?', b, a),             // a nickname picked as a guest comes along, unless the account has one
@@ -409,6 +412,11 @@ const app = {
       const r = await burnHandle(path, env, me, req.method, await isSim(env, me.id));
       return r ? json(r, 200, cors) : json({ error: 'not found' }, 404, cors);
     }
+    if (path === '/wagers' || path.startsWith('/wager/')) {                                // Challenges (see wager.js)
+      const wait = p => { if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p };
+      const r = await wagerHandle(path, env, me, body, { post: req.method === 'POST', wait: ctx && ctx.waitUntil ? wait : null });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
+    }
     if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
@@ -471,6 +479,9 @@ const app = {
       h.set('x-av', (await avatarOf(env, me.id)) || '');                                     // the avatar they picked, for the battle's corners
       h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');                                  // a simulated player's match stays out of Live now
       h.set('x-club', await clubHeader(env, me.id));                                          // their football club: the scarf, the name tag, a derby
+      const wg = await wagerRoom(env, ws[1], me.id);                                          // a Challenges game: only its two players get in
+      if (wg && wg.error) return json({ error: wg.error }, 403, cors);
+      h.set('x-wager', wg ? JSON.stringify(wg) : '');
       return env.MATCH.get(env.MATCH.idFromName(ws[1])).fetch(new Request(req.url, { headers: h }));
     }
     return json({ error: 'not found' }, 404, cors);

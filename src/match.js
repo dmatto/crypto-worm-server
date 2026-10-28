@@ -24,10 +24,16 @@
 // A started match is listed in the lobby's Live now list until it ends, unless a simulated player from a load test is in
 // it (x-sim from index.js): their phones stream made-up frames that nobody could watch. Every finished match between two
 // players also goes to the live feed on Home (feed.js), load-test players' matches too.
+//
+// A Challenges game (wager.js) gets x-wager {id, stake} from index.js, which only lets the series' two players in. It can't be
+// played against a bot; its start and end go to wager.js, and both phones get series {at: 'start'|'end', id, stake, pot,
+// game, score: [mine, theirs], next, done, won, draw, why, owe} (next: the code of the next game; owe: this phone still has to
+// spend its stake). Live now shows its pot.
 
 import { winRow } from './feed.js';
 import { teamClash } from './teams.js';
 import { clubWin, derbyName, lite as clubLite } from './clubs.js';
+import { start as wagerStart, finish as wagerFinish } from './wager.js';
 
 const MAX_MSG = 64 * 1024, IDLE_MS = 90 * 1000, SKIP_MS = 7000, MAX_VIEWERS = 500, CHEERS = 6, CHEER_GAP_MS = 700;
 
@@ -56,7 +62,7 @@ export class Match {
   // The lobby's Live now list: add (or update) this match when it starts, take it off when it ends.
   live(extra, gone) {
     const m = this.mem, code = this.code || (m && m.code); if (!this.env.LOBBY || !code || (m && m.sim && m.sim.some(Boolean))) return;
-    const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], ids: m.players, at: m.start && m.start.at, ...extra };
+    const body = gone ? { code, gone: true } : { code, names: m.names || [null, null], cc: m.cc || [null, null], ids: m.players, at: m.start && m.start.at, ...(m.wager ? { pot: 2 * m.wager.stake } : {}), ...extra };
     const p = this.env.LOBBY.get(this.env.LOBBY.idFromName('lobby')).fetch('https://lobby/live', { method: 'POST', body: JSON.stringify(body) }).catch(() => { });
     if (this.ctx.waitUntil) this.ctx.waitUntil(p); return p;
   }
@@ -80,8 +86,10 @@ export class Match {
     const code = url.pathname.split('/')[2]; if (code && !m.code) { m.code = code; await this.save() } this.code = m.code;
     if (m.done) return new Response('match is over', { status: 410 });
     if (url.pathname.endsWith('/watch')) return this.watch(m);
+    const wg = wagerFrom(req.headers.get('x-wager')); if (wg && !m.wager) { m.wager = wg; await this.save() }
     let side = m.players.indexOf(player);
     if (side < 0 && m.bot) return new Response('match is full', { status: 409 });   // a match against a bot has one seat
+    if (side < 0 && m.wager && !wg) return new Response('this is a challenge match', { status: 403 });   // a series that was called off keeps its room shut
     if (side < 0) { side = m.players.indexOf(null); if (side < 0) return new Response('match is full', { status: 409 }); m.players[side] = player; await this.save() }
     const cc = String(req.headers.get('x-country') || '').toUpperCase(); m.cc = m.cc || [null, null];
     m.cc[side] = /^[A-Z]{2}$/.test(cc) && cc !== 'XX' ? cc : null; (m.sim = m.sim || [0, 0])[side] = req.headers.get('x-sim') === '1' ? 1 : 0; m.tier = m.tier || [0, 0]; m.tier[side] = Math.max(0, Math.min(5, Number(req.headers.get('x-tier')) || 0));
@@ -113,7 +121,7 @@ export class Match {
     switch (msg.t) {
       case 'host': case 'join': this.tell(1 - side, raw); break;
       case 'start':
-        if (side !== 0 || m.start) return;
+        if (side !== 0 || m.start || (m.wager && msg.bot)) return;   // a challenge is never played against a bot
         m.start = { seed: msg.seed | 0, theme: String(msg.theme).slice(0, 20), count: Math.min(3, Math.max(1, msg.count | 0)), hats: (msg.hats || []).slice(0, 2).map(h => String(h).slice(0, 60)) };   // a look is hat|skin|trail|grave
         m.holder = 0; await this.names(m);
         if (msg.bot && typeof msg.bot === 'object') {                 // vs a bot: the bot's name and country, on the team it plays
@@ -125,7 +133,9 @@ export class Match {
           m.names[bt] = String(msg.bot.name || 'Worm').slice(0, 24); m.cc[bt] = /^[A-Z]{2}$/.test(cc) ? cc : null;
         }
         m.start.at = Date.now(); await this.save(); this.tell(1, { t: 'start', ...m.start });
-        this.spread(this.watchMsg(m)); await this.live({ viewers: this.viewers().length }); break;
+        this.spread(this.watchMsg(m)); await this.live({ viewers: this.viewers().length });
+        if (m.wager && this.env.DB) { const s = await wagerStart(this.env, m.wager.id, m.code).catch(() => null); if (s) this.series(s, 'start') }
+        break;
       case 'f':
         if (side !== m.holder || !m.start) return;
         this.tell(1 - side, raw); this.spread(raw); this.keepCarves(msg.e);
@@ -185,8 +195,22 @@ export class Match {
       ]).catch(() => { });
       if (w != null && reason === 'played') await teamClash(this.env, w, l).catch(() => { });   // beat a rival team's worm: points for your team
       if (w != null && reason === 'played') { const r = await clubWin(this.env, w, l).catch(() => ({ pts: 0 })); if (r.pts) this.tell(winner, { t: 'clubpts', pts: r.pts, derby: r.derby || null }) }   // and another club's fan: points for your club
+      if (m.wager) { const s = await wagerFinish(this.env, m.wager.id, m.code, w).catch(() => null); if (s) this.series(s, 'end') }   // a Challenges game: the series goes on or is won
     }
   }
+  // The series score as each phone sees it (see wager.js).
+  series(s, at) {
+    for (const side of [0, 1]) {
+      const pid = this.mem.players[side], me = pid === s.p0 ? 0 : 1, wins = [s.w0, s.w1];
+      this.tell(side, { t: 'series', at, id: s.id, stake: s.stake, pot: 2 * s.stake, game: s.games + (at === 'start' ? 1 : 0), score: [wins[me], wins[1 - me]], next: s.next, done: s.done,
+        won: s.done ? s.winner === pid : null, draw: s.done && s.winner == null, why: s.why, owe: !(me ? s.paid1 : s.paid0) });
+    }
+  }
+}
+
+// a series from index.js's x-wager header ({id, stake} as JSON), checked for shape
+function wagerFrom(h) {
+  try { const w = JSON.parse(String(h || '')); return w && Number.isInteger(w.id) && w.id > 0 && Number.isInteger(w.stake) && w.stake > 0 ? { id: w.id, stake: w.stake } : null } catch { return null }
 }
 
 // a club from index.js's x-club header ({id, n, c} as JSON), checked for shape
