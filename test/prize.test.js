@@ -263,6 +263,11 @@ test('prize vs scripts: points need matches the server saw, ties go to online wi
   let text = (await say('/prize'))[0];
   assert.match(text, /1\. Ann \(id \d+\) · 4,500 pts/); assert.match(text, /14 checked matches · 0 online wins vs 0 players · ⚠️ 100 pts without a checked match/); assert.match(text, /Taken out by an admin: Cat/);
   assert.match((await say('/prize unskip ' + cat.id))[0], /Cat \(id \d+\) can win the weekly prize again/);
+  // a team wallet (HOLDER_EXCLUDE) never takes part: Cat's card says she's out and the chart leaves her out until it's off the list
+  const cw = env.sql.prepare('SELECT wallet FROM players WHERE id = ?').get(cat.id).wallet; env.HOLDER_EXCLUDE = 'TeamWallet1, ' + cw;
+  const tc = await call(env, '/prize', undefined, cat.token); assert.equal(tc.skipped, true); assert.equal(tc.team, true); assert.equal(tc.ticket, false); assert.equal(tc.rank, null);
+  assert.deepEqual((await P.chart(env, MON, clock)).map(r => r.name), ['Ann']); assert.equal((await call(env, '/prize', undefined, ann.token)).team, undefined);
+  delete env.HOLDER_EXCLUDE;
   text = (await say('/prize'))[0]; assert.match(text, /1\. Cat/); assert.match(text, /2 online wins vs 2 players/);
   // the red flags: points the checks didn't let through, and a script's even gaps and same amounts
   for (let i = 0; i < 25; i++) await score(env, ann, 40, at(4, 1) + i * 9e3);

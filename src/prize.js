@@ -73,8 +73,10 @@ const parts = fn => async function go(env, ids, w) {
   if (ids.length > PART) { const out = new Map(); for (let i = 0; i < ids.length; i += PART) for (const [k, v] of await go(env, ids.slice(i, i + PART), w)) out.set(k, v); return out }
   return ids.length ? fn(env, ids, w) : new Map();
 };
+// Team wallets (HOLDER_EXCLUDE, the same list the top-10 holders leave out) never take part: their accounts are skipped.
+export const teamWallets = env => new Set(String(env.HOLDER_EXCLUDE || '').split(',').map(s => s.trim()).filter(Boolean));
 const rows = parts(async (env, ids, w) => {
-  const q = ids.map(() => '?').join(','), W = day(w);
+  const q = ids.map(() => '?').join(','), W = day(w), team = teamWallets(env);
   const [p, d, dips] = await Promise.all([
     env.DB.prepare(`SELECT p.id, p.name, p.tg_id, p.wallet, p.created, e.x, e.group_ok, e.group_at, h.wallet AS hw, h.tier, h.streak_day, h.balance, h.checked,
         (SELECT 1 FROM prize_skip k WHERE k.player = p.id) AS skipped
@@ -83,7 +85,7 @@ const rows = parts(async (env, ids, w) => {
     env.DB.prepare(`SELECT player, COUNT(*) AS n FROM play_days WHERE player IN (${q}) AND day >= ? AND day < ? GROUP BY player`).bind(...ids, W, W + 7).all(),
     env.DB.prepare(`SELECT DISTINCT player FROM hold_dips WHERE player IN (${q}) AND day >= ? AND day < ?`).bind(...ids, W, W + 7).all()]);
   const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Set(dips.results.map(r => r.player));
-  return new Map(p.results.map(r => [r.id, { ...r, days: days.get(r.id) || 0, dipped: dipped.has(r.id) }]));
+  return new Map(p.results.map(r => [r.id, { ...r, ...(r.wallet && team.has(r.wallet) ? { skipped: 1, team: true } : {}), days: days.get(r.id) || 0, dipped: dipped.has(r.id) }]));
 });
 // Online wins in week `w` against real players (Telegram accounts, not load-test bots), each opponent once a UTC day, and
 // how many different players those were: the prize chart's tie-break, since the server sees these matches itself.
@@ -121,7 +123,7 @@ const doneOf = s => s.group.done && s.x.done && s.wallet.done && s.hold.done && 
 export async function chart(env, w, now = Date.now()) {
   const ready = new Set((await env.DB.prepare('SELECT player FROM prize_entry WHERE group_ok = 1 AND x IS NOT NULL AND player NOT IN (SELECT player FROM prize_skip)').all()).results.map(r => r.player));
   const pts = (await points(env, w)).filter(p => ready.has(p.player)), info = await rows(env, pts.map(p => p.player), w), out = [];
-  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw, ok: p.ok, last: p.last }) }
+  for (const p of pts) { const r = info.get(p.player); if (!r) continue; const s = steps(r, w, now, loose(env)); if (doneOf(s) && s.age.ok && !r.skipped) out.push({ ...r, steps: s, pts: p.pts, raw: p.raw, ok: p.ok, last: p.last }) }
   const won = await wins(env, out.map(r => r.id), w);
   for (const r of out) { const x = won.get(r.id); r.wins = x ? x.n : 0; r.opps = x ? x.opps : 0 }
   return out.sort((a, b) => b.pts - a.pts || b.wins - a.wins || a.last - b.last);
@@ -166,7 +168,7 @@ export async function card(env, me, now = Date.now()) {
   const pts = now >= w ? await points(env, w) : [], mine = pts.find(p => p.player === me.id);
   let rank = null, entrants = 0;
   if (done && s.age.ok && !r.skipped) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
-  return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), points: mine ? mine.pts : 0,
+  return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
     rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
 }
 export async function handle(path, env, me, body, now = Date.now()) {

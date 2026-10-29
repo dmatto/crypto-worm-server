@@ -13,7 +13,8 @@ VARS = {'SIGNIN_DOMAIN': 'play.cryptoworm.io', 'ALLOWED_ORIGINS': 'https://rainb
         'GAME_LINK': 'https://t.me/CryptoWormWarsBot/play', 'WELCOME_PHOTO': 'https://play.cryptoworm.io/cards/welcome-bot.jpg',
         'MENU_URL': 'https://play.cryptoworm.io/', 'SITE_URL': 'https://play.cryptoworm.io', 'PUBLIC_URL': 'https://crypto-worm-server.cryptoworm.workers.dev',
         'BOT_AUTOSETUP': os.environ.get('BOT_AUTOSETUP', '0'), 'ADMIN_PLAYERS': os.environ.get('ADMIN_PLAYERS', '2'),
-        'SIM_URL': 'https://crypto-worm-sim.cryptoworm.workers.dev'}   # the load test's live numbers (sim/, tools/deploy_sim.py sets SIM_KEY)
+        'SIM_URL': 'https://crypto-worm-sim.cryptoworm.workers.dev',   # the load test's live numbers (sim/, tools/deploy_sim.py sets SIM_KEY)
+        'HOLDER_EXCLUDE': '6cHMFKjKhTzUvupPLYYE6DEN7KvnwxvHAnnzfvVodLHh'}   # team wallets: never a top-10 holder, never in the weekly prize (Damian's, gets the vesting unlocks)
 TOKEN, ACC = os.environ.get('CLOUDFLARE_API_TOKEN'), os.environ.get('CLOUDFLARE_ACCOUNT_ID')
 if not TOKEN or not ACC: sys.exit('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set')
 BASE = f'https://api.cloudflare.com/client/v4/accounts/{ACC}'
