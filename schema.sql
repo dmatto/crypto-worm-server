@@ -521,3 +521,34 @@ CREATE INDEX IF NOT EXISTS wagers_state ON wagers (state, deadline);
 CREATE INDEX IF NOT EXISTS wagers_code ON wagers (code);
 CREATE INDEX IF NOT EXISTS wagers_p0 ON wagers (p0, state);
 CREATE INDEX IF NOT EXISTS wagers_p1 ON wagers (p1, state);
+-- Gift codes (gifts.js, Damian 2026-10-31): codes admins make with the bot's /gift; a player types one in the game (or opens its
+-- link) and gets what it holds, once per account: play $CWORM, store looks, free Custom Worms. All play money and looks.
+CREATE TABLE IF NOT EXISTS gift_codes (
+  code     TEXT PRIMARY KEY,               -- capitals and digits, 4-20
+  cworm    INTEGER NOT NULL DEFAULT 0,     -- play $CWORM (a reward row the game claims, reason 'gift')
+  items    TEXT NOT NULL DEFAULT '',       -- store looks, comma separated ids (gifts.js ITEMS)
+  worm     INTEGER NOT NULL DEFAULT 0,     -- free Custom Worm sets (gift_credits)
+  uses     INTEGER NOT NULL DEFAULT 0,     -- players who used it
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  expires  INTEGER,                        -- NULL: no end date
+  src      TEXT,                           -- source tag for brand-new players who came with its link
+  by_tg    INTEGER,                        -- the admin who made it (Telegram id)
+  created  INTEGER NOT NULL,
+  off      INTEGER NOT NULL DEFAULT 0      -- 1: /gift off, nobody new can use it
+);
+CREATE TABLE IF NOT EXISTS gift_redeems (   -- who used which code (one use per account)
+  code     TEXT NOT NULL,
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (code, player)
+);
+CREATE INDEX IF NOT EXISTS gift_redeems_player ON gift_redeems (player);
+CREATE TABLE IF NOT EXISTS gift_fails (     -- wrong codes typed, for the hourly limit (kept a day)
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gift_fails_player ON gift_fails (player, at);
+CREATE TABLE IF NOT EXISTS gift_credits (   -- free Custom Worm sets from codes not used yet (worms.js)
+  player   INTEGER PRIMARY KEY,
+  worm     INTEGER NOT NULL DEFAULT 0
+);

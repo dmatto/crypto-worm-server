@@ -3,8 +3,10 @@
 // The photo is checked by Grok vision (one adult or one pet, nobody famous, nothing unsafe), then Grok Imagine draws four
 // portraits and the player keeps one. The photo itself is never stored. The kept portrait shows in the ranking, on Home and
 // in battles (online too: index.js passes its id to the match), while the player holds; admins see each new one in
-// Telegram and /wormoff removes one.
-//   GET  /worm                      -> {on, price, pay, holder, worm, shown, offer, left, why}   what the Custom Worm page shows
+// Telegram and /wormoff removes one. A gift code (gifts.js) can hold free sets: then no holder tier is needed, there is no price,
+// and that portrait (pay 'gift') shows whether or not the player holds.
+//   GET  /worm                      -> {on, price, pay, holder, free, worm, shown, offer, left, why}   what the Custom Worm page shows
+//                                      free: sets from gift codes left (price 0 while there are some); offer.price: what that set cost
 //                                      why: holder | banned | off | today | busy (why a new one can't be made now)
 //   POST /worm/make {photo}         -> {offer: {job, kind, opts: [id]}}   photo: a JPEG/PNG/WebP data URL (the game sends ~768 px);
 //                                      turned down: {error, code} (a WHY key)
@@ -14,6 +16,8 @@
 //   GET  /worm/img/<id>.jpg         the portrait (no sign-in: the ids are random)
 // The price is play money the game takes from its own wallet once the portraits are made (the server never sees that
 // wallet), so the limits here are what keep the cost of the pictures in check.
+import { wormCredits } from './gifts.js';
+
 export const PRICE = 2500;                       // play $CWORM for four portraits
 export const MAKES_PER_DAY = 1, TRIES_PER_DAY = 6, ADMIN_MAKES = 10, ALL_PER_DAY = 60, OFFER_DAYS = 3, REPORTS_PER_DAY = 10;
 const MAX_PHOTO = 1_600_000, ID = /^[a-z0-9]{12,24}$/, OPTIONS = 4;
@@ -55,12 +59,12 @@ const no = (code, status) => ({ error: WHY[code], code, status });
 const day0 = now => Math.floor(now / 864e5) * 864e5;
 const newId = () => [...crypto.getRandomValues(new Uint8Array(12))].map(b => (b % 36).toString(36)).join('') + Date.now().toString(36).slice(-4);
 export const admins = env => new Set(String(env.ADMIN_PLAYERS || '').split(',').map(Number).filter(n => n > 0));
-// The portrait a player shows right now: only while they hold (tier from holders.js), or always for an admin.
-export const shows = (env, id, tier) => tier > 0 || admins(env).has(id);
+// The portrait a player shows right now: only while they hold (tier from holders.js), always for an admin, and always when a
+// gift code paid for it (pay 'gift').
+export const shows = (env, id, tier, pay) => tier > 0 || admins(env).has(id) || pay === 'gift';
 export async function mine(env, id, tier) {
-  if (!shows(env, id, tier)) return null;
-  const r = await env.DB.prepare("SELECT id FROM custom_worms WHERE player = ? AND state = 'on'").bind(id).first().catch(() => null);
-  return r ? r.id : null;
+  const r = await env.DB.prepare("SELECT id, pay FROM custom_worms WHERE player = ? AND state = 'on'").bind(id).first().catch(() => null);
+  return r && shows(env, id, tier, r.pay) ? r.id : null;
 }
 const mimeOf = b64 => b64.startsWith('iVBOR') ? 'image/png' : b64.startsWith('UklGR') ? 'image/webp' : 'image/jpeg';
 
@@ -85,18 +89,19 @@ const draw = (env, photo, kind, ref) => xai(env, 'images/edits', { model: IMAGE_
 async function state(env, me, tier, now) {
   const isAdmin = admins(env).has(me.id), holder = tier > 0 || isAdmin, d = day0(now);
   const q = (s, ...v) => env.DB.prepare(s).bind(...v);
-  const [worm, offer, made, tried, all, banned] = await Promise.all([
-    q("SELECT id FROM custom_worms WHERE player = ? AND state = 'on'", me.id).first(),
-    q("SELECT id, job, kind FROM custom_worms WHERE player = ? AND state = 'offer' ORDER BY rowid", me.id).all().then(r => r.results),
+  const [worm, offer, made, tried, all, banned, free] = await Promise.all([
+    q("SELECT id, pay FROM custom_worms WHERE player = ? AND state = 'on'", me.id).first(),
+    q("SELECT id, job, kind, pay FROM custom_worms WHERE player = ? AND state = 'offer' ORDER BY rowid", me.id).all().then(r => r.results),
     q('SELECT COUNT(*) AS n FROM worm_makes WHERE player = ? AND at >= ? AND ok = 1', me.id, d).first(),
     q('SELECT COUNT(*) AS n FROM worm_makes WHERE player = ? AND at >= ? AND ok < 2', me.id, d).first(),
     q('SELECT COUNT(*) AS n FROM worm_makes WHERE at >= ? AND ok = 1', d).first(),
     q('SELECT 1 AS y FROM worm_makes WHERE player = ? AND ok = 2', me.id).first(),
+    wormCredits(env, me.id),
   ]);
   const left = Math.max(0, (isAdmin ? ADMIN_MAKES : MAKES_PER_DAY) - made.n);
-  const why = !holder ? 'holder' : banned ? 'banned' : !env.XAI_API_KEY ? 'off' : !left || tried.n >= (isAdmin ? ADMIN_MAKES * 2 : TRIES_PER_DAY) ? 'today' : all.n >= ALL_PER_DAY && !isAdmin ? 'busy' : null;
-  const job = offer.length ? { job: offer[0].job, kind: offer[0].kind, opts: offer.filter(o => o.job === offer[0].job).map(o => o.id) } : null;
-  return { on: true, price: PRICE, pay: 'cworm', holder, worm: worm ? worm.id : null, shown: !!worm && shows(env, me.id, tier), offer: job, left, why };
+  const why = !holder && !free ? 'holder' : banned ? 'banned' : !env.XAI_API_KEY ? 'off' : !left || tried.n >= (isAdmin ? ADMIN_MAKES * 2 : TRIES_PER_DAY) ? 'today' : all.n >= ALL_PER_DAY && !isAdmin ? 'busy' : null;
+  const job = offer.length ? { job: offer[0].job, kind: offer[0].kind, opts: offer.filter(o => o.job === offer[0].job).map(o => o.id), price: offer[0].pay === 'gift' ? 0 : PRICE } : null;
+  return { on: true, price: free ? 0 : PRICE, pay: free ? 'gift' : 'cworm', holder, free, worm: worm ? worm.id : null, shown: !!worm && shows(env, me.id, tier, worm.pay), offer: job, left, why };
 }
 
 // tell(photoUrl, caption) sends the admins a picture through the bot. origin is this server's address, for those links.
@@ -118,19 +123,20 @@ export async function handle(path, req, env, me, body, { tier = 0, tell = async 
     // one more go for the ones that failed (busy, as a rule); a call Grok refused, say because it could not fetch the avatar picture, goes without it
     if (pics.length < OPTIONS) pics = pics.concat((await Promise.all(refs.filter((r, i) => !first[i]).map(r => one(refused.has(r) ? null : r)))).filter(Boolean));
     if (!pics.length) { await log(0, 'no pictures: ' + errs[0]); return no('retry', 502) }
-    const job = newId(), ids = pics.map(() => newId());
+    const job = newId(), ids = pics.map(() => newId()), pay = s.free ? 'gift' : 'cworm', price = s.free ? 0 : PRICE;   // a gift code's free set first
     await env.DB.batch([
       q("DELETE FROM custom_worms WHERE player = ? AND state = 'offer'", me.id),          // an older set nobody picked from
-      ...pics.map((b64, i) => q("INSERT INTO custom_worms (id, player, job, kind, state, img, pay, created) VALUES (?, ?, ?, ?, 'offer', ?, 'cworm', ?)", ids[i], me.id, job, c.kind, b64, now)),
-      q('INSERT INTO worm_makes (player, at, ok, why) VALUES (?, ?, 1, ?)', me.id, now, c.kind + ' ' + pics.length + (errs.length ? ' · ' + errs.length + ' failed: ' + errs[0] : '')),
+      ...pics.map((b64, i) => q("INSERT INTO custom_worms (id, player, job, kind, state, img, pay, created) VALUES (?, ?, ?, ?, 'offer', ?, ?, ?)", ids[i], me.id, job, c.kind, b64, pay, now)),
+      q('INSERT INTO worm_makes (player, at, ok, why) VALUES (?, ?, 1, ?)', me.id, now, c.kind + ' ' + pics.length + (s.free ? ' · gift' : '') + (errs.length ? ' · ' + errs.length + ' failed: ' + errs[0] : '')),
+      ...(s.free ? [q('UPDATE gift_credits SET worm = worm - 1 WHERE player = ? AND worm > 0', me.id)] : []),
     ]);
-    return { offer: { job, kind: c.kind, opts: ids }, price: PRICE, pay: 'cworm' };
+    return { offer: { job, kind: c.kind, opts: ids, price }, price, pay };
   }
   if (path === '/worm/pick') {
-    const id = String(body.id || ''), row = ID.test(id) && await q("SELECT id, job FROM custom_worms WHERE id = ? AND player = ? AND state = 'offer'", id, me.id).first();
+    const id = String(body.id || ''), row = ID.test(id) && await q("SELECT id, job, pay FROM custom_worms WHERE id = ? AND player = ? AND state = 'offer'", id, me.id).first();
     if (!row) return no('gone', 404);
     await env.DB.batch([q('DELETE FROM custom_worms WHERE player = ? AND id != ?', me.id, id), q("UPDATE custom_worms SET state = 'on', created = ? WHERE id = ?", now, id)]);
-    await tell(origin + '/worm/img/' + id + '.jpg', `🎨 New custom worm: ${me.name} (player ${me.id}).\n/wormoff ${id} removes it and stops them making more.`).catch(() => { });
+    await tell(origin + '/worm/img/' + id + '.jpg', `🎨 New custom worm${row.pay === 'gift' ? ' (gift code)' : ''}: ${me.name} (player ${me.id}).\n/wormoff ${id} removes it and stops them making more.`).catch(() => { });
     return { worm: id };
   }
   if (path === '/worm/remove') { await q("DELETE FROM custom_worms WHERE player = ? AND state = 'on'", me.id).run(); return { worm: null } }

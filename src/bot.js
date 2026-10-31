@@ -11,6 +11,8 @@
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
 // /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js).
+// /gift (admins) makes gift codes for play $CWORM, looks and free Custom Worms, lists them and turns them off (gifts.js); for
+// everyone else it says where to type a code in the game.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
 // token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
 // and sets the description, short description, commands and menu button.
@@ -31,6 +33,7 @@ import { votesText as burnVotes } from './burn.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
+import { command as giftCommand } from './gifts.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
@@ -278,6 +281,10 @@ export async function webhook(req, env) {
   }
   else if ((cmd === '/chatdel' || cmd === '/chatmute') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await chatAdmin(env, cmd, arg) });   // chat.js
   else if (cmd === '/parody' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await parodyCommand(env, arg) });   // parody.js
+  else if (cmd === '/gift' || cmd === '/gifts' || cmd === '/redeem') {                // gift codes (gifts.js)
+    if (env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await giftCommand(env, arg, m.from.id), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, text: '🎁 Got a gift code? Open the game, tap More, then 🎁 Gift code, and type it in.', reply_markup: buttons(env) });
+  }
   else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
   else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
     text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });

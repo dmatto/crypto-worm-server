@@ -37,6 +37,8 @@
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
 //   GET  /burn, POST /burn/open, /burn/vote                      the Community burn teaser on Home: nothing burned yet, "I want this" votes (see burn.js)
 //   GET  /wagers, POST /wager/new, /wager/take, /wager/cancel, /wager/paid   Challenges: best of 3 for a play-money stake (see wager.js)
+//   POST /gift/redeem        {code}                             -> {ok, code, cworm, items, worm, rewards}   a gift code (see gifts.js); the
+//                                                               session's player.gifts lists the looks the account got from codes
 //   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
@@ -68,6 +70,7 @@ import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
 import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
+import { handle as giftHandle, giftItems } from './gifts.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
 import { handle as clubHandle, clubScore, clubOf, clubsInfo, sessionClub, setClub, mergeClubs } from './clubs.js';
 export { Match, Lobby, Royale };
@@ -119,9 +122,9 @@ async function ranking(env, period, me, holders) {
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, a.av AS av, tt.tag AS team, pc.club AS club', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team LEFT JOIN player_club pc ON pc.player = p.id";   // holder badge, avatar, custom worm, team tag and football club next to the name
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, c.pay AS cwpay, a.av AS av, tt.tag AS team, pc.club AS club', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team LEFT JOIN player_club pc ON pc.player = p.id";   // holder badge, avatar, custom worm, team tag and football club next to the name
 function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
-  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.club ? { club: r.club } : {}), ...(r.cw && (r.tier || admins.has(r.id)) ? { cw: r.cw } : {}) }));
+  const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.club ? { club: r.club } : {}), ...(r.cw && (r.tier || admins.has(r.id) || r.cwpay === 'gift') ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };
 }
 
@@ -178,8 +181,8 @@ async function session(env, p, cors, withToken = true) {
   const nick = await env.DB.prepare('SELECT 1 AS y FROM nicknames WHERE player = ?').bind(p.id).first();
   await seen(env, p.id); const m = await env.DB.prepare('SELECT remind FROM player_meta WHERE player = ?').bind(p.id).first();
   const holder = await holderGet(env, p).catch(() => null), cw = await wormMine(env, p.id, holder && holder.tier || 0), av = await avatarOf(env, p.id), tm = await teamOf(env, p.id), club = await sessionClub(env, p.id).catch(() => null);
-  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id), tchat = tm ? await teamUnread(env, p.id, tm.id) : 0, dms = await dmUnread(env, p.id), freq = await requestCount(env, p.id);
-  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, club, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}), ...(dms ? { dms } : {}), ...(freq ? { freq } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
+  const team = tm ? { id: tm.id, name: tm.name, tag: tm.tag, emoji: tm.emoji, ...(tm.logo ? { logo: tm.logo } : {}), ...(tm.role === 'lead' ? { lead: true } : {}) } : null, tinv = await inviteCount(env, p.id), tchat = tm ? await teamUnread(env, p.id, tm.id) : 0, dms = await dmUnread(env, p.id), freq = await requestCount(env, p.id), gifts = await giftItems(env, p.id).catch(() => []);
+  return json({ ...(withToken ? { token: await makeToken(p.id, env.SESSION_SECRET) } : {}), player: { ...publicPlayer(p), nick: !!nick, remind: !m || !!m.remind, holder, cw, av, team, club, ...(tinv ? { tinv } : {}), ...(tchat ? { tchat } : {}), ...(dms ? { dms } : {}), ...(freq ? { freq } : {}), ...(gifts.length ? { gifts } : {}) }, friendCode: await friendCode(p.id, env.SESSION_SECRET) }, 200, cors);
 }
 
 // Sign `me` (whoever this device was signed in as) into `target`. When the two are different accounts that don't both
@@ -225,6 +228,8 @@ async function link(env, me, target) {
     q("DELETE FROM custom_worms WHERE player = ? AND EXISTS (SELECT 1 FROM custom_worms WHERE player = ? AND state = 'on')", a, b),   // custom worms: the target's own portrait wins
     q('UPDATE custom_worms SET player = ? WHERE player = ?', b, a), q('UPDATE worm_makes SET player = ? WHERE player = ?', b, a),
     q('UPDATE OR IGNORE player_avatar SET player = ? WHERE player = ?', b, a), q('DELETE FROM player_avatar WHERE player = ?', a),   // the account's own avatar wins
+    q('UPDATE OR IGNORE gift_redeems SET player = ? WHERE player = ?', b, a), q('DELETE FROM gift_redeems WHERE player = ?', a),   // gift codes used, and free Custom Worms left
+    q('INSERT INTO gift_credits (player, worm) SELECT ?, worm FROM gift_credits WHERE player = ? ON CONFLICT(player) DO UPDATE SET worm = worm + excluded.worm', b, a), q('DELETE FROM gift_credits WHERE player = ?', a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('DELETE FROM players WHERE id = ?', a),
   ]);
@@ -416,6 +421,10 @@ const app = {
       const wait = p => { if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p };
       const r = await wagerHandle(path, env, me, body, { post: req.method === 'POST', wait: ctx && ctx.waitUntil ? wait : null });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
+    }
+    if (path === '/gift/redeem' && req.method === 'POST') {                               // gift codes (see gifts.js)
+      if (await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
+      const r = await giftHandle(path, env, me, body); if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
