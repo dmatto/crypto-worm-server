@@ -11,6 +11,7 @@
 //   GET  /clubs                 -> {mine, top: [{rank, id, name, cc, c, fans, pts}], day, extra: [[id, name, cc, 'rrggbb,rrggbb']], since}
 //   POST /me/club {id}          (index.js) pick or change the club: the first pick any time, then once every CHANGE_MS (a change
 //                               within UNDO_MS of a pick is free, for a wrong tap); {id: null} leaves the club. Answers the session.
+//                               An account's first pick ever pays CLUB_REWARD play $CWORM (a reward row: POST /rewards claims it).
 //   POST /clubs/suggest {name, country}  a club that isn't in the list: Grok checks it is a real club, then it is added for everyone
 //                               and picked for this player -> {ok, club}; admins hear about it and can take it off (/clubs off <id>)
 // Points a fan earned stay with the club they earned them for.
@@ -63,6 +64,18 @@ export async function sessionClub(env, player, now = Date.now()) {
   return { ...c, rivals: rivalsOf(c.id).slice(0, 12), change: now - c.since < UNDO_MS ? 0 : Math.max(0, c.since + CHANGE_MS - now) };
 }
 
+// The first club an account picks pays CLUB_REWARD play $CWORM, once per account (Damian 2026-11-01: "If you choose a futbol team
+// get 300 CWORM in reward"): a 'club' reward row (note: the club's name) the game claims like invite rewards, so it is play money
+// outside the ranking and the weekly prize. Leaving a club and picking again never pays twice; test players get nothing.
+export const CLUB_REWARD = 300;
+async function payFirstPick(env, player, club, now) {
+  if (await isSim(env, player)) return false;
+  const r = await q(env, "INSERT OR IGNORE INTO reward_once (player, k, created) VALUES (?, 'club', ?)", player, now).run();
+  if (!(r && (r.meta ? r.meta.changes : r.changes))) return false;
+  await q(env, "INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, 'club', ?, ?)", player, CLUB_REWARD, club.n, now).run();
+  return true;
+}
+
 export async function setClub(env, me, id, now = Date.now()) {
   const cur = await q(env, 'SELECT club, at FROM player_club WHERE player = ?', me.id).first();
   if (id == null || id === '') { await q(env, 'DELETE FROM player_club WHERE player = ?', me.id).run(); return null }
@@ -71,6 +84,7 @@ export async function setClub(env, me, id, now = Date.now()) {
   if (cur && now - cur.at >= UNDO_MS && now - cur.at < CHANGE_MS) return { error: 'you can change your club once a week', status: 429, wait: cur.at + CHANGE_MS };
   await q(env, 'INSERT INTO player_club (player, club, at) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET club = excluded.club, at = excluded.at', me.id, c.id,
     cur && now - cur.at < UNDO_MS ? cur.at : now).run();   // fixing a wrong tap doesn't start the week again
+  await payFirstPick(env, me.id, c, now).catch(() => { });
   return null;
 }
 
