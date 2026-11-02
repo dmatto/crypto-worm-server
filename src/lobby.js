@@ -7,6 +7,7 @@
 //   lobby -> client   list {players: [{id, name, wins, losses, busy, cc, tier, st, club?: {id, n, c}}], online, playing, live: [{code, names, cc, viewers, at, ids, pot?}], royale: {n, left} | null, wagers}    sent {code, to, online, notified}    none    challenged {code, from}
 //                     declined {code, by}    cancelled {code}    whale {name, tier}
 //
+// sup: the 💚 Supporter badge bought with Telegram Stars (stars.js).
 // tier and st are the player's $CWORM holder tier (0-5) and hold stars (0-4), from the server (see holders.js). A Whale or Big
 // Whale who opted in is announced to everyone else as they come online: once a UTC day per whale, one every WHALE_GAP_MS at most.
 //
@@ -134,7 +135,7 @@ export class Lobby {
   async enter(req) {
     const h = req.headers, id = Number(h.get('x-player')), n = (k, max) => Math.max(0, Math.min(max, Number(h.get(k)) || 0));
     const me = { id, name: decodeURIComponent(h.get('x-name') || 'Worm').slice(0, 40), wins: Number(h.get('x-wins')) || 0, losses: Number(h.get('x-losses')) || 0,
-      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')), tier: n('x-tier', 5), st: n('x-stars', 4), club: clubFrom(h.get('x-club')) };
+      hidden: new URL(req.url).searchParams.get('hidden') === '1', busy: false, cc: country(h.get('x-country')), tier: n('x-tier', 5), st: n('x-stars', 4), club: clubFrom(h.get('x-club')), sup: h.get('x-sup') === '1' };
     for (const old of this.ctx.getWebSockets(String(id))) try { old.close(4000, 'opened elsewhere') } catch { }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [String(id)]);
@@ -179,7 +180,7 @@ export class Lobby {
     this.listTimer = setTimeout(() => { this.listTimer = null; this.listAt = Date.now(); this.sendList() }, Math.max(0, (this.listAt || 0) + LIST_GAP_MS - Date.now()));
   }
   sendList(except) {
-    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st, club }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0, ...(club ? { club } : {}) }));
+    const list = this.players(except).slice(0, MAX_LIST).map(({ id, name, wins, losses, busy, cc, tier, st, club, sup }) => ({ id, name, wins, losses, busy, cc, tier: tier || 0, st: st || 0, ...(club ? { club } : {}), ...(sup ? { sup: 1 } : {}) }));
     const out = JSON.stringify({ t: 'list', players: list, ...this.count(except), live: this.liveList || [], royale: this.royaleOpen(), wagers: this.wagers || 0 });
     for (const ws of this.ctx.getWebSockets()) if (ws !== except && open(ws)) try { ws.send(out) } catch { }
   }

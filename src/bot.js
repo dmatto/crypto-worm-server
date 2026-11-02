@@ -34,18 +34,20 @@ import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
 import { command as giftCommand } from './gifts.js';
+import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms } from './stars.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
+const botLog = (env, note) => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
 
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears worm battles, free right here in Telegram. Aim, fire and blast the Bear worms off the island. ' +
   'Play the CPU, people online, or 50 worms at once in Worm Royale. Tap Start, then Play!';
 export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 Free to play right inside Telegram. Tap Play!';
 export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn $CWORM' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
-  { command: 'privacy', description: 'Privacy policy' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
+  { command: 'privacy', description: 'Privacy policy' }, { command: 'paysupport', description: 'Help with a purchase' }, { command: 'terms', description: 'Purchase terms' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
 export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
-export const UPDATES = ['message', 'inline_query'];
+export const UPDATES = ['message', 'inline_query', 'pre_checkout_query'];   // pre_checkout_query: Telegram Stars payments (stars.js)
 export const privacyUrl = env => (env.SITE_URL || (env.MENU_URL || 'https://play.cryptoworm.io/')).replace(/\/+$/, '') + '/privacy.html';
 
 export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x.com/CryptoWorm72' };
@@ -206,6 +208,13 @@ export async function webhook(req, env) {
   if (!same(req.headers.get('X-Telegram-Bot-Api-Secret-Token') || '', await webhookSecret(env))) return new Response('forbidden', { status: 403 });
   const u = await req.json().catch(() => null), m = u && u.message;
   if (u && u.inline_query && u.inline_query.from && env.DB) { await inlineQuery(env, u.inline_query).catch(() => { }); return new Response('ok') }
+  if (u && u.pre_checkout_query && env.DB) {                                          // Telegram Stars (stars.js): yes or no within 10 seconds
+    await preCheckout(env, u.pre_checkout_query).catch(async e => { await botLog(env, 'pre_checkout error ' + (e && e.message));
+      await tg(env, 'answerPreCheckoutQuery', { pre_checkout_query_id: u.pre_checkout_query.id, ok: false, error_message: 'Something went wrong. Please try again.' }) });
+    return new Response('ok');
+  }
+  if (m && m.successful_payment && env.DB) { await paid(env, m).catch(e => botLog(env, 'payment error ' + (e && e.message) + ' ' + JSON.stringify(m.successful_payment).slice(0, 600))); return new Response('ok') }
+  if (m && m.refunded_payment && env.DB) { await refundedByTelegram(env, m).catch(e => botLog(env, 'refund error ' + (e && e.message))); return new Response('ok') }
   if (!m || !m.chat || typeof m.text !== 'string') return new Response('ok');
   const [head, ...rest] = m.text.trim().split(/\s+/), [c, at] = head.toLowerCase().split('@'), cmd = c, chat_id = m.chat.id, arg = rest.join(' ');
   if (at && at !== botUsername(env).toLowerCase()) return new Response('ok');          // a command for another bot in the group
@@ -254,6 +263,15 @@ export async function webhook(req, env) {
     await tg(env, 'sendMessage', { chat_id, text: r.text + (r.post ? (posted ? '\n\n📣 Posted in the community group.' : '\n\nThe group post did not go out: is the bot set up in the group (/setgroup)?') : '') });
   }
   else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
+  else if (cmd === '/paysupport' && env.DB) await tg(env, 'sendMessage', { chat_id, text: arg.trim() && m.from ? await paySupport(env, m.from, m.text.trim().slice(head.length).trim()) : PAYSUPPORT });   // Telegram Stars (stars.js)
+  else if (cmd === '/terms') await tg(env, 'sendMessage', { chat_id, text: terms(env), disable_web_page_preview: true });
+  else if (cmd === '/sales' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await salesText(env)).slice(0, 4000), parse_mode: 'HTML' });
+  else if (cmd === '/refund' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await refundCommand(env, arg) });
+  else if (cmd === '/reply' && await isAdmin(env, m.from)) {                          // admins: answer a /paysupport
+    const [to] = rest, text = m.text.trim().slice(head.length).trim().slice(String(to || '').length).trim();
+    const r = /^\d+$/.test(to || '') && text ? await tg(env, 'sendMessage', { chat_id: Number(to), text: '⭐ Crypto Worm Wars support:\n\n' + text.slice(0, 3500) }) : null;
+    await tg(env, 'sendMessage', { chat_id, text: r && r.ok ? '✅ Sent.' : r ? 'Not sent: ' + (r.description || 'no answer') : 'Use /reply <telegram id> <your answer>.' });
+  }
   else if (cmd === '/stop') {
     if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET remind = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
     if (env.DB && m.from) await env.DB.prepare('UPDATE bot_starts SET nudged = -1 WHERE tg_id = ? AND nudged = 0').bind(m.from.id).run().catch(() => { });

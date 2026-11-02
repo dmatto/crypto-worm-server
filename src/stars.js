@@ -1,0 +1,154 @@
+// Telegram Stars (Damian 2026-11-02, "yes" to monetization/telegram-stars-plan.md, cosmetics and status first). Players pay in
+// Telegram Stars (currency XTR, the only money Telegram allows for digital goods in a bot or Mini App) for exclusive looks and the
+// 💚 Supporter badge. Stars never buy play $CWORM, ranking points, weekly prize entries, real $CWORM or power in a battle: looks
+// and status only. The store build of the game doesn't show any of it.
+//
+//   GET  /stars                 -> {items, sup, admin?}     what this account owns (packs come as their looks)
+//   POST /stars/invoice {item}  -> {url}                    a Telegram invoice link for one catalog item (the game opens it with
+//                                                           Telegram.WebApp.openInvoice; on the web the link opens Telegram)
+// The bot's webhook (bot.js) answers pre_checkout_query (preCheckout: the item is on sale, the price is right, not owned yet;
+// Telegram wants the answer within 10 s) and records successful_payment (paid) in purchases; a refunded_payment, or an admin's
+// /refund, sets refunded and the look goes away. Admin bot commands: /sales, /refund <charge id>, /reply <telegram id> <text>
+// (to answer a /paysupport). Everyone: /paysupport <problem> (passed on to the admins) and /terms.
+//
+// The game holds the same ids and prices (SHOP items with xtr or pack, and XTR.list in crypto-worm.html): change both together.
+// Invoice pictures: play.cryptoworm.io/xtr/<id>.jpg (the game folder's xtr/).
+import { tg, tellAdminsText } from './bot.js';
+import { gameLink } from './growth.js';
+
+const LOOKS = 'Looks only: no power in battles, no play $CWORM, never real tokens.';
+export const CATALOG = {
+  goldhelm:  { stars: 45, cat: 'hat', title: 'Gold helmet', text: 'A gold-plated army helmet with an emerald star, for all your worms.' },
+  captain:   { stars: 30, cat: 'hat', title: "Captain's cap", text: 'A navy captain\'s cap with a gold star, for all your worms.' },
+  aurora:    { stars: 40, cat: 'skin', title: 'Aurora skin', text: 'A skin that slowly shifts from green to violet, like the northern lights.' },
+  blackgold: { stars: 35, cat: 'skin', title: 'Black gold skin', text: 'A black skin with a gold shine.' },
+  starcoins: { stars: 25, cat: 'trail', title: 'Star coin trail', text: 'Your shots leave a trail of gold star coins.' },
+  monument:  { stars: 50, cat: 'grave', title: "Veteran's monument", text: 'A granite war memorial with a gold star, where your worms rest.' },
+  fpack:     { stars: 99, pack: ['fcrown', 'founder', 'fsparks'], title: 'Founder pack', until: Date.UTC(2026, 11, 1),
+    text: "Founder's crown, the Founder skin and the Founder sparks trail. Only in the launch month." },
+  supporter: { stars: 150, sup: true, title: 'Supporter 💚', text: 'A green heart and a green name in the lobby and the ranking. Thank you for backing the game.' },
+  test1:     { stars: 1, admin: true, test: true, title: 'Test item', text: 'Admins only: a 1 Star test purchase. It gives nothing; refund it with /refund.' },
+};
+const q = (env, s, ...v) => env.DB.prepare(s).bind(...v);
+const changed = r => !!(r && (r.meta ? r.meta.changes : r.changes));
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const site = env => (env.SITE_URL || env.MENU_URL || 'https://play.cryptoworm.io/').replace(/\/+$/, '');
+const admins = env => new Set(String(env.ADMIN_PLAYERS || '').split(',').map(Number).filter(n => n > 0));
+const onSale = (it, now) => !!it && !(it.until && now >= it.until);
+const payload = (player, item) => `x1:${player}:${item}`;
+const parse = s => { const m = /^x1:(\d+):([a-z0-9]{1,16})$/.exec(String(s || '')); return m ? { player: +m[1], item: m[2] } : null };
+
+// What a player owns: the looks (packs opened into their looks) and the Supporter badge. Refunded purchases don't count.
+export async function owned(env, player) {
+  const { results } = await q(env, 'SELECT DISTINCT item FROM purchases WHERE player = ? AND refunded IS NULL', player).all();
+  const items = new Set(); let sup = false;
+  for (const { item } of results) { const it = CATALOG[item]; if (!it) continue;
+    if (it.cat) items.add(item); if (it.pack) it.pack.forEach(x => items.add(x)); if (it.sup) sup = true }
+  return { items: [...items], sup };
+}
+const has = (own, id) => { const it = CATALOG[id]; return !!it && !it.test && (it.sup ? own.sup : it.pack ? it.pack.every(x => own.items.includes(x)) : own.items.includes(id)) };
+// for the session: only when there is something to say
+export async function sessionStars(env, player) {
+  const own = await owned(env, player), admin = admins(env).has(player);
+  return own.items.length || own.sup || admin ? { ...own, ...(admin ? { admin: true } : {}) } : null;
+}
+export const isSupporter = (env, player) => q(env, "SELECT 1 AS y FROM purchases WHERE player = ? AND item = 'supporter' AND refunded IS NULL", player).first().then(r => !!r).catch(() => false);
+
+export async function handle(path, env, me, body, { now = Date.now(), post = false } = {}) {
+  if (path === '/stars' && !post) { const own = await owned(env, me.id); return { ...own, ...(admins(env).has(me.id) ? { admin: true } : {}) } }
+  if (path !== '/stars/invoice' || !post) return null;
+  const id = String(body && body.item || ''), it = Object.hasOwn(CATALOG, id) ? CATALOG[id] : null;
+  if (!it || (it.admin && !admins(env).has(me.id))) return { error: 'not on sale', code: 'bad', status: 404 };
+  if (!onSale(it, now)) return { error: 'not on sale any more', code: 'gone', status: 410 };
+  if (has(await owned(env, me.id), id)) return { error: 'already yours', code: 'owned', status: 409 };
+  if (!env.BOT_TOKEN) return { error: 'payments are not set up', status: 503 };
+  const r = await tg(env, 'createInvoiceLink', { title: it.title.slice(0, 32), description: (it.text + (it.test ? '' : ' ' + LOOKS)).slice(0, 255), payload: payload(me.id, id),
+    provider_token: '', currency: 'XTR', prices: [{ label: it.title.slice(0, 32), amount: it.stars }], photo_url: `${site(env)}/xtr/${id}.jpg`, photo_width: 512, photo_height: 512 });
+  if (!r || !r.ok || !r.result) return { error: 'Telegram did not answer, try again', status: 502 };
+  return { url: r.result };
+}
+
+// The webhook's pre_checkout_query: say yes only for an item that is on sale, at its price, for a player who doesn't own it yet.
+export async function preCheckout(env, pq, now = Date.now()) {
+  const p = parse(pq.invoice_payload), it = p && Object.hasOwn(CATALOG, p.item) ? CATALOG[p.item] : null;
+  let why = null;
+  if (!it || pq.currency !== 'XTR' || pq.total_amount !== it.stars) why = 'This item is not on sale. Open the game\'s Store and try again.';
+  else if (!onSale(it, now)) why = `The ${it.title} is no longer on sale.`;
+  else if (!await q(env, 'SELECT 1 AS y FROM players WHERE id = ?', p.player).first()) why = 'We could not find your game account. Open the game and try again.';
+  else if (it.admin && !admins(env).has(p.player)) why = 'This item is not on sale.';
+  else if (has(await owned(env, p.player), p.item)) why = `The ${it.title} is already yours. Open the Store to wear it.`;
+  await tg(env, 'answerPreCheckoutQuery', why ? { pre_checkout_query_id: pq.id, ok: false, error_message: why } : { pre_checkout_query_id: pq.id, ok: true });
+  return !why;
+}
+
+// The webhook's successful_payment: keep it (once per Telegram charge id), thank the player, tell the admins.
+export async function paid(env, m, now = Date.now()) {
+  const sp = m.successful_payment, p = parse(sp.invoice_payload), it = p && CATALOG[p.item];
+  const charge = String(sp.telegram_payment_charge_id || ''); if (!charge) return;
+  const before = p && it ? has(await owned(env, p.player), p.item) : false;
+  const r = await q(env, 'INSERT OR IGNORE INTO purchases (charge, player, item, stars, tg_id, created) VALUES (?, ?, ?, ?, ?, ?)',
+    charge, p ? p.player : 0, p ? p.item : String(sp.invoice_payload || '').slice(0, 40), sp.total_amount | 0, m.from ? m.from.id : null, now).run();
+  if (!changed(r)) return;                                                             // Telegram sent it twice
+  const name = p && await q(env, 'SELECT name FROM players WHERE id = ?', p.player).first().then(x => x && x.name).catch(() => null);
+  const text = !it ? '⭐ Payment received. If your item is missing, send /paysupport.'
+    : it.test ? `⭐ Test purchase done: ${sp.total_amount} Star. Refund it with:\n/refund ${charge}`
+    : it.sup ? '💚 Thank you for supporting Crypto Worm Wars! Your green heart now shows next to your name in the lobby and the ranking.'
+    : `⭐ Thank you! The ${it.title} is yours. Open the game: it's in Store › ⭐ Exclusive.`;
+  await tg(env, 'sendMessage', { chat_id: m.chat.id, text, reply_markup: { inline_keyboard: [[{ text: '🎮 Open the game', url: gameLink(env, 'xstore') }]] } });
+  await tellAdminsText(env, `⭐ Sale: ${it ? it.title : 'unknown item'} for ${sp.total_amount} Stars by ${name || '?'} (player ${p ? p.player : '?'}).` +
+    (before ? '\n⚠️ They already owned it: refund it.' : '') + `\n/refund ${charge}`).catch(() => { });
+}
+
+// Telegram refunded a payment itself (a dispute): take the item back.
+export async function refundedByTelegram(env, m, now = Date.now()) {
+  const c = m.refunded_payment && m.refunded_payment.telegram_payment_charge_id; if (!c) return;
+  await q(env, 'UPDATE purchases SET refunded = ? WHERE charge = ? AND refunded IS NULL', now, String(c)).run();
+}
+
+// /refund <charge id> (admins): the Stars go back to whoever paid and the item is taken away.
+export async function refundCommand(env, arg, now = Date.now()) {
+  const c = String(arg || '').trim().split(/\s+/)[0];
+  if (!c) return 'Send /refund followed by the charge id. /sales lists the latest ones.';
+  const p = await q(env, 'SELECT * FROM purchases WHERE charge = ?', c).first();
+  if (!p) return 'No purchase with that charge id. /sales lists the latest ones.';
+  if (p.refunded) return 'That purchase was already refunded.';
+  if (p.tg_id == null) return 'That purchase has no Telegram user to refund.';
+  const r = await tg(env, 'refundStarPayment', { user_id: p.tg_id, telegram_payment_charge_id: c });
+  if (!r || !r.ok) return 'Telegram said no: ' + ((r && r.description) || 'no answer');
+  await q(env, 'UPDATE purchases SET refunded = ? WHERE charge = ?', now, c).run();
+  const it = CATALOG[p.item];
+  await tg(env, 'sendMessage', { chat_id: p.tg_id, text: `⭐ Your ${p.stars} Stars for the ${it ? it.title : p.item} were refunded, and it was taken out of your Store.` }).catch(() => { });
+  return `✅ Refunded ${p.stars} Stars to player ${p.player}. The ${it ? it.title : p.item} is gone from their account.`;
+}
+
+// /sales (admins): totals and the latest purchases, with the charge ids /refund needs.
+export async function salesText(env, now = Date.now()) {
+  const sum = async since => q(env, 'SELECT COUNT(*) AS n, COALESCE(SUM(stars), 0) AS s FROM purchases WHERE refunded IS NULL AND created >= ? AND item != ?', since, 'test1').first();
+  const week = await sum(now - 7 * 864e5), all = await sum(0);
+  const ref = await q(env, 'SELECT COUNT(*) AS n, COALESCE(SUM(stars), 0) AS s FROM purchases WHERE refunded IS NOT NULL').first();
+  const { results: by } = await q(env, 'SELECT item, COUNT(*) AS n, SUM(stars) AS s FROM purchases WHERE refunded IS NULL GROUP BY item ORDER BY s DESC').all();
+  const { results: last } = await q(env, 'SELECT u.*, p.name FROM purchases u LEFT JOIN players p ON p.id = u.player ORDER BY u.created DESC LIMIT 10').all();
+  const t = x => new Date(x).toISOString().slice(0, 16).replace('T', ' '), title = id => (CATALOG[id] || {}).title || id;
+  return `⭐ <b>Telegram Stars sales</b>\nLast 7 days: ${week.n} sales, ${week.s} Stars\nAll time: ${all.n} sales, ${all.s} Stars` +
+    (ref.n ? `\nRefunded: ${ref.n} (${ref.s} Stars)` : '') +
+    (by.length ? '\n\n' + by.map(r => `${esc(title(r.item))}: ${r.n} · ${r.s} Stars`).join('\n') : '') +
+    (last.length ? '\n\n<b>Latest</b>\n' + last.map(r => `${t(r.created)} · ${esc(title(r.item))} · ${r.stars} ⭐ · ${esc(r.name || '?')} (${r.player})${r.refunded ? ' · refunded' : ''}\n<code>${esc(r.charge)}</code>`).join('\n') : '\n\nNo sales yet.') +
+    '\n\n/refund &lt;charge id&gt; gives the Stars back and takes the item away.';
+}
+
+export const PAYSUPPORT = '⭐ Help with a purchase\n\nSend /paysupport followed by what happened, for example:\n/paysupport I paid for the Founder pack but it is not in my Store\n\n' +
+  'We answer here in the bot within 48 hours. Purchase terms: /terms';
+export async function paySupport(env, from, text) {
+  const p = await q(env, 'SELECT id, name FROM players WHERE tg_id = ?', from.id).first().catch(() => null);
+  const { results } = p ? await q(env, 'SELECT * FROM purchases WHERE player = ? ORDER BY created DESC LIMIT 5', p.id).all() : { results: [] };
+  await tellAdminsText(env, `⭐ /paysupport from ${from.first_name || '?'}${from.username ? ' @' + from.username : ''} (Telegram ${from.id}${p ? ', player ' + p.id + ' ' + p.name : ', no game account'}):\n${String(text).slice(0, 1500)}` +
+    (results.length ? '\n\nTheir purchases:\n' + results.map(r => `${(CATALOG[r.item] || {}).title || r.item} · ${r.stars} ⭐${r.refunded ? ' · refunded' : ''}\n/refund ${r.charge}`).join('\n') : '\n\nNo purchases.') +
+    `\n\nAnswer with /reply ${from.id} <your answer>`);
+  return '✅ Thanks, we got it. We answer here in the bot within 48 hours.';
+}
+export const terms = env => '⭐ Purchase terms (Telegram Stars)\n\n' +
+  '• What you buy: looks for your worms (hats, skins, trails, graves, packs of them) and the 💚 Supporter badge in Crypto Worm Wars. They are cosmetic only: no power in battles, no play $CWORM, no ranking points, no weekly prize entries, and never real tokens.\n' +
+  '• What you buy is kept on your game account and shows on every device where you play with it. It has no cash value and can\'t be traded or moved to another account.\n' +
+  '• Delivery is instant. If something is missing or went wrong, send /paysupport within 14 days. A refunded item is taken back.\n' +
+  '• The game is in beta: we may redraw a look, but we don\'t take away what you bought, except after a refund or for cheating.\n' +
+  '• We keep the item, the price, the date and Telegram\'s payment id, to deliver it and handle refunds. Privacy policy: ' + site(env) + '/privacy.html';

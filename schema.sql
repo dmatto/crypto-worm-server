@@ -552,3 +552,14 @@ CREATE TABLE IF NOT EXISTS gift_credits (   -- free Custom Worm sets from codes 
   player   INTEGER PRIMARY KEY,
   worm     INTEGER NOT NULL DEFAULT 0
 );
+-- Telegram Stars purchases (stars.js): exclusive looks and the Supporter badge, never play $CWORM, points, prize entries or power.
+CREATE TABLE IF NOT EXISTS purchases (
+  charge   TEXT PRIMARY KEY,                -- Telegram's telegram_payment_charge_id (a refund needs it)
+  player   INTEGER NOT NULL,
+  item     TEXT NOT NULL,                   -- stars.js CATALOG id
+  stars    INTEGER NOT NULL,
+  tg_id    INTEGER,                         -- who paid: the Telegram user a refund goes back to
+  created  INTEGER NOT NULL,
+  refunded INTEGER                          -- when it was refunded (the item is gone), NULL otherwise
+);
+CREATE INDEX IF NOT EXISTS purchases_player ON purchases (player);
