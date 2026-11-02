@@ -11,7 +11,7 @@ export const POLLS = [
   { id: 'prize-rule', from: Date.UTC(2026, 10, 2), ends: Date.UTC(2026, 10, 7), starts: Date.UTC(2026, 10, 9), played: 3,
     title: 'Weekly prize rules from Monday 9 November',
     options: ['Holders only, as now (100K $CWORM all week)', 'Holder bonus: everyone can win, holders get 1.5x prize points',
-      'Two prizes: half for the best players, half for the best holders', 'Open to everyone: holding gives nothing extra'] },
+      'Two prizes: half for the best players, half for the best holders'] },   // Damian 2026-11-02: no "open to everyone" option
 ];
 const SHOW = 7 * DAY;   // the results stay on the card for a week after the end
 const q = (env, s, ...v) => env.DB.prepare(s).bind(...v);

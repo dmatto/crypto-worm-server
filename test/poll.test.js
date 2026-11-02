@@ -37,23 +37,23 @@ test('poll: real players with 3 matches vote once each, can change it, and see t
   assert.equal(P.current(POLL.from - 1), null); assert.equal(P.current(MID).id, POLL.id); assert.equal(P.current(POLL.ends + 8 * 864e5), null);
 
   let c = await P.card(env, { id: 1 }, MID);
-  assert.deepEqual(c, { id: POLL.id, n: 4, ends: POLL.ends, starts: POLL.starts, open: true, need: 3, played: 3, can: true, mine: null });   // no counts before voting
+  assert.deepEqual(c, { id: POLL.id, n: 3, ends: POLL.ends, starts: POLL.starts, open: true, need: 3, played: 3, can: true, mine: null });   // no counts before voting
   c = await P.card(env, { id: 3 }, MID); assert.equal(c.can, false); assert.equal(c.played, 2);
   const no = await vote(env, 3, 1); assert.equal(no.status, 403); assert.match(no.error, /finish 3 matches/);
   assert.equal((await vote(env, 4, 1)).status, 403);                                             // never played
-  assert.equal((await vote(env, 1, 4)).status, 400); assert.equal((await vote(env, 1, 1.5)).status, 400);
+  assert.equal((await vote(env, 1, 3)).status, 400); assert.equal((await vote(env, 1, 1.5)).status, 400);
   assert.equal((await P.handle('/poll/vote', env, { id: 1 }, { id: 'old', choice: 1 }, { post: true }, MID)).status, 404);
   assert.equal((await vote(env, 2, 1, MID, true)).status, 403);                                   // load-test bots never vote
 
   let r = await vote(env, 1, 1);
-  assert.equal(r.poll.mine, 1); assert.deepEqual(r.poll.counts, [0, 1, 0, 0]); assert.equal(r.poll.total, 1);
-  r = await vote(env, 2, 2); assert.deepEqual(r.poll.counts, [0, 1, 1, 0]);
-  r = await vote(env, 1, 3); assert.equal(r.poll.mine, 3); assert.deepEqual(r.poll.counts, [0, 0, 1, 1]);   // changed, still one vote
+  assert.equal(r.poll.mine, 1); assert.deepEqual(r.poll.counts, [0, 1, 0]); assert.equal(r.poll.total, 1);
+  r = await vote(env, 2, 2); assert.deepEqual(r.poll.counts, [0, 1, 1]);
+  r = await vote(env, 1, 0); assert.equal(r.poll.mine, 0); assert.deepEqual(r.poll.counts, [1, 0, 1]);   // changed, still one vote
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM poll_votes').get().n, 2);
 
   const late = await vote(env, 2, 0, POLL.ends); assert.equal(late.status, 409);                  // closed: no more votes
   c = await P.card(env, { id: 3 }, POLL.ends + 1000);                                              // after the end everyone sees the results
-  assert.equal(c.open, false); assert.equal(c.can, false); assert.deepEqual(c.counts, [0, 0, 1, 1]);
+  assert.equal(c.open, false); assert.equal(c.can, false); assert.deepEqual(c.counts, [1, 0, 1]);
 });
 
 test('poll: /poll shows admins the votes, holders and others apart; merged accounts keep one vote', async () => {
@@ -61,7 +61,7 @@ test('poll: /poll shows admins the votes, holders and others apart; merged accou
   for (const [id, w] of [[1, 'W1'], [2, 'W2'], [3, null], [4, null], [5, null]]) env.sql.prepare("INSERT INTO players (id, name, wallet, created) VALUES (?, 'p', ?, 0)").run(id, w);
   for (const id of [1, 2, 3, 4, 5]) env.sql.prepare('INSERT INTO player_meta (player, played, last_seen) VALUES (?, 5, ?)').run(id, MID);
   env.sql.prepare("INSERT INTO holders (player, wallet, tier) VALUES (1, 'W1', 1), (2, 'OLD', 2)").run();   // 2's tier is for an old wallet: not a holder now
-  await vote(env, 1, 1); await vote(env, 2, 1); await vote(env, 3, 3); await vote(env, 4, 1);
+  await vote(env, 1, 1); await vote(env, 2, 1); await vote(env, 3, 2); await vote(env, 4, 1);
   const t = await P.resultsText(env, MID);
   assert.match(t, /Votes: 4 \(holders 1, others 3\)/);
   assert.match(t, /Could vote \(3\+ matches, seen in the last 7 days\): 5/);
@@ -71,7 +71,7 @@ test('poll: /poll shows admins the votes, holders and others apart; merged accou
 
   await P.mergePoll(env, 4, 3);                                                                     // 3 keeps its own vote
   await P.mergePoll(env, 5, 1);                                                                     // nothing to move
-  assert.deepEqual(env.sql.prepare('SELECT player, choice FROM poll_votes ORDER BY player').all().map(r => [r.player, r.choice]), [[1, 1], [2, 1], [3, 3]]);
+  assert.deepEqual(env.sql.prepare('SELECT player, choice FROM poll_votes ORDER BY player').all().map(r => [r.player, r.choice]), [[1, 1], [2, 1], [3, 2]]);
 });
 
 test('poll: the routes and the prize card carry it; the bot answers /poll for admins only', async () => {
