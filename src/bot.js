@@ -34,7 +34,7 @@ import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
 import { command as giftCommand } from './gifts.js';
-import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms } from './stars.js';
+import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
@@ -266,6 +266,7 @@ export async function webhook(req, env) {
   else if (cmd === '/paysupport' && env.DB) await tg(env, 'sendMessage', { chat_id, text: arg.trim() && m.from ? await paySupport(env, m.from, m.text.trim().slice(head.length).trim()) : PAYSUPPORT });   // Telegram Stars (stars.js)
   else if (cmd === '/terms') await tg(env, 'sendMessage', { chat_id, text: terms(env), disable_web_page_preview: true });
   else if (cmd === '/sales' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await salesText(env)).slice(0, 4000), parse_mode: 'HTML' });
+  else if (cmd === '/stars' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await shopCommand(env, arg) });
   else if (cmd === '/refund' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await refundCommand(env, arg) });
   else if (cmd === '/reply' && await isAdmin(env, m.from)) {                          // admins: answer a /paysupport
     const [to] = rest, text = m.text.trim().slice(head.length).trim().slice(String(to || '').length).trim();

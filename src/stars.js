@@ -3,13 +3,13 @@
 // 💚 Supporter badge. Stars never buy play $CWORM, ranking points, weekly prize entries, real $CWORM or power in a battle: looks
 // and status only. The store build of the game doesn't show any of it.
 //
-//   GET  /stars                 -> {items, sup, admin?}     what this account owns (packs come as their looks)
+//   GET  /stars                 -> {items, sup, admin?, live?}   what this account owns (packs come as their looks); live: open to all
 //   POST /stars/invoice {item}  -> {url}                    a Telegram invoice link for one catalog item (the game opens it with
 //                                                           Telegram.WebApp.openInvoice; on the web the link opens Telegram)
 // The bot's webhook (bot.js) answers pre_checkout_query (preCheckout: the item is on sale, the price is right, not owned yet;
 // Telegram wants the answer within 10 s) and records successful_payment (paid) in purchases; a refunded_payment, or an admin's
 // /refund, sets refunded and the look goes away. Admin bot commands: /sales, /refund <charge id>, /reply <telegram id> <text>
-// (to answer a /paysupport). Everyone: /paysupport <problem> (passed on to the admins) and /terms.
+// (to answer a /paysupport), /stars open|close (only admins see the shop until /stars open). Everyone: /paysupport <problem> (passed on to the admins) and /terms.
 //
 // The game holds the same ids and prices (SHOP items with xtr or pack, and XTR.list in crypto-worm.html): change both together.
 // Invoice pictures: play.cryptoworm.io/xtr/<id>.jpg (the game folder's xtr/).
@@ -47,18 +47,34 @@ export async function owned(env, player) {
   return { items: [...items], sup };
 }
 const has = (own, id) => { const it = CATALOG[id]; return !!it && !it.test && (it.sup ? own.sup : it.pack ? it.pack.every(x => own.items.includes(x)) : own.items.includes(id)) };
+// The shop is open to everyone only after an admin's /stars open (bot_kv 'xtr_open' = '1'); until then only admins see the shelf
+// and can pay, for the test purchase. Looks already bought always show.
+export const shopOpen = env => q(env, "SELECT v FROM bot_kv WHERE k = 'xtr_open'").first().then(r => !!r && r.v === '1').catch(() => false);
+async function mine(env, player) {
+  const own = await owned(env, player), admin = admins(env).has(player), live = await shopOpen(env);
+  return { ...own, ...(admin ? { admin: true } : {}), ...(live ? { live: true } : {}) };
+}
 // for the session: only when there is something to say
 export async function sessionStars(env, player) {
-  const own = await owned(env, player), admin = admins(env).has(player);
-  return own.items.length || own.sup || admin ? { ...own, ...(admin ? { admin: true } : {}) } : null;
+  const m = await mine(env, player);
+  return m.items.length || m.sup || m.admin || m.live ? m : null;
+}
+// /stars (admins): open or close the shop for everyone
+export async function shopCommand(env, arg) {
+  const a = String(arg || '').trim().toLowerCase();
+  if (a === 'open' || a === 'close') await q(env, "INSERT INTO bot_kv (k, v) VALUES ('xtr_open', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", a === 'open' ? '1' : '0').run();
+  const live = await shopOpen(env);
+  return live ? '⭐ The Stars shop is OPEN: every player sees ⭐ Exclusive in the Store.\n/stars close hides it again (looks already bought stay).'
+    : '⭐ The Stars shop is CLOSED: only admins see ⭐ Exclusive, for test purchases.\n/stars open shows it to every player.';
 }
 export const isSupporter = (env, player) => q(env, "SELECT 1 AS y FROM purchases WHERE player = ? AND item = 'supporter' AND refunded IS NULL", player).first().then(r => !!r).catch(() => false);
 
 export async function handle(path, env, me, body, { now = Date.now(), post = false } = {}) {
-  if (path === '/stars' && !post) { const own = await owned(env, me.id); return { ...own, ...(admins(env).has(me.id) ? { admin: true } : {}) } }
+  if (path === '/stars' && !post) return mine(env, me.id);
   if (path !== '/stars/invoice' || !post) return null;
   const id = String(body && body.item || ''), it = Object.hasOwn(CATALOG, id) ? CATALOG[id] : null;
   if (!it || (it.admin && !admins(env).has(me.id))) return { error: 'not on sale', code: 'bad', status: 404 };
+  if (!admins(env).has(me.id) && !await shopOpen(env)) return { error: 'the shop is not open yet', code: 'closed', status: 403 };
   if (!onSale(it, now)) return { error: 'not on sale any more', code: 'gone', status: 410 };
   if (has(await owned(env, me.id), id)) return { error: 'already yours', code: 'owned', status: 409 };
   if (!env.BOT_TOKEN) return { error: 'payments are not set up', status: 503 };
@@ -76,6 +92,7 @@ export async function preCheckout(env, pq, now = Date.now()) {
   else if (!onSale(it, now)) why = `The ${it.title} is no longer on sale.`;
   else if (!await q(env, 'SELECT 1 AS y FROM players WHERE id = ?', p.player).first()) why = 'We could not find your game account. Open the game and try again.';
   else if (it.admin && !admins(env).has(p.player)) why = 'This item is not on sale.';
+  else if (!admins(env).has(p.player) && !await shopOpen(env)) why = 'The shop is not open yet.';
   else if (has(await owned(env, p.player), p.item)) why = `The ${it.title} is already yours. Open the Store to wear it.`;
   await tg(env, 'answerPreCheckoutQuery', why ? { pre_checkout_query_id: pq.id, ok: false, error_message: why } : { pre_checkout_query_id: pq.id, ok: true });
   return !why;
