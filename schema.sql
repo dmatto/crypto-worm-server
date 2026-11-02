@@ -563,3 +563,11 @@ CREATE TABLE IF NOT EXISTS purchases (
   refunded INTEGER                          -- when it was refunded (the item is gone), NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS purchases_player ON purchases (player);
+-- In-game polls (poll.js, Damian 2026-11-02): one vote per real player and poll, which they can change until the poll ends.
+CREATE TABLE IF NOT EXISTS poll_votes (
+  poll     TEXT NOT NULL,                   -- poll.js POLLS id
+  player   INTEGER NOT NULL,
+  choice   INTEGER NOT NULL,                -- the option's index
+  at       INTEGER NOT NULL,                -- when they last voted
+  PRIMARY KEY (poll, player)
+);

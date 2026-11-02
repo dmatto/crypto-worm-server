@@ -10,7 +10,7 @@
 // calls a derby day and posts it to the group (clubs.js). /parody (admins)
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
-// /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js).
+// /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js); /poll (admins) the in-game poll's votes (poll.js).
 // /gift (admins) makes gift codes for play $CWORM, looks and free Custom Worms, lists them and turns them off (gifts.js); for
 // everyone else it says where to type a code in the game.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
@@ -30,6 +30,7 @@ import { wormOff, wormOn, wormCleanup } from './worms.js';
 import { teamMessage, teamBoard, adminTeams } from './teams.js';
 import { clubBoard, adminClubs, derbyCommand, postDerby } from './clubs.js';
 import { votesText as burnVotes } from './burn.js';
+import { resultsText as pollResults } from './poll.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
@@ -286,6 +287,7 @@ export async function webhook(req, env) {
   }
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
+  else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
     const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
     if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));

@@ -34,7 +34,8 @@
 //                                                               ranking and the battle's corners, online too (session player.av)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
 //   GET  /ranking?period=week|all&holders=1                    -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
-//   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js)
+//   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js); it carries {poll} while a poll runs
+//   GET  /poll, POST /poll/vote {id, choice}                    -> {poll}   in-game polls: one vote per real player, changeable until the end (see poll.js)
 //   GET  /burn, POST /burn/open, /burn/vote                      the Community burn teaser on Home: nothing burned yet, "I want this" votes (see burn.js)
 //   GET  /wagers, POST /wager/new, /wager/take, /wager/cancel, /wager/paid   Challenges: best of 3 for a play-money stake (see wager.js)
 //   POST /gift/redeem        {code}                             -> {ok, code, cworm, items, worm, rewards}   a gift code (see gifts.js); the
@@ -72,6 +73,7 @@ import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
 import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
+import { handle as pollHandle, card as pollCard, mergePoll } from './poll.js';
 import { handle as giftHandle, giftItems } from './gifts.js';
 import { handle as starsHandle, sessionStars, isSupporter } from './stars.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
@@ -197,6 +199,7 @@ async function link(env, me, target) {
   const a = me.id, b = target.id, q = (s, ...v) => env.DB.prepare(s).bind(...v);
   await mergeTeams(env, a, b);                                                         // community team: the target's own team wins
   await mergeClubs(env, a, b).catch(() => { });                                       // football club: the target's own pick wins
+  await mergePoll(env, a, b).catch(() => { });                                        // poll votes: the target's own vote wins
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
@@ -416,7 +419,12 @@ const app = {
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
       if (await isSim(env, me.id)) return json({ on: false }, 200, cors);                  // never for simulated players
       const r = await prizeHandle(path, env, me, body); if (!r) return json({ error: 'not found' }, 404, cors);
+      if (r.on) { const poll = await pollCard(env, me).catch(() => null); if (poll) r.poll = poll }   // the poll sits on the prize card
       return json(r.error ? { error: r.error } : r, r.status || 200, cors);
+    }
+    if (path === '/poll' || path === '/poll/vote') {                                       // in-game polls (see poll.js)
+      const r = await pollHandle(path, env, me, body, { post: req.method === 'POST', sim: await isSim(env, me.id) });
+      if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/burn' || path.startsWith('/burn/')) {                                    // the Community burn teaser (see burn.js)
       const r = await burnHandle(path, env, me, req.method, await isSim(env, me.id));
