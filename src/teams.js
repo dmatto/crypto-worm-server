@@ -5,7 +5,7 @@
 // (a finished 1v1 or winning an online Worm Royale against them) adds CLASH points. A weekly Teams ranking; the bot posts
 // last week's top 3 teams on Mondays. Everything here is play money and bragging rights: no real prize.
 //
-//   GET  /teams?period=week|all       -> {period, since, top: [{rank, id, name, tag, emoji, members, pts}], mine, can, wait}
+//   GET  /teams?period=week|month|all -> {period, since, top: [{rank, id, name, tag, emoji, members, pts}], mine, can, wait}
 //   GET  /teams/<id>                  -> {team: {..., rank, pts, code?}, members: [{id, name, av, role, pts, online?}], mine}
 //   GET  /teams/code/<code>           -> the same, for an invite link (startapp=t_<code>)
 //   POST /teams/create {name, tag, emoji, tg?}  -> the new team (as /teams/<id>)
@@ -25,7 +25,7 @@
 // Points a member earned stay with the team they earned them for.
 
 import { newCode } from './match.js';
-import { weekStart, gameLink } from './growth.js';
+import { weekStart, monthStart, gameLink } from './growth.js';
 import { xai, VISION_MODEL } from './worms.js';
 import { tg } from './bot.js';
 
@@ -53,13 +53,13 @@ export async function teamOf(env, player) {
   return q(env, 'SELECT t.id, t.name, t.tag, t.emoji, m.role, l.id AS logo FROM team_members m JOIN teams t ON t.id = m.team LEFT JOIN team_logos l ON l.team = t.id WHERE m.player = ?', player).first().catch(() => null);
 }
 
-// The weekly (or all time) table: every team, ranked by the points its members earned for it.
+// The weekly (monthly, or all time) table: every team, ranked by the points its members earned for it.
 async function table(env, period, now = Date.now()) {
-  const wk = weekStart(now), week = period !== 'all';
+  const pts = period === 'month' ? 'SELECT SUM(p.pts) FROM team_month p WHERE p.team = t.id AND p.month_start = ?'
+    : period === 'all' ? 'SELECT SUM(p.pts) FROM team_points p WHERE p.team = t.id' : 'SELECT SUM(p.pts) FROM team_points p WHERE p.team = t.id AND p.week_start = ?';
   const { results } = await q(env, `SELECT t.id, t.name, t.tag, t.emoji, t.created, (SELECT l.id FROM team_logos l WHERE l.team = t.id) AS logo,
-      (SELECT COUNT(*) FROM team_members m WHERE m.team = t.id) AS members,
-      COALESCE((SELECT SUM(p.pts) FROM team_points p WHERE p.team = t.id ${week ? 'AND p.week_start = ?' : ''}), 0) AS pts
-      FROM teams t ORDER BY pts DESC, t.created ASC`, ...(week ? [wk] : [])).all();
+      (SELECT COUNT(*) FROM team_members m WHERE m.team = t.id) AS members, COALESCE((${pts}), 0) AS pts
+      FROM teams t ORDER BY pts DESC, t.created ASC`, ...(period === 'month' ? [monthStart(now)] : period === 'all' ? [] : [weekStart(now)])).all();
   return results.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, tag: r.tag, emoji: r.emoji, ...(r.logo ? { logo: r.logo } : {}), members: r.members, pts: r.pts | 0 }));
 }
 
@@ -91,8 +91,8 @@ async function waitFor(env, me, now) {
 export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
   const sub = path.slice('/teams'.length);
   if (sub === '' || sub === '/') {
-    const period = opts.period === 'all' ? 'all' : 'week', rows = await table(env, period, now), mine = await teamOf(env, me.id);
-    return { period, since: period === 'week' ? weekStart(now) : null, top: rows.slice(0, TOP), players: rows.length,
+    const period = opts.period === 'all' || opts.period === 'month' ? opts.period : 'week', rows = await table(env, period, now), mine = await teamOf(env, me.id);
+    return { period, since: period === 'week' ? weekStart(now) : period === 'month' ? monthStart(now) : null, top: rows.slice(0, TOP), players: rows.length,
       mine: mine ? { ...mine, ...(rows.find(r => r.id === mine.id) || {}) } : null, can: !mine && await canCreate(env, me), wait: mine ? 0 : await waitFor(env, me, now),
       invites: await myInvites(env, me, now) };
   }
@@ -265,7 +265,7 @@ async function leave(env, player, mine, now) {
   if (mine.role !== 'lead') return;
   const next = await q(env, 'SELECT player FROM team_members WHERE team = ? ORDER BY joined ASC LIMIT 1', mine.id).first();
   if (next) await env.DB.batch([q(env, "UPDATE team_members SET role = 'lead' WHERE player = ?", next.player), q(env, 'UPDATE teams SET owner = ? WHERE id = ?', next.player, mine.id)]);
-  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id), q(env, 'DELETE FROM team_invites WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
+  else await env.DB.batch([q(env, 'DELETE FROM team_points WHERE team = ?', mine.id), q(env, 'DELETE FROM team_month WHERE team = ?', mine.id), q(env, 'DELETE FROM team_logos WHERE team = ?', mine.id), q(env, 'DELETE FROM team_invites WHERE team = ?', mine.id), q(env, 'DELETE FROM teams WHERE id = ?', mine.id)]);   // nobody left: the team goes
 }
 
 // Two accounts become one (index.js link: `a` folds into `b`). b's own team wins; points a earned move to b.
@@ -277,17 +277,22 @@ export async function mergeTeams(env, a, b, now = Date.now()) {
   await env.DB.batch([
     q(env, `INSERT INTO team_points (team, week_start, player, pts) SELECT team, week_start, ?, pts FROM team_points WHERE player = ?
       ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, b, a), q(env, 'DELETE FROM team_points WHERE player = ?', a),
+    q(env, `INSERT INTO team_month (team, month_start, player, pts) SELECT team, month_start, ?, pts FROM team_month WHERE player = ?
+      ON CONFLICT(team, month_start, player) DO UPDATE SET pts = pts + excluded.pts`, b, a), q(env, 'DELETE FROM team_month WHERE player = ?', a),
     q(env, 'UPDATE team_clash SET winner = ? WHERE winner = ?', b, a), q(env, 'UPDATE team_clash SET loser = ? WHERE loser = ?', b, a),
     q(env, 'DELETE FROM team_leave WHERE player = ?', a)]);
 }
 
+// the same points again in the team's month (the monthly table)
+const monthPts = (env, team, player, pts, now) => q(env, `INSERT INTO team_month (team, month_start, player, pts) VALUES (?, ?, ?, ?)
+  ON CONFLICT(team, month_start, player) DO UPDATE SET pts = pts + excluded.pts`, team, monthStart(now), player, pts);
 // A member banked play money (addScore in index.js, already capped): the same amount scores for their team this week.
 export async function teamScore(env, player, amount, now = Date.now()) {
   if (!(amount > 0)) return;
   const m = await q(env, 'SELECT team FROM team_members WHERE player = ?', player).first().catch(() => null); if (!m) return;
   if (await isSim(env, player)) amount = Math.round(amount * SIM_SHARE); if (!(amount > 0)) return;
-  await q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
-    ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.team, weekStart(now), player, amount).run();
+  await env.DB.batch([q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
+    ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.team, weekStart(now), player, amount), monthPts(env, m.team, player, amount, now)]);
 }
 
 // An online win over a rival team's member (a finished 1v1, or an online Worm Royale won against them): CLASH points for the
@@ -301,7 +306,7 @@ export async function teamClash(env, winner, loser, now = Date.now()) {
   if ((done.n | 0) >= CLASH_DAY || (done.same | 0) > 0) return 0;
   await env.DB.batch([q(env, 'INSERT INTO team_clash (at, winner, loser, wteam, lteam) VALUES (?, ?, ?, ?, ?)', now, winner, loser, a.team, b.team),
     q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
-      ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, a.team, weekStart(now), winner, CLASH),
+      ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, a.team, weekStart(now), winner, CLASH), monthPts(env, a.team, winner, CLASH, now),
     q(env, 'DELETE FROM team_clash WHERE at < ?', now - 35 * DAY)]);
   return CLASH;
 }
@@ -345,7 +350,7 @@ export async function adminTeams(env, arg) {
   }
   if (off) {
     const t = await q(env, 'SELECT id, name FROM teams WHERE id = ?', Number(off[1])).first(); if (!t) return `No team with id ${off[1]}.`;
-    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, 'DELETE FROM team_invites WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
+    await env.DB.batch([q(env, 'DELETE FROM team_members WHERE team = ?', t.id), q(env, 'DELETE FROM team_points WHERE team = ?', t.id), q(env, 'DELETE FROM team_month WHERE team = ?', t.id), q(env, 'DELETE FROM team_logos WHERE team = ?', t.id), q(env, 'DELETE FROM team_invites WHERE team = ?', t.id), q(env, 'DELETE FROM teams WHERE id = ?', t.id)]);
     return `🚫 Removed the team ${t.name} (id ${t.id}). Its members are free to join another team.`;
   }
   const rows = (await table(env, 'week')).slice(0, 25);

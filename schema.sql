@@ -571,3 +571,30 @@ CREATE TABLE IF NOT EXISTS poll_votes (
   at       INTEGER NOT NULL,                -- when they last voted
   PRIMARY KEY (poll, player)
 );
+-- Monthly rankings (Damian 2026-11-03: "in every option, holders, teams, groups, you should have the historic, monthly and weekly
+-- options"): the same points as the weekly tables, by calendar month (UTC, from the 1st at 00:00). Kept, like the weeks.
+CREATE TABLE IF NOT EXISTS month_scores (   -- play-money $CWORM each player gained this month (the ranking; addScore in index.js)
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  cworm       INTEGER NOT NULL DEFAULT 0,
+  last        INTEGER NOT NULL DEFAULT 0,  -- last report, for ties
+  PRIMARY KEY (month_start, player)
+);
+CREATE INDEX IF NOT EXISTS month_scores_m ON month_scores (month_start, cworm);
+CREATE TABLE IF NOT EXISTS team_month (     -- points each member earned for their team, by month (teams.js)
+  team        INTEGER NOT NULL,
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  pts         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (team, month_start, player)
+);
+CREATE INDEX IF NOT EXISTS team_month_m ON team_month (month_start, team);
+CREATE TABLE IF NOT EXISTS club_month (     -- points each fan earned for their club, by month (clubs.js)
+  club        TEXT NOT NULL,
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  pts         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (club, month_start, player)
+);
+CREATE INDEX IF NOT EXISTS club_month_m ON club_month (month_start, club);
+CREATE INDEX IF NOT EXISTS club_month_player ON club_month (player);

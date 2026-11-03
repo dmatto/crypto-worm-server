@@ -33,7 +33,7 @@
 //   POST /me/avatar          {av}                               -> session   pick an avatar (an id from the game's list); it shows in the
 //                                                               ranking and the battle's corners, online too (session player.av)
 //   POST /me/wallet/unlink                                       -> session   disconnect the wallet (accounts that also have Telegram)
-//   GET  /ranking?period=week|all&holders=1                    -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
+//   GET  /ranking?period=week|month|all&holders=1              -> {period, since, holders?, top: [{rank, id, name, cworm, tier?, ticket?}], me, players}   holders=1: holders only
 //   GET  /prize, POST /prize/check, /prize/x                     the weekly prize card (see prize.js); it carries {poll} while a poll runs
 //   GET  /poll, POST /poll/vote {id, choice}                    -> {poll}   in-game polls: one vote per real player, changeable until the end (see poll.js)
 //   GET  /burn, POST /burn/open, /burn/vote                      the Community burn teaser on Home: nothing burned yet, "I want this" votes (see burn.js)
@@ -63,7 +63,7 @@ import { Lobby } from './lobby.js';
 import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto, tellAdminsText } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
+import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
@@ -96,6 +96,8 @@ async function addScore(env, me, amount, imported) {
       s.week_start = week; s.week = 0 }
     amount = Math.min(amount, SCORE_MAX, Math.max(0, SCORE_DAY - s.day));
     s.total += amount; s.week += amount; s.day += amount; s.last = now;
+    if (amount > 0) await env.DB.prepare(`INSERT INTO month_scores (month_start, player, cworm, last) VALUES (?, ?, ?, ?)
+      ON CONFLICT(month_start, player) DO UPDATE SET cworm = cworm + excluded.cworm, last = excluded.last`).bind(monthStart(now), me.id, amount, now).run();   // the monthly ranking
     await logScore(env, me.id, amount, now);                      // the weekly prize chart and its fair-play log
     await teamScore(env, me.id, amount, now).catch(() => { });    // the same amount scores for the player's community team
     await clubScore(env, me.id, amount, now).catch(() => { });    // and for the football club they support (double on its derby day)
@@ -109,16 +111,18 @@ const NICK = /^[\p{L}\p{N}][\p{L}\p{N} _.\-]{1,14}[\p{L}\p{N}]$/u, RANK_TOP = 50
 // A short list of words a nickname can't contain, and names that would pass for the team or the game.
 const NICK_BLOCK = /(fuck|shit|bitch|cunt|nigg|fag|rape|nazi|hitler|porn|whore|slut|dick|pussy|admin|moderator|official|cryptoworm|crypto worm|whale|cwormteam|support)/i;   // whale: holder titles are shown by badge, not by name
 
-// The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC) or all time. The game reports what each
+// The ranking is play-money $CWORM gained: this week (from Monday 00:00 UTC), this month (from the 1st) or all time. The game reports what each
 // match banked; the server caps each report and each day so a tampered phone can't run away with it.
 // holders (Damian 2026-10-19: "an option to see only the holders"): only players with a holder tier, ranked among themselves.
 async function ranking(env, period, me, holders) {
-  const since = weekStart();
-  let rows = period === 'week'
+  const since = period === 'month' ? monthStart() : weekStart();
+  let rows = period === 'month'
+    ? (await env.DB.prepare(`SELECT p.id, p.name, s.cworm AS cworm, ${TIER_COL} FROM month_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.month_start = ? AND s.cworm > 0 ORDER BY s.cworm DESC, s.last ASC`).bind(since).all()).results
+    : period === 'week'
     ? (await env.DB.prepare(`SELECT p.id, p.name, s.week AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.week_start = ? AND s.week > 0 ORDER BY s.week DESC, s.last ASC`).bind(since).all()).results
     : (await env.DB.prepare(`SELECT p.id, p.name, s.total AS cworm, ${TIER_COL} FROM cworm_scores s JOIN players p ON p.id = s.player ${TIER_JOIN} WHERE s.total > 0 ORDER BY s.total DESC, s.last ASC`).all()).results;
   if (holders) rows = rows.filter(r => r.tier > 0);
-  const out = { period: period === 'week' ? 'week' : 'all', since: period === 'week' ? since : null, ...(holders ? { holders: true } : {}), ...place(rows, me, wormAdmins(env)) };
+  const out = { period, since: period === 'all' ? null : since, ...(holders ? { holders: true } : {}), ...place(rows, me, wormAdmins(env)) };
   const shown = [...out.top, ...(out.me ? [out.me] : [])], clubs = await clubsInfo(env, shown.map(r => r.club)).catch(() => new Map());
   for (const r of shown) if (r.club) { const c = clubs.get(r.club); if (c) r.club = { id: c.id, n: c.n, c: c.c }; else delete r.club }   // the club's name and colors
   if (period === 'week') {                                        // 🎟️ next to players who did every weekly prize step
@@ -218,6 +222,9 @@ async function link(env, me, target) {
        week = CASE WHEN week_start = excluded.week_start THEN week + excluded.week WHEN excluded.week_start > week_start THEN excluded.week ELSE week END,
        week_start = MAX(week_start, excluded.week_start), imported = MAX(imported, excluded.imported), last = MAX(last, excluded.last)`, b, a),
     q('DELETE FROM cworm_scores WHERE player = ?', a),
+    q(`INSERT INTO month_scores (month_start, player, cworm, last) SELECT month_start, ?, cworm, last FROM month_scores WHERE player = ?
+       ON CONFLICT(month_start, player) DO UPDATE SET cworm = cworm + excluded.cworm, last = MAX(last, excluded.last)`, b, a),   // the monthly ranking
+    q('DELETE FROM month_scores WHERE player = ?', a),
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
     q('UPDATE purchases SET player = ? WHERE player = ?', b, a),                        // Telegram Stars looks and badge follow the account
     q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
@@ -394,7 +401,7 @@ const app = {
       if (r.error) return json({ error: r.error }, r.status, cors);
       return json({ added: r.added, week: r.s.week_start === weekStart() ? r.s.week : 0, total: r.s.total }, 200, cors);
     }
-    if (path === '/ranking' && req.method === 'GET') return json(await ranking(env, url.searchParams.get('period') === 'week' ? 'week' : 'all', me, url.searchParams.get('holders') === '1'), 200, cors);
+    if (path === '/ranking' && req.method === 'GET') { const pd = url.searchParams.get('period'); return json(await ranking(env, pd === 'week' || pd === 'month' ? pd : 'all', me, url.searchParams.get('holders') === '1'), 200, cors) }
     if (path === '/feedback' && req.method === 'POST') {
       const text = String(body.text || '').trim().slice(0, MAX_FEEDBACK), typed = String(body.wallet || '').trim();
       if (!text) return json({ error: 'write something first' }, 400, cors);
@@ -465,7 +472,7 @@ const app = {
     if (path === '/clubs' || path.startsWith('/clubs/')) {                                 // football clubs and the club war (see clubs.js)
       const tell = text => { const t = tellAdminsText(env, text).catch(() => { }); if (!ctx || !ctx.waitUntil) return t; ctx.waitUntil(t); return Promise.resolve() };
       if (req.method === 'POST' && await isSim(env, me.id)) return json({ error: 'not for test players' }, 403, cors);
-      const r = await clubHandle(path, env, me, body, { post: req.method === 'POST', tell, cc: geo || null });
+      const r = await clubHandle(path, env, me, body, { post: req.method === 'POST', tell, cc: geo || null, period: url.searchParams.get('period') });
       if (r) { const { status, ...out } = r; return json(out, status || 200, cors) }
     }
     if (path === '/chat' || path.startsWith('/chat/')) {                                   // World and Team chat (see chat.js)

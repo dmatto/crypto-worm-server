@@ -8,7 +8,7 @@
 // derby). Admins call derby days (/derby in the bot): that UTC day both fan bases score double, in the club war and in the game
 // (a gift of play money that doesn't count for the ranking or the weekly prize). Bragging rights and play money only.
 //
-//   GET  /clubs                 -> {mine, top: [{rank, id, name, cc, c, fans, pts}], day, extra: [[id, name, cc, 'rrggbb,rrggbb']], since}
+//   GET  /clubs?period=week|month|all -> {period, mine, top: [{rank, id, name, cc, c, fans, pts}], day, extra: [[id, name, cc, 'rrggbb,rrggbb']], since}
 //   POST /me/club {id}          (index.js) pick or change the club: the first pick any time, then once every CHANGE_MS (a change
 //                               within UNDO_MS of a pick is free, for a wrong tap); {id: null} leaves the club. Answers the session.
 //                               An account's first pick ever pays CLUB_REWARD play $CWORM (a reward row: POST /rewards claims it).
@@ -17,7 +17,7 @@
 // Points a fan earned stay with the club they earned them for.
 
 import { CLUBS, DERBIES } from './clubs-data.js';
-import { weekStart, gameLink } from './growth.js';
+import { weekStart, monthStart, gameLink } from './growth.js';
 import { xai, VISION_MODEL } from './worms.js';
 import { tg } from './bot.js';
 
@@ -98,6 +98,9 @@ export async function derbyDay(env, now = Date.now()) {
 }
 const onDay = (d, club) => !!d && (d.a === club || d.b === club);
 
+// the same points again in the club's month (the monthly table)
+const monthPts = (env, club, player, pts, now) => q(env, `INSERT INTO club_month (club, month_start, player, pts) VALUES (?, ?, ?, ?)
+  ON CONFLICT(club, month_start, player) DO UPDATE SET pts = pts + excluded.pts`, club, monthStart(now), player, pts);
 // A fan banked play money (addScore in index.js, already capped): the same amount scores for their club this week, twice on its derby day.
 export async function clubScore(env, player, amount, now = Date.now()) {
   if (!(amount > 0)) return;
@@ -105,8 +108,8 @@ export async function clubScore(env, player, amount, now = Date.now()) {
   if (await isSim(env, player)) amount = Math.round(amount * SIM_SHARE);
   if (onDay(await derbyDay(env, now), m.club)) amount *= 2;
   if (!(amount > 0)) return;
-  await q(env, `INSERT INTO club_points (club, week_start, player, pts) VALUES (?, ?, ?, ?)
-    ON CONFLICT(club, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.club, weekStart(now), player, amount).run();
+  await env.DB.batch([q(env, `INSERT INTO club_points (club, week_start, player, pts) VALUES (?, ?, ?, ?)
+    ON CONFLICT(club, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.club, weekStart(now), player, amount), monthPts(env, m.club, player, amount, now)]);
 }
 
 // An online win over another club's fan (a finished 1v1, or an online Worm Royale won with them in it): WIN points for the
@@ -122,15 +125,17 @@ export async function clubWin(env, winner, loser, now = Date.now()) {
   const pts = (derby ? DERBY : WIN) * (onDay(await derbyDay(env, now), a.club) ? 2 : 1);
   await env.DB.batch([q(env, 'INSERT INTO club_wins (at, winner, loser, wclub, lclub, derby) VALUES (?, ?, ?, ?, ?, ?)', now, winner, loser, a.club, b.club, derby ? 1 : 0),
     q(env, `INSERT INTO club_points (club, week_start, player, pts) VALUES (?, ?, ?, ?)
-      ON CONFLICT(club, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, a.club, weekStart(now), winner, pts),
+      ON CONFLICT(club, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, a.club, weekStart(now), winner, pts), monthPts(env, a.club, winner, pts, now),
     q(env, 'DELETE FROM club_wins WHERE at < ?', now - 35 * DAY)]);
   return { pts, derby };
 }
 
-// The club war: clubs ranked by this week's points, with their fans (players who picked them).
-async function table(env, now = Date.now()) {
-  const wk = weekStart(now);
-  const [pts, fans] = await Promise.all([q(env, 'SELECT club, SUM(pts) AS pts FROM club_points WHERE week_start = ? GROUP BY club ORDER BY pts DESC LIMIT 500', wk).all(),
+// The club war: clubs ranked by this week's points (this month's, or all time), with their fans (players who picked them).
+// [sql for one period's points, its bound value] (pts AS p: a club's, or one fan's with AND player = ?)
+const PER = (period, now) => period === 'month' ? ['FROM club_month WHERE month_start = ?', [monthStart(now)]] : period === 'all' ? ['FROM club_points WHERE 1 = 1', []] : ['FROM club_points WHERE week_start = ?', [weekStart(now)]];
+async function table(env, now = Date.now(), period = 'week') {
+  const [from, v] = PER(period, now);
+  const [pts, fans] = await Promise.all([q(env, `SELECT club, SUM(pts) AS pts ${from} GROUP BY club ORDER BY pts DESC LIMIT 500`, ...v).all(),
     q(env, 'SELECT club, COUNT(*) AS n FROM player_club GROUP BY club').all()]);
   const fan = new Map(fans.results.map(r => [r.club, r.n])), info = await clubsInfo(env, pts.results.map(r => r.club));
   return pts.results.filter(r => info.has(r.club) && r.pts > 0).map((r, i) => { const c = info.get(r.club); return { rank: i + 1, id: c.id, name: c.n, cc: c.cc, c: c.c, fans: fan.get(r.club) || 0, pts: r.pts | 0 } });
@@ -138,16 +143,17 @@ async function table(env, now = Date.now()) {
 
 export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
   if (path === '/clubs' && !opts.post) {
-    const rows = await table(env, now), mine = await clubOf(env, me.id), d = await derbyDay(env, now);
+    const period = opts.period === 'month' || opts.period === 'all' ? opts.period : 'week', [from, v] = PER(period, now);
+    const rows = await table(env, now, period), mine = await clubOf(env, me.id), d = await derbyDay(env, now);
     let my = null;
     if (mine) {
       const row = rows.find(r => r.id === mine.id), fans = await q(env, 'SELECT COUNT(*) AS n FROM player_club WHERE club = ?', mine.id).first();
-      const own = await q(env, 'SELECT COALESCE(SUM(pts), 0) AS n FROM club_points WHERE club = ? AND week_start = ? AND player = ?', mine.id, weekStart(now), me.id).first();
+      const own = await q(env, `SELECT COALESCE(SUM(pts), 0) AS n ${from} AND club = ? AND player = ?`, ...v, mine.id, me.id).first();
       my = { ...mine, rank: row ? row.rank : null, pts: row ? row.pts : 0, fans: fans.n | 0, myPts: own.n | 0, rivals: rivalsOf(mine.id).slice(0, 12),
         change: now - mine.since < UNDO_MS ? 0 : Math.max(0, mine.since + CHANGE_MS - now) };
     }
     const ex = [...(await extras(env, now)).values()].map(c => [c.id, c.n, c.cc, c.c ? c.c.map(x => x.slice(1)).join(',') : '']);
-    return { since: weekStart(now), mine: my, top: rows.slice(0, TOP), clubs: rows.length, day: d ? { a: await clubInfo(env, d.a), b: await clubInfo(env, d.b), name: d.name || null } : null, extra: ex, cc: opts.cc || null };
+    return { period, since: period === 'month' ? monthStart(now) : period === 'all' ? null : weekStart(now), mine: my, top: rows.slice(0, TOP), clubs: rows.length, day: d ? { a: await clubInfo(env, d.a), b: await clubInfo(env, d.b), name: d.name || null } : null, extra: ex, cc: opts.cc || null };
   }
   if (path === '/clubs/suggest' && opts.post) return suggest(env, me, body, opts, now);
   return null;
@@ -209,6 +215,8 @@ export async function mergeClubs(env, a, b) {
     q(env, 'INSERT OR IGNORE INTO player_club (player, club, at) SELECT ?, club, at FROM player_club WHERE player = ?', b, a), q(env, 'DELETE FROM player_club WHERE player = ?', a),
     q(env, `INSERT INTO club_points (club, week_start, player, pts) SELECT club, week_start, ?, pts FROM club_points WHERE player = ?
       ON CONFLICT(club, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, b, a), q(env, 'DELETE FROM club_points WHERE player = ?', a),
+    q(env, `INSERT INTO club_month (club, month_start, player, pts) SELECT club, month_start, ?, pts FROM club_month WHERE player = ?
+      ON CONFLICT(club, month_start, player) DO UPDATE SET pts = pts + excluded.pts`, b, a), q(env, 'DELETE FROM club_month WHERE player = ?', a),
     q(env, 'UPDATE club_wins SET winner = ? WHERE winner = ?', b, a), q(env, 'UPDATE club_wins SET loser = ? WHERE loser = ?', b, a)]);
 }
 

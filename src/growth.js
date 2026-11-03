@@ -44,6 +44,7 @@ export const MILESTONES = [{ n: 3, amount: 500, skin: 'Coral crew' }, { n: 5, am
 const DAY = 864e5, REMIND_GAP = 20 * 3600e3, ACTIVE_MS = 7 * DAY, RECENT_MS = 2 * 3600e3, REMIND_MAX = 100, DAILY_HOUR = 16;
 
 // Monday 00:00 UTC of this week: the weekly ranking starts over then.
+export function monthStart(now = Date.now()) { const d = new Date(now); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) }   // 1st of the month, 00:00 UTC
 export function weekStart(now = Date.now()) { const d = new Date(now); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime() }
 export const cleanSource = s => { s = String(s || '').trim().toLowerCase(); return /^[a-z0-9_]{1,24}$/.test(s) ? s : null };
 export const flag = cc => /^[A-Z]{2}$/.test(cc || '') ? String.fromCodePoint(...[...cc].map(c => 0x1f1a5 + c.charCodeAt(0))) : '';
