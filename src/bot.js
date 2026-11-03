@@ -4,7 +4,7 @@
 // /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
 // "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
 // the week that ended, with the payout lines and the score logs as files; /prize skip <id> and /prize unskip <id> take a
-// player out of the prize or let them back in). /team shows a player's community team and its invite link, /teams the week's
+// player out of the prize or let them back in; /prize teams and /prize teams last: the Team Prize winner, see teamprize.js). /team shows a player's community team and its invite link, /teams the week's
 // top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /clubs: the
 // football club war this week (also in groups); admins also see clubs players added, /clubs off <id> takes one off; /derby (admins)
 // calls a derby day and posts it to the group (clubs.js). /parody (admins)
@@ -38,6 +38,7 @@ import { sweep as wagerSweep } from './wager.js';
 import { command as giftCommand } from './gifts.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { command as payCommand, cron as payCron } from './payout.js';
+import { teamPrizeText } from './teamprize.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
@@ -297,7 +298,9 @@ export async function webhook(req, env) {
       await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), disable_web_page_preview: true }) } }
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
     const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
-    if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
+    if (/^teams?\b/i.test(arg.trim())) { const now = Date.now(), w = weekOf(now) - (/last/i.test(arg) ? 7 * 864e5 : 0);   // the Team Prize (teamprize.js)
+      await tg(env, 'sendMessage', { chat_id, text: (await teamPrizeText(env, w, now)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true }) }
+    else if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
     else { const p = await prizeSkip(env, Number(sk[2]), !sk[1], (await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null))?.id);
       await tg(env, 'sendMessage', { chat_id, text: !p ? `No player with id ${sk[2]}.` : sk[1] ? `✅ ${p.name} (id ${p.id}) can win the weekly prize again.`
         : `🚫 ${p.name} (id ${p.id}) is out of the weekly prize from now on, this week too. They still play and stay in the ranking.\n\n/prize unskip ${p.id} brings them back.` }) } }
@@ -343,16 +346,16 @@ export async function simCommand(env, arg, now = Date.now()) {
 }
 
 // /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and
-// the wallet balances are for the admin to check by hand before sending the tokens.
+// the wallet balances are for the admin to check by hand before sending the SOL (/pay prize).
 async function sendPrize(env, chat_id, last) {
   const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
   if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
   const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
   const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : '', f.royaleOdd ? `⚠️ ${f.royaleOdd} Worm Royale place${f.royaleOdd > 1 ? 's' : ''} that did not match` : ''].filter(Boolean);
-  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts · ${x.prize} SOL${x.cworm != null ? ' ≈ ' + fmt(x.cworm) + ' $CWORM' : ''}\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n` +
+  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts · ${x.prize} SOL\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n` +
     `    ${x.fair.runs} checked matches · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => ' · ' + t).join('')}\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
   const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} ${r.entrants === 1 ? 'player' : 'players'} did all 5 steps.\n` +
-    (r.price ? `Price now: 1 SOL ≈ ${fmt(Math.round(r.price.perSol))} $CWORM (${r.price.from}). Check it again right before sending.\n\n` : 'The $CWORM price could not be read: work out each SOL amount in $CWORM by hand.\n\n') +
+    'Prizes are paid in SOL: /pay prize makes the batch once the week is over.\n\n' +
     (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
     (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + (x.why === 'group' ? ' (left the group)' : ' (holds ' + fmt(x.now) + ')')).join(', ')}` : '') +
     (r.skipped.length ? `\n\nTaken out by an admin: ${r.skipped.map(x => esc(x.name) + ' (id ' + x.id + ')').join(', ')}` : '') +
@@ -361,7 +364,7 @@ async function sendPrize(env, chat_id, last) {
   if (!r.winners.length) return;
   await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');
   await sendDoc(env, chat_id, r.log, `weekly-prize-${d(w)}-score-log.csv`, 'Every score report of these players this week.');
-  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,$CWORM at the price above) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,SOL) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
 }
 
 // Once a day the bot asks Telegram about the first admin's place in the group, the same question the weekly prize's group

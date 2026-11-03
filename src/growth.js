@@ -23,6 +23,7 @@ import { newCode } from './match.js';
 import { logPlayDay } from './prize.js';
 import { moments } from './feed.js';
 import { teamTopText } from './teams.js';
+import { teamPrizePost } from './teamprize.js';
 import { clubTopText } from './clubs.js';
 
 // Invite & earn (Damian 2026-10-28: inviting new players is the fastest way to earn $CWORM in the game, and the game says so):
@@ -285,7 +286,7 @@ export async function weekly(env, now = Date.now()) {
   const group = await kv.get(env, 'group'); if (!group) return;
   if (await kv.get(env, 'top_posted') === String(start)) return;
   await kv.set(env, 'top_posted', start);
-  const text = [topText(await weekTop(env, start - 7 * DAY), 'Top 10 of last week'), await teamTopText(env, start - 7 * DAY), await clubTopText(env, start - 7 * DAY).catch(() => '')].filter(Boolean).join('\n\n');   // and last week's top 3 community teams and football clubs
+  const text = [topText(await weekTop(env, start - 7 * DAY), 'Top 10 of last week'), await teamTopText(env, start - 7 * DAY), await teamPrizePost(env, start - 7 * DAY).catch(() => ''), await clubTopText(env, start - 7 * DAY).catch(() => '')].filter(Boolean).join('\n\n');   // and last week's top 3 community teams and football clubs
   if (text) await tg(env, 'sendMessage', { chat_id: Number(group), text: text + '\n\nA new week has started. Tap Play to climb the ranking! 🪱', parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
 }

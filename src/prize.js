@@ -1,11 +1,11 @@
-// Weekly prize (Damian 2026-10-15, monetization/weekly-prize-analysis.md): 1 SOL worth of real $CWORM a week for the top 10
-// of a prize chart (Damian 2026-10-15: a SOL value is steadier than a fixed token amount; it was 1,000,000 $CWORM). Players qualify with five steps: they are in the Telegram group (the bot asks Telegram), gave their X username
+// Weekly prize (Damian 2026-10-15, monetization/weekly-prize-analysis.md): 1 SOL a week for the top 10 of a prize chart, paid
+// in SOL (Damian 2026-11-03: "Los premios se van a pagar solo en SOL"; it was 1 SOL worth of $CWORM, and 1,000,000 $CWORM before). Players qualify with five steps: they are in the Telegram group (the bot asks Telegram), gave their X username
 // (Damian checks the top 10's follows by hand), linked a wallet with the Holder tier (100K, read by holders.js), held it for
 // HOLD_DAYS days in a row this week (Damian 2026-11-03: 3 days, so new members can win; it was the whole week; no reading under
 // 100K since the count started, and the Monday payout still reads 100K), and finished matches on 3 different UTC days this week.
 // Prize points are the week's play-money $CWORM gained, at most 1,500 a UTC day, from a log of every score report that also
 // serves Monday's fair-play review. Accounts must be 3 days old by the Monday payout, so joining by Thursday counts (Damian 2026-11-03; it was 8, and 14 before 10-16). The server pays nothing: /prize in
-// the bot gives the admins the list, the payout lines and the logs, and Damian sends the tokens from the treasury.
+// the bot gives the admins the list, the payout lines and the logs, and /pay prize (payout.js) sends the SOL after an admin's OK.
 // Against scripts (Damian 2026-10-16): the phone reports the score, so a day's prize points also can't pass what the matches
 // the server saw start and finish that day can carry (see runEnd), ties go to online wins against real players (the server
 // sees those matches), an X username belongs to one player, and an admin can take a player out (/prize skip).
@@ -15,9 +15,9 @@
 //   POST /prize/x {handle}     -> same, with the X username saved ('' clears it)
 
 import { tg } from './bot.js';
-import { balances, MINT } from './holders.js';
+import { balances } from './holders.js';
 
-// Each place's share of the pool in SOL (25%, 17%, 12%, 7%, then 6.5% each), paid as $CWORM at the price on payout Monday
+// Each place's prize in SOL (25%, 17%, 12%, 7%, then 6.5% each of the pool), paid in SOL
 export const PRIZES = [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065];   // 1 SOL
 export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, HOLD_DAYS = 3, MIN_AGE_DAYS = 3;
 export const FIRST_WEEK = Date.UTC(2026, 9, 19), SHOW_FROM = Date.UTC(2026, 9, 18);   // first prize week Mon 19 Oct; the card shows from Sun 18 Oct
@@ -193,17 +193,6 @@ export async function handle(path, env, me, body, now = Date.now()) {
 const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
 const toCsv = rs => '\ufeff' + rs.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 const iso = t => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
-// How many $CWORM one SOL buys now: DexScreener's SOL pair with the most liquidity, else Jupiter's USD prices. null when
-// neither answers (the admin then works the amounts out by hand).
-export async function cwormPerSol() {
-  try { const d = await (await fetch('https://api.dexscreener.com/latest/dex/tokens/' + MINT)).json();
-    const p = (d.pairs || []).filter(x => x.chainId === 'solana' && x.baseToken && x.baseToken.address === MINT && x.quoteToken && x.quoteToken.symbol === 'SOL' && +x.priceNative > 0)
-      .sort((a, b) => ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0))[0];
-    if (p) return { perSol: 1 / +p.priceNative, from: 'DexScreener' } } catch (e) { }
-  try { const SOL = 'So11111111111111111111111111111111111111112', d = await (await fetch(`https://lite-api.jup.ag/price/v3?ids=${MINT},${SOL}`)).json();
-    const c = d[MINT] && +d[MINT].usdPrice, s = d[SOL] && +d[SOL].usdPrice; if (c > 0 && s > 0) return { perSol: s / c, from: 'Jupiter' } } catch (e) { }
-  return null;
-}
 // The eligible top of week `w`, with Telegram asked again about the group and the wallets read now (a wallet under 100K
 // drops out; one the RPC didn't answer for stays, for the admin to check by hand), and how each player's points came in.
 export async function adminList(env, w, now = Date.now()) {
@@ -228,14 +217,13 @@ export async function adminList(env, w, now = Date.now()) {
   for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
     const m = f.gaps.reduce((a, b) => a + b, 0) / (f.gaps.length || 1), sd = Math.sqrt(f.gaps.reduce((a, g) => a + (g - m) ** 2, 0) / (f.gaps.length || 1));
     f.even = f.gaps.length >= 20 && sd < m * 0.25; f.same = f.reports >= 20 && Math.max(0, ...f.amounts.values()) >= f.reports / 2; delete f.gaps; delete f.amounts }
-  const px = await cwormPerSol(), cw = sol => px ? Math.round(sol * px.perSol) : null;
-  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], cworm: cw(PRIZES[i]), fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok) } }));
-  const head = ['place', 'prize_sol', 'prize_cworm_now', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
+  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok) } }));
+  const head = ['place', 'prize_sol', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
     'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts', 'royale_place_mismatch'];
-  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.cworm ?? 'price not read', r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night,
+  const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night,
     r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : '', r.fair.royaleOdd || ''])]);
-  const pay = winners.map(r => r.wallet + ',' + (r.cworm ?? r.prize + ' SOL')).join('\n');
+  const pay = winners.map(r => r.wallet + ',' + r.prize).join('\n');                       // wallet,SOL
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
   const out = (await env.DB.prepare('SELECT p.id, p.name FROM prize_skip k JOIN players p ON p.id = k.player ORDER BY k.at DESC LIMIT 20').all()).results;
-  return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length, price: px, skipped: out };
+  return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length, skipped: out };
 }

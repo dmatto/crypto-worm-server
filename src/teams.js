@@ -3,7 +3,8 @@
 // 50 members; anyone can join, the leader can remove members. Team War: every play-money $CWORM a member banks (the same
 // capped amounts as the ranking, see addScore in index.js) scores for the team, and beating a rival team's member online
 // (a finished 1v1 or winning an online Worm Royale against them) adds CLASH points. A weekly Teams ranking; the bot posts
-// last week's top 3 teams on Mondays. Everything here is play money and bragging rights: no real prize.
+// last week's top 3 teams on Mondays. Team points are play money; the one real reward is the Team Prize test (teamprize.js:
+// USDC for the #1 team's active members, 4 weeks from 9 November).
 //
 //   GET  /teams?period=week|month|all -> {period, since, top: [{rank, id, name, tag, emoji, members, pts}], mine, can, wait}
 //   GET  /teams/<id>                  -> {team: {..., rank, pts, code?}, members: [{id, name, av, role, pts, online?}], mine}
@@ -28,6 +29,7 @@ import { newCode } from './match.js';
 import { weekStart, monthStart, gameLink } from './growth.js';
 import { xai, VISION_MODEL } from './worms.js';
 import { tg } from './bot.js';
+import { myTeamPrize } from './teamprize.js';
 
 export const LOGO_TRIES = 5, MAX_LOGO = 200_000;   // uploads a team can try a UTC day, and the biggest data URL taken
 export const MAX_MEMBERS = 50, CREATE_PLAYED = 3, REJOIN_MS = 12 * 3600e3, CLASH = 100, CLASH_DAY = 5, TOP = 50;
@@ -74,7 +76,8 @@ async function detail(env, id, me, opts = {}, now = Date.now()) {
   let online = new Set();
   if (mine && opts.lobby && results.length) try { online = new Set((await (await opts.lobby.fetch('https://lobby/online?ids=' + results.map(r => r.id).join(','))).json()).online) } catch (e) { }
   const logo = await q(env, 'SELECT id FROM team_logos WHERE team = ?', t.id).first();
-  return { team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, ...(logo ? { logo: logo.id } : {}), tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
+  const prize = mine ? await myTeamPrize(env, me, t.id, now).catch(() => null) : null;   // the Team Prize (teamprize.js): what this member still needs
+  return { ...(prize ? { prize } : {}), team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, ...(logo ? { logo: logo.id } : {}), tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
       ...(mine ? { code: t.code, link: gameLink(opts.env || env, 't_' + t.code) } : {}) },
     members: results.map(r => ({ id: r.id, name: r.name, ...(r.av ? { av: r.av } : {}), role: r.role, pts: r.pts | 0, ...(mine ? { online: online.has(r.id) } : {}) })), mine };
 }

@@ -4,7 +4,7 @@
 //   /pay                         the prize wallet, its balances and the last batches
 //   /pay new <label>             then one line per payment: <wallet> <amount> [SOL|CWORM] [note]   (or "wallet,amount" as /prize gives
 //                                them; no unit = CWORM). Saves a batch and shows it.
-//   /pay prize                   a batch from last week's weekly prize winners (adminList in prize.js, $CWORM at today's price)
+//   /pay prize                   a batch from last week's weekly prize winners (adminList in prize.js, paid in SOL)
 //   /pay show <id>               the batch, what it needs (amounts, fees, new token accounts), a dry run of every transfer on Solana
 //                                (simulateTransaction with signatures checked) and the code to send it
 //   /pay send <id> <code>        the OK: the minute cron sends every line not sent yet, one transaction each, and answers with the
@@ -245,8 +245,7 @@ export async function command(env, arg, byTg, prizeList, chat) {
     let dec; try { dec = await decimals(env) } catch (e) { return `Solana can't be read right now (${e.message.slice(0, 120)}). Nothing saved; try again in a minute.` }   // amounts are saved in token units: never guess the decimals
     let label = words.join(' '), text = rest.join('\n');
     if (/^prize$/i.test(sub)) { const p = await prizeList(); if (!p.winners.length) return 'No weekly prize winners for last week.';
-      if (p.winners.some(r => r.cworm == null)) return 'The $CWORM price could not be read, so the amounts are unknown. Try again later or use /pay new.';
-      label = 'Weekly prize, week of ' + new Date(p.week).toISOString().slice(0, 10); text = p.winners.map(r => `${r.wallet} ${r.cworm} CWORM #${r.place} ${r.name}`).join('\n') }
+      label = 'Weekly prize, week of ' + new Date(p.week).toISOString().slice(0, 10); text = p.winners.map(r => `${r.wallet} ${r.prize} SOL #${r.place} ${r.name}`).join('\n') }
     const { lines, errors } = parseLines(text, dec);
     if (!lines.length) return 'No payments found. After "/pay new <label>", put one line per payment: <wallet> <amount> SOL (or CWORM).';
     if (errors.length) return `Not saved:\n- ${errors.join('\n- ')}`;

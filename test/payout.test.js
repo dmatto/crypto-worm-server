@@ -188,13 +188,13 @@ test('payout: without the key nothing runs, and /pay says the wallet is not set 
   await P.cron(env, tell); assert.equal(sol.sent.length, 0); assert.equal(told.length, 0);
 });
 
-test('payout: /pay prize makes a batch from last week\'s winners at today\'s price', async () => {
-  reset(); const env = makeEnv(); sol.accounts.add(await ata(A.addr, TOKEN)); sol.accounts.add(await ata(B.addr, TOKEN));
-  const list = async () => ({ week: Date.UTC(2026, 10, 2), winners: [{ wallet: A.addr, cworm: 2_100_000, place: 1, name: 'Harry' }, { wallet: B.addr, cworm: 1_400_000, place: 2, name: 'Pop Corn' }] });
+test('payout: /pay prize makes a batch in SOL from last week\'s winners', async () => {
+  reset(); const env = makeEnv();
+  const list = async () => ({ week: Date.UTC(2026, 10, 2), winners: [{ wallet: A.addr, prize: 0.25, place: 1, name: 'Harry' }, { wallet: B.addr, prize: 0.17, place: 2, name: 'Pop Corn' }] });
   const t = await P.command(env, 'prize', 77, list, 9);
-  assert.match(t, /Weekly prize, week of 2026-11-02/); assert.match(t, /2,100,000 \$CWORM  · #1 Harry/); assert.match(t, /To send: 2 transfers, 3,500,000 \$CWORM/);
+  assert.match(t, /Weekly prize, week of 2026-11-02/); assert.match(t, /0\.25 SOL  · #1 Harry/); assert.match(t, /0\.17 SOL  · #2 Pop Corn/); assert.match(t, /To send: 2 transfers, 0\.42 SOL/);
+  assert.doesNotMatch(t, /To send:.*CWORM/);
   assert.match(await P.command(env, 'prize', 77, async () => ({ week: 0, winners: [] }), 9), /No weekly prize winners/);
-  assert.match(await P.command(env, 'prize', 77, async () => ({ week: 0, winners: [{ wallet: A.addr, cworm: null }] }), 9), /price could not be read/);
 });
 
 test('payout: the bot answers /pay only for admins in a private chat, keeps the list lines, and the minute cron sends', async () => {
