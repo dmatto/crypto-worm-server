@@ -75,7 +75,7 @@ import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
 import { handle as pollHandle, card as pollCard, mergePoll } from './poll.js';
 import { handle as giftHandle, giftItems } from './gifts.js';
-import { handle as starsHandle, sessionStars, isSupporter } from './stars.js';
+import { handle as starsHandle, sessionStars, isSupporter, SUP_SQL } from './stars.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
 import { handle as clubHandle, clubScore, clubOf, clubsInfo, sessionClub, setClub, mergeClubs } from './clubs.js';
 export { Match, Lobby, Royale };
@@ -127,7 +127,7 @@ async function ranking(env, period, me, holders) {
   }
   return out;
 }
-const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, c.pay AS cwpay, a.av AS av, tt.tag AS team, pc.club AS club, sp.player AS sup', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team LEFT JOIN player_club pc ON pc.player = p.id LEFT JOIN (SELECT DISTINCT player FROM purchases WHERE item = 'supporter' AND refunded IS NULL) sp ON sp.player = p.id";   // holder badge, avatar, custom worm, team tag and football club next to the name
+const TIER_COL = 'COALESCE(h.tier, 0) AS tier, c.id AS cw, c.pay AS cwpay, a.av AS av, tt.tag AS team, pc.club AS club, sp.player AS sup', TIER_JOIN = "LEFT JOIN holders h ON h.player = p.id AND h.wallet = p.wallet LEFT JOIN custom_worms c ON c.player = p.id AND c.state = 'on' LEFT JOIN player_avatar a ON a.player = p.id LEFT JOIN team_members tm ON tm.player = p.id LEFT JOIN teams tt ON tt.id = tm.team LEFT JOIN player_club pc ON pc.player = p.id LEFT JOIN (" + SUP_SQL + ") sp ON sp.player = p.id";   // holder badge, avatar, custom worm, team tag and football club next to the name
 function place(rows, me, admins = new Set()) {           // a custom worm shows while its owner holds (admins always)
   const out = rows.map((r, i) => ({ rank: i + 1, id: r.id, name: r.name, cworm: r.cworm | 0, ...(r.tier ? { tier: r.tier } : {}), ...(r.av ? { av: r.av } : {}), ...(r.team ? { team: r.team } : {}), ...(r.club ? { club: r.club } : {}), ...(r.sup ? { sup: 1 } : {}), ...(r.cw && (r.tier || admins.has(r.id) || r.cwpay === 'gift') ? { cw: r.cw } : {}) }));
   return { top: out.slice(0, RANK_TOP), me: me ? out.find(r => r.id === me.id) || null : null, players: out.length };

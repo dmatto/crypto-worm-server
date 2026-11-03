@@ -11,7 +11,12 @@
 // /refund, sets refunded and the look goes away. Admin bot commands: /sales, /refund <charge id>, /reply <telegram id> <text>
 // (to answer a /paysupport), /stars open|close (only admins see the shop until /stars open). Everyone: /paysupport <problem> (passed on to the admins) and /terms.
 //
-// The game holds the same ids and prices (SHOP items with xtr or pack, and XTR.list in crypto-worm.html): change both together.
+// Donations (Damian 2026-11-03: "Donations button in the main screen. Allow people to support the game"): the tip50..tip1000
+// items are gifts of 50 to 1,000 Stars from Home's 💚 Support button. They give nothing in the game, can be given again and again,
+// and 150 Stars of them in total (or the Supporter item) bring the 💚 Supporter badge. GET /stars also says how many Stars this
+// account gave (tips) and how many players back the game (backers).
+//
+// The game holds the same ids and prices (SHOP items with xtr or pack, XTR.list and SUP.TIPS in crypto-worm.html): change both together.
 // Invoice pictures: play.cryptoworm.io/xtr/<id>.jpg (the game folder's xtr/).
 import { tg, tellAdminsText } from './bot.js';
 import { gameLink } from './growth.js';
@@ -28,7 +33,16 @@ export const CATALOG = {
     text: "Founder's crown, the Founder skin and the Founder sparks trail. Only in the launch month." },
   supporter: { stars: 150, sup: true, title: 'Supporter 💚', text: 'A green heart and a green name in the lobby and the ranking. Thank you for backing the game.' },
   test1:     { stars: 1, admin: true, test: true, title: 'Test item', text: 'Admins only: a 1 Star test purchase. It gives nothing; refund it with /refund.' },
+  tip50:     { stars: 50, tip: true, img: 'supporter', title: 'Support: 50 Stars', text: 'A coffee for the team' },
+  tip150:    { stars: 150, tip: true, img: 'supporter', title: 'Support: 150 Stars', text: 'Pays for a day of servers' },
+  tip500:    { stars: 500, tip: true, img: 'supporter', title: 'Support: 500 Stars', text: 'Pays for new art' },
+  tip1000:   { stars: 1000, tip: true, img: 'supporter', title: 'Support: 1,000 Stars', text: 'Helps build a new mode' },
 };
+const TIP_TEXT = 'Thank you for supporting Crypto Worm Wars! A gift to help us keep the game free: servers, art and new modes. It gives no play $CWORM, points, prize entries or tokens. 150 Stars in total bring the green Supporter badge.';
+export const SUP_TIPS = 150;   // Stars of donations, in total, that bring the 💚 Supporter badge
+// players with the badge: the Supporter item, or 150 Stars of donations (index.js joins it for the ranking and the lobby)
+export const SUP_SQL = `SELECT player FROM purchases WHERE refunded IS NULL AND (item = 'supporter' OR item LIKE 'tip%') GROUP BY player
+  HAVING MAX(item = 'supporter') = 1 OR SUM(CASE WHEN item LIKE 'tip%' THEN stars ELSE 0 END) >= ${SUP_TIPS}`;
 const q = (env, s, ...v) => env.DB.prepare(s).bind(...v);
 const changed = r => !!(r && (r.meta ? r.meta.changes : r.changes));
 const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
@@ -38,15 +52,17 @@ const onSale = (it, now) => !!it && !(it.until && now >= it.until);
 const payload = (player, item) => `x1:${player}:${item}`;
 const parse = s => { const m = /^x1:(\d+):([a-z0-9]{1,16})$/.exec(String(s || '')); return m ? { player: +m[1], item: m[2] } : null };
 
-// What a player owns: the looks (packs opened into their looks) and the Supporter badge. Refunded purchases don't count.
+// What a player owns: the looks (packs opened into their looks), the Supporter badge and the Stars they donated. Refunded
+// purchases don't count.
 export async function owned(env, player) {
-  const { results } = await q(env, 'SELECT DISTINCT item FROM purchases WHERE player = ? AND refunded IS NULL', player).all();
-  const items = new Set(); let sup = false;
-  for (const { item } of results) { const it = CATALOG[item]; if (!it) continue;
-    if (it.cat) items.add(item); if (it.pack) it.pack.forEach(x => items.add(x)); if (it.sup) sup = true }
-  return { items: [...items], sup };
+  const { results } = await q(env, 'SELECT item, SUM(stars) AS s FROM purchases WHERE player = ? AND refunded IS NULL GROUP BY item', player).all();
+  const items = new Set(); let sup = false, tips = 0;
+  for (const { item, s } of results) { const it = CATALOG[item]; if (!it) continue;
+    if (it.cat) items.add(item); if (it.pack) it.pack.forEach(x => items.add(x)); if (it.sup) sup = true; if (it.tip) tips += s | 0 }
+  return { items: [...items], sup: sup || tips >= SUP_TIPS, ...(tips ? { tips } : {}) };
 }
-const has = (own, id) => { const it = CATALOG[id]; return !!it && !it.test && (it.sup ? own.sup : it.pack ? it.pack.every(x => own.items.includes(x)) : own.items.includes(id)) };
+// donations can always be given again; the Supporter item is "owned" once the badge came from donations too
+const has = (own, id) => { const it = CATALOG[id]; return !!it && !it.test && !it.tip && (it.sup ? own.sup : it.pack ? it.pack.every(x => own.items.includes(x)) : own.items.includes(id)) };
 // The shop is open to everyone only after an admin's /stars open (bot_kv 'xtr_open' = '1'); until then only admins see the shelf
 // and can pay, for the test purchase. Looks already bought always show.
 export const shopOpen = env => q(env, "SELECT v FROM bot_kv WHERE k = 'xtr_open'").first().then(r => !!r && r.v === '1').catch(() => false);
@@ -57,7 +73,7 @@ async function mine(env, player) {
 // for the session: only when there is something to say
 export async function sessionStars(env, player) {
   const m = await mine(env, player);
-  return m.items.length || m.sup || m.admin || m.live ? m : null;
+  return m.items.length || m.sup || m.tips || m.admin || m.live ? m : null;
 }
 // /stars (admins): open or close the shop for everyone
 export async function shopCommand(env, arg) {
@@ -67,10 +83,12 @@ export async function shopCommand(env, arg) {
   return live ? '⭐ The Stars shop is OPEN: every player sees ⭐ Exclusive in the Store.\n/stars close hides it again (looks already bought stay).'
     : '⭐ The Stars shop is CLOSED: only admins see ⭐ Exclusive, for test purchases.\n/stars open shows it to every player.';
 }
-export const isSupporter = (env, player) => q(env, "SELECT 1 AS y FROM purchases WHERE player = ? AND item = 'supporter' AND refunded IS NULL", player).first().then(r => !!r).catch(() => false);
+export const isSupporter = (env, player) => q(env, `SELECT 1 AS y FROM (${SUP_SQL}) WHERE player = ?`, player).first().then(r => !!r).catch(() => false);
+// how many real players back the game (the Supporter item or any donation), for the Support window
+const backers = env => q(env, "SELECT COUNT(DISTINCT player) AS n FROM purchases WHERE refunded IS NULL AND (item = 'supporter' OR item LIKE 'tip%')").first().then(r => r ? r.n | 0 : 0).catch(() => 0);
 
 export async function handle(path, env, me, body, { now = Date.now(), post = false } = {}) {
-  if (path === '/stars' && !post) return mine(env, me.id);
+  if (path === '/stars' && !post) return { ...await mine(env, me.id), backers: await backers(env) };
   if (path !== '/stars/invoice' || !post) return null;
   const id = String(body && body.item || ''), it = Object.hasOwn(CATALOG, id) ? CATALOG[id] : null;
   if (!it || (it.admin && !admins(env).has(me.id))) return { error: 'not on sale', code: 'bad', status: 404 };
@@ -78,8 +96,8 @@ export async function handle(path, env, me, body, { now = Date.now(), post = fal
   if (!onSale(it, now)) return { error: 'not on sale any more', code: 'gone', status: 410 };
   if (has(await owned(env, me.id), id)) return { error: 'already yours', code: 'owned', status: 409 };
   if (!env.BOT_TOKEN) return { error: 'payments are not set up', status: 503 };
-  const r = await tg(env, 'createInvoiceLink', { title: it.title.slice(0, 32), description: (it.text + (it.test ? '' : ' ' + LOOKS)).slice(0, 255), payload: payload(me.id, id),
-    provider_token: '', currency: 'XTR', prices: [{ label: it.title.slice(0, 32), amount: it.stars }], photo_url: `${site(env)}/xtr/${id}.jpg`, photo_width: 512, photo_height: 512 });
+  const r = await tg(env, 'createInvoiceLink', { title: it.title.slice(0, 32), description: (it.tip ? TIP_TEXT : it.text + (it.test ? '' : ' ' + LOOKS)).slice(0, 255), payload: payload(me.id, id),
+    provider_token: '', currency: 'XTR', prices: [{ label: it.title.slice(0, 32), amount: it.stars }], photo_url: `${site(env)}/xtr/${it.img || id}.jpg`, photo_width: 512, photo_height: 512 });
   if (!r || !r.ok || !r.result) return { error: 'Telegram did not answer, try again', status: 502 };
   return { url: r.result };
 }
@@ -102,17 +120,20 @@ export async function preCheckout(env, pq, now = Date.now()) {
 export async function paid(env, m, now = Date.now()) {
   const sp = m.successful_payment, p = parse(sp.invoice_payload), it = p && CATALOG[p.item];
   const charge = String(sp.telegram_payment_charge_id || ''); if (!charge) return;
-  const before = p && it ? has(await owned(env, p.player), p.item) : false;
+  const own0 = p && it ? await owned(env, p.player) : null, before = own0 ? has(own0, p.item) : false;
   const r = await q(env, 'INSERT OR IGNORE INTO purchases (charge, player, item, stars, tg_id, created) VALUES (?, ?, ?, ?, ?, ?)',
     charge, p ? p.player : 0, p ? p.item : String(sp.invoice_payload || '').slice(0, 40), sp.total_amount | 0, m.from ? m.from.id : null, now).run();
   if (!changed(r)) return;                                                             // Telegram sent it twice
   const name = p && await q(env, 'SELECT name FROM players WHERE id = ?', p.player).first().then(x => x && x.name).catch(() => null);
+  const badge = it && it.tip && !own0.sup && (await owned(env, p.player)).sup;   // this donation brought the badge
   const text = !it ? '⭐ Payment received. If your item is missing, send /paysupport.'
     : it.test ? `⭐ Test purchase done: ${sp.total_amount} Star. Refund it with:\n/refund ${charge}`
+    : it.tip ? `💚 Thank you for supporting Crypto Worm Wars with ${sp.total_amount} Stars! It helps us keep the game free and build what comes next.` +
+      (badge ? '\n\nYour green 💚 Supporter badge now shows next to your name in the lobby and the ranking.' : '')
     : it.sup ? '💚 Thank you for supporting Crypto Worm Wars! Your green heart now shows next to your name in the lobby and the ranking.'
     : `⭐ Thank you! The ${it.title} is yours. Open the game: it's in Store › ⭐ Exclusive.`;
   await tg(env, 'sendMessage', { chat_id: m.chat.id, text, reply_markup: { inline_keyboard: [[{ text: '🎮 Open the game', url: gameLink(env, 'xstore') }]] } });
-  await tellAdminsText(env, `⭐ Sale: ${it ? it.title : 'unknown item'} for ${sp.total_amount} Stars by ${name || '?'} (player ${p ? p.player : '?'}).` +
+  await tellAdminsText(env, (it && it.tip ? `💚 Donation: ${sp.total_amount} Stars from` : `⭐ Sale: ${it ? it.title : 'unknown item'} for ${sp.total_amount} Stars by`) + ` ${name || '?'} (player ${p ? p.player : '?'}).` +
     (before ? '\n⚠️ They already owned it: refund it.' : '') + `\n/refund ${charge}`).catch(() => { });
 }
 
@@ -146,7 +167,9 @@ export async function salesText(env, now = Date.now()) {
   const { results: by } = await q(env, 'SELECT item, COUNT(*) AS n, SUM(stars) AS s FROM purchases WHERE refunded IS NULL GROUP BY item ORDER BY s DESC').all();
   const { results: last } = await q(env, 'SELECT u.*, p.name FROM purchases u LEFT JOIN players p ON p.id = u.player ORDER BY u.created DESC LIMIT 10').all();
   const t = x => new Date(x).toISOString().slice(0, 16).replace('T', ' '), title = id => (CATALOG[id] || {}).title || id;
+  const tip = await q(env, "SELECT COUNT(*) AS n, COUNT(DISTINCT player) AS p, COALESCE(SUM(stars), 0) AS s FROM purchases WHERE refunded IS NULL AND item LIKE 'tip%'").first();
   return `⭐ <b>Telegram Stars sales</b>\nLast 7 days: ${week.n} sales, ${week.s} Stars\nAll time: ${all.n} sales, ${all.s} Stars` +
+    (tip.n ? `\n💚 Donations (in the totals): ${tip.n} from ${tip.p} players, ${tip.s} Stars` : '') +
     (ref.n ? `\nRefunded: ${ref.n} (${ref.s} Stars)` : '') +
     (by.length ? '\n\n' + by.map(r => `${esc(title(r.item))}: ${r.n} · ${r.s} Stars`).join('\n') : '') +
     (last.length ? '\n\n<b>Latest</b>\n' + last.map(r => `${t(r.created)} · ${esc(title(r.item))} · ${r.stars} ⭐ · ${esc(r.name || '?')} (${r.player})${r.refunded ? ' · refunded' : ''}\n<code>${esc(r.charge)}</code>`).join('\n') : '\n\nNo sales yet.') +
@@ -165,6 +188,7 @@ export async function paySupport(env, from, text) {
 }
 export const terms = env => '⭐ Purchase terms (Telegram Stars)\n\n' +
   '• What you buy: looks for your worms (hats, skins, trails, graves, packs of them) and the 💚 Supporter badge in Crypto Worm Wars. They are cosmetic only: no power in battles, no play $CWORM, no ranking points, no weekly prize entries, and never real tokens.\n' +
+  '• Donations (💚 Support on Home) are gifts to help us build the game. They give nothing in the game except the 💚 Supporter badge once you have given 150 Stars in total.\n' +
   '• What you buy is kept on your game account and shows on every device where you play with it. It has no cash value and can\'t be traded or moved to another account.\n' +
   '• Delivery is instant. If something is missing or went wrong, send /paysupport within 14 days. A refunded item is taken back.\n' +
   '• The game is in beta: we may redraw a look, but we don\'t take away what you bought, except after a refund or for cheating.\n' +
