@@ -56,7 +56,7 @@ export const toastOn = h => !!h && h.tier >= WHALE && (h.toast == null ? h.tier 
 
 // Solana JSON-RPC: SOLANA_RPC when set (a URL with a private key, e.g. Helius, kept as a secret), else free public hosts in turn.
 const hosts = env => [env.SOLANA_RPC, ...PUBLIC_RPC].filter(Boolean);
-async function rpc(env, body) {
+export async function rpc(env, body) {
   const errs = [];
   for (const url of hosts(env)) {
     let why;
@@ -94,7 +94,7 @@ export async function programAddress(seeds, program) {
   return null;
 }
 export const ata = (wallet, tokenProgram, mint = MINT) => programAddress([base58decode(wallet), base58decode(tokenProgram), base58decode(mint)], ATA_PROGRAM);
-async function tokenProgram(env) {
+export async function tokenProgram(env) {
   if (!env._tokenProgram) { const r = await rpc(env, { jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params: [MINT, { encoding: 'base64', dataSlice: { offset: 0, length: 0 } }] });
     const o = r.result && r.result.value && r.result.value.owner; if (!o) throw new Error('mint not found'); env._tokenProgram = o }
   return env._tokenProgram;

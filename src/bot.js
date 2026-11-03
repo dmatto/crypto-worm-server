@@ -10,6 +10,7 @@
 // calls a derby day and posts it to the group (clubs.js). /parody (admins)
 // makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
+// /pay (admins, private chat) sends prizes from the prize wallet after a typed OK (payout.js).
 // /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js); /poll (admins) the in-game poll's votes (poll.js).
 // /gift (admins) makes gift codes for play $CWORM, looks and free Custom Worms, lists them and turns them off (gifts.js); for
 // everyone else it says where to type a code in the game.
@@ -36,6 +37,7 @@ import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
 import { command as giftCommand } from './gifts.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
+import { command as payCommand, cron as payCron } from './payout.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
@@ -288,6 +290,11 @@ export async function webhook(req, env) {
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
   else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
+  else if (cmd === '/pay' && env.DB && await isAdmin(env, m.from)) {                 // admins: prize payouts from the prize wallet (payout.js), private chat only
+    if (m.chat.type !== 'private') await tg(env, 'sendMessage', { chat_id, text: 'Use /pay in a private chat with the bot.' });
+    else { const lastWeek = () => { const now = Date.now(); return adminList(env, weekOf(now) - 7 * 864e5, now) };
+      const text = await payCommand(env, m.text.trim().slice(head.length).replace(/^[ \t]+/, ''), m.from.id, lastWeek, chat_id).catch(e => '⚠️ ' + (e && e.message));
+      await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), disable_web_page_preview: true }) } }
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
     const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
     if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
@@ -393,6 +400,8 @@ export async function cron(env, now = Date.now()) {
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (env.DB) try { await wagerSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'wager sweep error ' + (e && e.message)).run().catch(() => { }) }   // Challenges past their deadline
   if (!env.BOT_TOKEN || !env.DB) return;
+  try { await payCron(env, (chat, text) => tg(env, 'sendMessage', { chat_id: chat, text: text.slice(0, 4000), disable_web_page_preview: true })) }   // approved prize payouts (payout.js)
+  catch (e) { await botLog(env, 'payout error ' + (e && e.message)).catch(() => { }) }
   if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
   const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);

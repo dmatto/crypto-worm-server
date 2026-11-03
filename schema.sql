@@ -598,3 +598,10 @@ CREATE TABLE IF NOT EXISTS club_month (     -- points each fan earned for their 
 );
 CREATE INDEX IF NOT EXISTS club_month_m ON club_month (month_start, club);
 CREATE INDEX IF NOT EXISTS club_month_player ON club_month (player);
+
+-- Prize payouts sent by the server from the prize wallet (payout.js): a batch of lines, sent only after an admin's /pay send <id> <code>.
+-- Amounts are whole base units (lamports, token units). A line's signature is saved before it goes out (sig, lvbh = last valid block height).
+CREATE TABLE IF NOT EXISTS pay_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, created INTEGER NOT NULL, by_tg INTEGER, code TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready', chat INTEGER, claimed INTEGER, done INTEGER);
+CREATE TABLE IF NOT EXISTS pay_line (batch INTEGER NOT NULL, n INTEGER NOT NULL, wallet TEXT NOT NULL, asset TEXT NOT NULL, amount TEXT NOT NULL, note TEXT,
+  sig TEXT, lvbh INTEGER, status TEXT NOT NULL DEFAULT 'todo', err TEXT, at INTEGER, PRIMARY KEY (batch, n));
