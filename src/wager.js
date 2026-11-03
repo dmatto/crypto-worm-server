@@ -37,12 +37,13 @@ const isSim = (env, id) => q(env, 'SELECT 1 AS y FROM sim_players WHERE player =
 const played = (env, id) => q(env, 'SELECT played FROM player_meta WHERE player = ?', id).first().then(r => r ? r.played : 0);
 const reward = (env, p, amount, reason, note, now) => q(env, 'INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, ?, ?, ?)', p, amount, reason, note, now);
 
-// The most a player can put in: what the server has seen them earn (ranked play money plus rewards), less stakes already in.
+// The most a player can put in: what the server has seen them earn (ranked play money plus rewards), less stakes and team war pledges already in.
 export async function ceiling(env, id) {
   const s = await q(env, 'SELECT total FROM cworm_scores WHERE player = ?', id).first();
   const r = await q(env, 'SELECT COALESCE(SUM(amount), 0) AS n FROM rewards WHERE player = ?', id).first();
   const put = await q(env, 'SELECT COALESCE(SUM(stake), 0) AS n FROM wagers WHERE (p0 = ? OR p1 = ?) AND started IS NOT NULL', id, id).first();
-  return Math.max(0, Math.min(MAX_STAKE, (s ? s.total : 0) + r.n - put.n));
+  const war = await q(env, 'SELECT COALESCE(SUM(amount), 0) AS n FROM team_war_pledges WHERE player = ?', id).first().catch(() => ({ n: 0 }));   // team wars (teamwar.js)
+  return Math.max(0, Math.min(MAX_STAKE, (s ? s.total : 0) + r.n - put.n - war.n));
 }
 
 // A challenge as one of its players sees it.

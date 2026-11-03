@@ -35,6 +35,7 @@ import { resultsText as pollResults } from './poll.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
+import { sweep as warSweep } from './teamwar.js';
 import { command as giftCommand } from './gifts.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { command as payCommand, cron as payCron } from './payout.js';
@@ -402,6 +403,7 @@ export async function cron(env, now = Date.now()) {
   if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
   if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
   if (env.DB) try { await wagerSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'wager sweep error ' + (e && e.message)).run().catch(() => { }) }   // Challenges past their deadline
+  if (env.DB) try { await warSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'team war sweep error ' + (e && e.message)).run().catch(() => { }) }   // team wars that didn't fill or are over (teamwar.js)
   if (!env.BOT_TOKEN || !env.DB) return;
   try { await payCron(env, (chat, text) => tg(env, 'sendMessage', { chat_id: chat, text: text.slice(0, 4000), disable_web_page_preview: true })) }   // approved prize payouts (payout.js)
   catch (e) { await botLog(env, 'payout error ' + (e && e.message)).catch(() => { }) }

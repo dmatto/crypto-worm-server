@@ -30,6 +30,7 @@ import { weekStart, monthStart, gameLink } from './growth.js';
 import { xai, VISION_MODEL } from './worms.js';
 import { tg } from './bot.js';
 import { myTeamPrize } from './teamprize.js';
+import { handle as warHandle, forTeam as warFor, warScore, warClash } from './teamwar.js';
 
 export const LOGO_TRIES = 5, MAX_LOGO = 200_000;   // uploads a team can try a UTC day, and the biggest data URL taken
 export const MAX_MEMBERS = 50, CREATE_PLAYED = 3, REJOIN_MS = 12 * 3600e3, CLASH = 100, CLASH_DAY = 5, TOP = 50;
@@ -77,7 +78,8 @@ async function detail(env, id, me, opts = {}, now = Date.now()) {
   if (mine && opts.lobby && results.length) try { online = new Set((await (await opts.lobby.fetch('https://lobby/online?ids=' + results.map(r => r.id).join(','))).json()).online) } catch (e) { }
   const logo = await q(env, 'SELECT id FROM team_logos WHERE team = ?', t.id).first();
   const prize = mine ? await myTeamPrize(env, me, t.id, now).catch(() => null) : null;   // the Team Prize (teamprize.js): what this member still needs
-  return { ...(prize ? { prize } : {}), team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, ...(logo ? { logo: logo.id } : {}), tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
+  const war = me ? await warFor(env, me, t.id, mine, now).catch(() => ({})) : {};       // team wars (teamwar.js): this team's war for members, warOk for a rival
+  return { ...(prize ? { prize } : {}), ...war, team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji, ...(logo ? { logo: logo.id } : {}), tg: t.tg || '', owner: t.owner, created: t.created, members: results.length, rank: row.rank, pts: row.pts, ptsAll: all ? all.n | 0 : 0,
       ...(mine ? { code: t.code, link: gameLink(opts.env || env, 't_' + t.code) } : {}) },
     members: results.map(r => ({ id: r.id, name: r.name, ...(r.av ? { av: r.av } : {}), role: r.role, pts: r.pts | 0, ...(mine ? { online: online.has(r.id) } : {}) })), mine };
 }
@@ -97,13 +99,14 @@ export async function handle(path, env, me, body, opts = {}, now = Date.now()) {
     const period = opts.period === 'all' || opts.period === 'month' ? opts.period : 'week', rows = await table(env, period, now), mine = await teamOf(env, me.id);
     return { period, since: period === 'week' ? weekStart(now) : period === 'month' ? monthStart(now) : null, top: rows.slice(0, TOP), players: rows.length,
       mine: mine ? { ...mine, ...(rows.find(r => r.id === mine.id) || {}) } : null, can: !mine && await canCreate(env, me), wait: mine ? 0 : await waitFor(env, me, now),
-      invites: await myInvites(env, me, now) };
+      invites: await myInvites(env, me, now), ...(mine ? await warFor(env, me, mine.id, true, now).catch(() => ({})) : {}) };
   }
   if (sub === '/suggest') return suggest(env, me, opts, now);
   const one = sub.match(/^\/(\d+)$/);
   if (one) return detail(env, Number(one[1]), me, opts, now);
   const byCode = sub.match(/^\/code\/([A-Za-z0-9]{4,8})$/);                    // an invite link's team, before joining it
   if (byCode) { const t = await q(env, 'SELECT id FROM teams WHERE code = ?', byCode[1].toUpperCase()).first(); return t ? detail(env, t.id, me, opts, now) : { error: 'that team does not exist any more', status: 404 } }
+  if (sub === '/war' || sub.startsWith('/war/')) return warHandle(path, env, me, opts.post === false ? null : body || {}, now);   // team wars (teamwar.js)
   if (opts.post === false) return null;                                     // the rest change things: POST only
   if (sub === '/invite') return invite(env, me, body, opts, now);
   if (sub === '/invites/join' || sub === '/invites/no') {
@@ -293,7 +296,8 @@ const monthPts = (env, team, player, pts, now) => q(env, `INSERT INTO team_month
 export async function teamScore(env, player, amount, now = Date.now()) {
   if (!(amount > 0)) return;
   const m = await q(env, 'SELECT team FROM team_members WHERE player = ?', player).first().catch(() => null); if (!m) return;
-  if (await isSim(env, player)) amount = Math.round(amount * SIM_SHARE); if (!(amount > 0)) return;
+  const sim = await isSim(env, player); if (sim) amount = Math.round(amount * SIM_SHARE); if (!(amount > 0)) return;
+  if (!sim) await warScore(env, m.team, player, amount, now).catch(() => { });   // a team war on: the same amount scores in it (teamwar.js)
   await env.DB.batch([q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
     ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, m.team, weekStart(now), player, amount), monthPts(env, m.team, player, amount, now)]);
 }
@@ -311,6 +315,7 @@ export async function teamClash(env, winner, loser, now = Date.now()) {
     q(env, `INSERT INTO team_points (team, week_start, player, pts) VALUES (?, ?, ?, ?)
       ON CONFLICT(team, week_start, player) DO UPDATE SET pts = pts + excluded.pts`, a.team, weekStart(now), winner, CLASH), monthPts(env, a.team, winner, CLASH, now),
     q(env, 'DELETE FROM team_clash WHERE at < ?', now - 35 * DAY)]);
+  await warClash(env, a.team, winner, now).catch(() => { });
   return CLASH;
 }
 

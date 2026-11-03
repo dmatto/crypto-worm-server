@@ -605,3 +605,46 @@ CREATE TABLE IF NOT EXISTS pay_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, labe
   status TEXT NOT NULL DEFAULT 'ready', chat INTEGER, claimed INTEGER, done INTEGER);
 CREATE TABLE IF NOT EXISTS pay_line (batch INTEGER NOT NULL, n INTEGER NOT NULL, wallet TEXT NOT NULL, asset TEXT NOT NULL, amount TEXT NOT NULL, note TEXT,
   sig TEXT, lvbh INTEGER, status TEXT NOT NULL DEFAULT 'todo', err TEXT, at INTEGER, PRIMARY KEY (batch, n));
+
+-- Team wars (teamwar.js): a team challenges another for a play-money pot; members of both teams chip in, then 24 hours of team points decide it.
+CREATE TABLE IF NOT EXISTS team_wars (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  a        INTEGER NOT NULL,               -- the challenging team
+  b        INTEGER NOT NULL,               -- the challenged team
+  stake    INTEGER NOT NULL,               -- play $CWORM each side puts in
+  state    TEXT NOT NULL,                  -- filling | live | done (won or even) | off (expired or called off, every pledge back)
+  by       INTEGER,                        -- the member who made it
+  created  INTEGER NOT NULL,
+  fill_by  INTEGER NOT NULL,               -- both sides must be full by then
+  started  INTEGER,
+  ends     INTEGER,
+  sa       INTEGER, sb INTEGER,            -- the final war points
+  winner   INTEGER,                        -- the winning team (NULL: even or off)
+  why      TEXT,                           -- won | even | expired | cancelled
+  burned   INTEGER,                        -- the share of the pot burned
+  ended    INTEGER
+);
+CREATE INDEX IF NOT EXISTS team_wars_a ON team_wars (a, state);
+CREATE INDEX IF NOT EXISTS team_wars_b ON team_wars (b, state);
+CREATE INDEX IF NOT EXISTS team_wars_due ON team_wars (state, fill_by, ends);
+CREATE TABLE IF NOT EXISTS team_war_pledges (  -- what each member chipped in (the phone spends it: paid = when it said so)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  war      INTEGER NOT NULL,
+  team     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  amount   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  paid     INTEGER
+);
+CREATE INDEX IF NOT EXISTS team_war_pledges_war ON team_war_pledges (war, team);
+CREATE INDEX IF NOT EXISTS team_war_pledges_player ON team_war_pledges (player, paid);
+CREATE TABLE IF NOT EXISTS team_war_pts (  -- war points by member and UTC day: reported play money (capped by credit + free points), match credit, wins over other teams
+  war      INTEGER NOT NULL,
+  team     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  day      INTEGER NOT NULL,
+  reported INTEGER NOT NULL DEFAULT 0,
+  credit   INTEGER NOT NULL DEFAULT 0,
+  clash    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (war, team, player, day)
+);

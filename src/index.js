@@ -68,6 +68,7 @@ import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
 import { handle as teamHandle, teamScore, teamOf, mergeTeams, teamLogo, inviteCount } from './teams.js';
+import { warRun } from './teamwar.js';
 import { handle as wormHandle, image as wormImage, mine as wormMine, admins as wormAdmins } from './worms.js';
 import { chromePage } from './parody.js';
 import { handle as friendsHandle, requestCount } from './friends.js';
@@ -420,7 +421,7 @@ const app = {
     if (path === '/result' && req.method === 'POST') return json(await result(env, me, String(body.mode || '').slice(0, 12), body.won), 200, cors);
     // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
-    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runEnd(env, me.id); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed), 200, cors) }
+    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await warRun(env, me.id, await runEnd(env, me.id)).catch(() => { }); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed), 200, cors) }
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
