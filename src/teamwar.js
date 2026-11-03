@@ -16,7 +16,8 @@
 //   POST /teams/war/pledge {id, amount} -> {war, owe}
 //   POST /teams/war/paid  {ids}         -> {ok}    this phone spent those pledges
 //   POST /teams/war/cancel {id}         -> {war}   a leader of either team, or whoever made it, calls it off before it starts
-// A team's page (teams.js detail) carries {war} for members, and {warOk} on a rival's page when this player's team can challenge it.
+// A team's page (teams.js detail) and the Teams list carry {war, warLast, warOwe} for members, and {warOk} on a rival's page when this
+// player's team can challenge it.
 
 import { ceiling } from './wager.js';
 import { gameLink } from './growth.js';
@@ -60,7 +61,8 @@ const owed = async (env, me, now) => (await q(env, 'SELECT id, amount FROM team_
 export async function forTeam(env, me, teamId, mine, now = Date.now()) {
   if (!me) return {};
   if (mine) { const w = await warOf(env, teamId); const l = w ? null : await q(env, `SELECT * FROM team_wars WHERE (a = ? OR b = ?) AND state IN ('done', 'off') AND ended > ? ORDER BY ended DESC LIMIT 1`, teamId, teamId, now - LAST_MS).first();
-    return { war: w ? await view(env, w, me, now) : null, ...(l ? { warLast: await view(env, l, me, now) } : {}) } }
+    const owe = await owed(env, me, now);
+    return { war: w ? await view(env, w, me, now) : null, ...(l ? { warLast: await view(env, l, me, now) } : {}), ...(owe.length ? { warOwe: owe } : {}) } }
   const t = await teamOfP(env, me.id); if (!t || t.id === teamId) return {};
   return { warOk: !(await warOf(env, t.id)) && !(await warOf(env, teamId)) && !(await botTeam(env, teamId)) && !(await botTeam(env, t.id)) };
 }
