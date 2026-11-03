@@ -1,9 +1,10 @@
 // Weekly prize (Damian 2026-10-15, monetization/weekly-prize-analysis.md): 1 SOL worth of real $CWORM a week for the top 10
 // of a prize chart (Damian 2026-10-15: a SOL value is steadier than a fixed token amount; it was 1,000,000 $CWORM). Players qualify with five steps: they are in the Telegram group (the bot asks Telegram), gave their X username
-// (Damian checks the top 10's follows by hand), linked a wallet with the Holder tier (100K, read by holders.js), held it all
-// week (streak from Monday or earlier, no reading under 100K since), and finished matches on 3 different UTC days this week.
+// (Damian checks the top 10's follows by hand), linked a wallet with the Holder tier (100K, read by holders.js), held it for
+// HOLD_DAYS days in a row this week (Damian 2026-11-03: 3 days, so new members can win; it was the whole week; no reading under
+// 100K since the count started, and the Monday payout still reads 100K), and finished matches on 3 different UTC days this week.
 // Prize points are the week's play-money $CWORM gained, at most 1,500 a UTC day, from a log of every score report that also
-// serves Monday's fair-play review. Accounts must be 8 days old by the Monday payout (Damian 2026-10-16; it was 14). The server pays nothing: /prize in
+// serves Monday's fair-play review. Accounts must be 3 days old by the Monday payout, so joining by Thursday counts (Damian 2026-11-03; it was 8, and 14 before 10-16). The server pays nothing: /prize in
 // the bot gives the admins the list, the payout lines and the logs, and Damian sends the tokens from the treasury.
 // Against scripts (Damian 2026-10-16): the phone reports the score, so a day's prize points also can't pass what the matches
 // the server saw start and finish that day can carry (see runEnd), ties go to online wins against real players (the server
@@ -18,7 +19,7 @@ import { balances, MINT } from './holders.js';
 
 // Each place's share of the pool in SOL (25%, 17%, 12%, 7%, then 6.5% each), paid as $CWORM at the price on payout Monday
 export const PRIZES = [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065];   // 1 SOL
-export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, MIN_AGE_DAYS = 8;
+export const DAY_CAP = 1500, PLAY_DAYS = 3, HOLD_MIN = 100000, HOLD_DAYS = 3, MIN_AGE_DAYS = 3;
 export const FIRST_WEEK = Date.UTC(2026, 9, 19), SHOW_FROM = Date.UTC(2026, 9, 18);   // first prize week Mon 19 Oct; the card shows from Sun 18 Oct
 export const GROUP_LINK = 'https://t.me/CryptoWorm_Group', X_LINK = 'https://x.com/CryptoWorm72';
 const DAY = 864e5, WEEK = 7 * DAY, CHECK_MS = 30e3, RECHECK_MS = 10 * 60e3, LOG_KEEP = 35 * DAY;
@@ -83,9 +84,9 @@ const rows = parts(async (env, ids, w) => {
         FROM players p LEFT JOIN prize_entry e ON e.player = p.id LEFT JOIN holders h ON h.player = p.id
         WHERE p.id IN (${q}) AND p.id NOT IN (SELECT player FROM sim_players)`).bind(...ids).all(),   // simulated players from load tests never take part
     env.DB.prepare(`SELECT player, COUNT(*) AS n FROM play_days WHERE player IN (${q}) AND day >= ? AND day < ? GROUP BY player`).bind(...ids, W, W + 7).all(),
-    env.DB.prepare(`SELECT DISTINCT player FROM hold_dips WHERE player IN (${q}) AND day >= ? AND day < ?`).bind(...ids, W, W + 7).all()]);
-  const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Set(dips.results.map(r => r.player));
-  return new Map(p.results.map(r => [r.id, { ...r, ...(r.wallet && team.has(r.wallet) ? { skipped: 1, team: true } : {}), days: days.get(r.id) || 0, dipped: dipped.has(r.id) }]));
+    env.DB.prepare(`SELECT player, MAX(day) AS d FROM hold_dips WHERE player IN (${q}) AND day >= ? AND day < ? GROUP BY player`).bind(...ids, W, W + 7).all()]);
+  const days = new Map(d.results.map(r => [r.player, r.n])), dipped = new Map(dips.results.map(r => [r.player, r.d]));
+  return new Map(p.results.map(r => [r.id, { ...r, ...(r.wallet && team.has(r.wallet) ? { skipped: 1, team: true } : {}), days: days.get(r.id) || 0, dip: dipped.has(r.id) ? dipped.get(r.id) : null }]));
 });
 // Online wins in week `w` against real players (Telegram accounts, not load-test bots), each opponent once a UTC day, and
 // how many different players those were: the prize chart's tie-break, since the server sees these matches itself.
@@ -99,16 +100,18 @@ export const wins = parts(async (env, ids, w) => {
 // never read counts for now, holding is "no reading under 100K this week", and /prize reads the top wallets live on Monday.
 export const loose = env => !env.SOLANA_RPC;
 // The five steps (and the account age) for one player row; `now` decides how far into the week the hold counter is.
+// Holding counts from the latest of: Monday, the start of the holder streak, the day after the last reading under 100K this week.
 export function steps(r, w, now = Date.now(), lax = false) {
   const W = day(w), wallet = !!(r.wallet && r.hw === r.wallet), read = wallet && r.checked > 0, holder = wallet && r.tier >= 1, started = now >= w;
   const pending = lax && !!r.wallet && !holder && !read;
-  const onTrack = (holder || pending) && !r.dipped && (lax || r.streak_day != null && r.streak_day <= W);
-  const held = onTrack ? Math.max(0, Math.min(7, day(now) - W + 1)) : 0;
+  const from = Math.max(W, lax || r.streak_day == null ? W : r.streak_day, r.dip != null ? r.dip + 1 : W);
+  const held = (holder || pending) && (lax || r.streak_day != null) && started ? Math.max(0, Math.min(7, Math.min(day(now), W + 6) - from + 1)) : 0;
+  const onTrack = held >= HOLD_DAYS, late = (holder || pending) && !onTrack && W + 7 - Math.max(from, day(now)) < HOLD_DAYS;   // too few days left this week
   return {
     group: { done: !!r.group_ok, tg: r.tg_id != null },
     x: { done: !!r.x, handle: r.x ? '@' + r.x : null },
     wallet: { done: holder || pending, linked: !!r.wallet, checking: !!r.wallet && !holder && !read && !pending, low: read && !holder, pending },
-    hold: { done: onTrack, days: started ? held : 0, nextWeek: (holder || pending) && !onTrack },
+    hold: { done: onTrack, days: Math.min(HOLD_DAYS, held), need: HOLD_DAYS, nextWeek: late },
     days: { done: (r.days || 0) >= PLAY_DAYS, n: Math.min(PLAY_DAYS, r.days || 0) },
     age: { ok: r.created <= w + WEEK - MIN_AGE_DAYS * DAY, days: Math.floor((now - r.created) / DAY), from: firstWeek(r.created) },
   };
@@ -169,7 +172,7 @@ export async function card(env, me, now = Date.now()) {
   let rank = null, entrants = 0;
   if (done && s.age.ok && !r.skipped) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
   return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
-    rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
+    rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, holdDays: HOLD_DAYS, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
 }
 export async function handle(path, env, me, body, now = Date.now()) {
   if (!prizeOn(env, me, now)) return path === '/prize' || path === '/prize/check' || path === '/prize/x' ? { on: false } : null;

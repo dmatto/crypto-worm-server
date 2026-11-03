@@ -207,7 +207,7 @@ async function link(env, me, target) {
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
-      me.tg_id, me.wallet, me.wins, me.losses, me.tg_id, me.name, a, b),           // the older account's age counts (weekly prize: 8 days old)
+      me.tg_id, me.wallet, me.wins, me.losses, me.tg_id, me.name, a, b),           // the older account's age counts (weekly prize: 3 days old)
     q('INSERT OR IGNORE INTO friends (player, friend, created) SELECT ?, friend, created FROM friends WHERE player = ? AND friend != ?', b, a, b),
     q('INSERT OR IGNORE INTO friends (player, friend, created) SELECT player, ?, created FROM friends WHERE friend = ? AND player != ?', b, a, b),
     q('DELETE FROM friends WHERE player = ? OR friend = ?', a, a),

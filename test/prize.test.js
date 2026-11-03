@@ -84,13 +84,13 @@ test('prize: hidden before Sunday 18 Oct except for admins and the preview switc
   assert.equal((await call(env, '/prize', undefined, a.token)).on, true);                 // Sunday: shown to everyone, for next week
 });
 
-test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ranking, and a dip below 100K loses the week', async () => {
+test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ranking, 3 days of holding, and a dip restarts the count', async () => {
   clock = at(0, 9); calls.length = 0;
   const env = makeEnv(), a = await player(env, 42, 'Dami', { wallet: 'WaLLetA111111111111111111111111111' });
   let c = await call(env, '/prize', undefined, a.token);
   assert.equal(c.on, true); assert.equal(c.started, true); assert.equal(c.done, false);
-  assert.deepEqual(Object.fromEntries(Object.entries(c.steps).map(([k, v]) => [k, v.done ?? v.ok])), { group: false, x: false, wallet: true, hold: true, days: false, age: true });
-  assert.equal(c.steps.group.tg, true);
+  assert.deepEqual(Object.fromEntries(Object.entries(c.steps).map(([k, v]) => [k, v.done ?? v.ok])), { group: false, x: false, wallet: true, hold: false, days: false, age: true });
+  assert.equal(c.steps.group.tg, true); assert.equal(c.steps.hold.days, 1); assert.equal(c.steps.hold.need, 3);   // a holder since before Monday: day 1 of 3
   // 1. the group: Telegram is asked; at most every 30 s when the player taps Check
   members.set(42, 'member'); clock += 5e3;
   assert.equal((await call(env, '/prize/check', {}, a.token)).steps.group.done, false);     // the first look said "not a member" a moment ago
@@ -117,14 +117,21 @@ test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ran
   assert.equal(c.done, true); assert.equal(c.ticket, true); assert.equal(c.rank, 1); assert.equal(c.entrants, 1);
   const rk = await call(env, '/ranking?period=week', undefined, a.token);
   assert.equal(rk.me.ticket, true); assert.equal(rk.top[0].ticket, true);
-  // a reading under 100K this week loses the week, even while the holder tier is kept for 3 days
+  // a reading under 100K restarts the count the next day, even while the holder tier is kept for 3 days: Thursday's dip
+  // takes the ticket away, and holding Friday to Sunday earns it back
   env.sql.prepare('INSERT INTO hold_dips (player, day) VALUES (?, ?)').run(a.id, Math.floor(at(3) / DAY));
   clock = at(3, 12); c = await call(env, '/prize', undefined, a.token);
-  assert.equal(c.steps.wallet.done, true); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.nextWeek, true); assert.equal(c.ticket, false);
+  assert.equal(c.steps.wallet.done, true); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.days, 0); assert.equal(c.steps.hold.nextWeek, false); assert.equal(c.ticket, false);
   assert.equal((await call(env, '/ranking?period=week', undefined, a.token)).me.ticket, undefined);
-  // the next week starts clean: the dip was last week, the streak goes on
+  clock = at(5, 12); assert.equal((await call(env, '/prize', undefined, a.token)).steps.hold.days, 2);
+  clock = at(6, 12); c = await call(env, '/prize', undefined, a.token); assert.equal(c.steps.hold.done, true); assert.equal(c.ticket, true);
+  // a dip on Saturday leaves too few days: next week
+  env.sql.prepare('INSERT INTO hold_dips (player, day) VALUES (?, ?)').run(a.id, Math.floor(at(5) / DAY));
+  c = await call(env, '/prize', undefined, a.token); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.nextWeek, true);
+  // the next week starts clean: the dip was last week, the streak goes on and counts from Monday
   clock = at(7, 12); c = await call(env, '/prize', undefined, a.token);
-  assert.equal(c.week, MON + 7 * DAY); assert.equal(c.steps.hold.done, true); assert.equal(c.steps.hold.days, 1); assert.equal(c.steps.days.n, 0); assert.equal(c.points, 0);
+  assert.equal(c.week, MON + 7 * DAY); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.days, 1); assert.equal(c.steps.days.n, 0); assert.equal(c.points, 0);
+  clock = at(9, 12); assert.equal((await call(env, '/prize', undefined, a.token)).steps.hold.done, true);
 });
 
 test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from mid-week, a new account, someone who left the group', async () => {
@@ -132,12 +139,16 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
   const none = await player(env, 50, 'NoWallet'), low = await player(env, 51, 'Low', { wallet: 'LowWa11et1111111111111111111111111', bal: 5000 });
   const late = await player(env, 52, 'Late', { wallet: 'LateWa11et111111111111111111111111', since: Math.floor(at(2) / DAY) });
-  const young = await player(env, 53, 'Young', { age: 0, wallet: 'YoungWa11et11111111111111111111111' });
+  const sat = await player(env, 55, 'Saturday', { wallet: 'SatWa11et1111111111111111111111111', since: Math.floor(at(5) / DAY) });
+  const young = await player(env, 53, 'Young', { age: -4.5, wallet: 'YoungWa11et11111111111111111111111' });   // made Friday noon
   clock = at(2, 12);
   let s = (await call(env, '/prize', undefined, none.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.linked, false);
   s = (await call(env, '/prize', undefined, low.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.low, true);
-  s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);
-  s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 2); assert.equal(s.age.from, MON + 7 * DAY);
+  s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.days, 1); assert.equal(s.hold.nextWeek, false);
+  clock = at(4, 12); s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.hold.done, true);   // a holder from Wednesday: 3 days by Friday
+  clock = at(5, 12); s = (await call(env, '/prize', undefined, sat.token)).steps; assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);   // from Saturday: too late
+  clock = at(2, 12);
+  clock = at(5, 12); s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 1); assert.equal(s.age.from, MON + 7 * DAY); clock = at(2, 12);
   // without SOLANA_RPC the free hosts rarely answer: a linked wallet never read counts until Monday's live check, a holder
   // from mid-week counts too, and a wallet read under 100K still doesn't
   delete env.SOLANA_RPC;
@@ -145,11 +156,11 @@ test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from m
   s = (await call(env, '/prize', undefined, unread.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.wallet.pending, true); assert.equal(s.hold.done, true); assert.equal(s.hold.days, 3);
   assert.equal((await call(env, '/prize', undefined, late.token)).steps.hold.done, true);
   assert.equal((await call(env, '/prize', undefined, low.token)).steps.wallet.done, false);
-  // accounts need 8 days by the payout: one made Friday 16 Oct is 10 days old at the first payout, one made at noon on
-  // Sunday 18 Oct is 7.5 (too young) and 14.5 at the next one
-  assert.equal(P.steps({ created: MON - 3 * DAY }, MON, MON).age.ok, true);
-  assert.equal(P.steps({ created: MON - DAY / 2 }, MON, MON).age.ok, false);
-  assert.equal(P.steps({ created: MON - DAY / 2 }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
+  // accounts need 3 days by the payout: one made at noon on Thursday is 3.5 days old at Monday's payout, one made at noon on
+  // Friday is 2.5 (too young) and 9.5 at the next one
+  assert.equal(P.steps({ created: MON + 3.5 * DAY }, MON, MON).age.ok, true);
+  assert.equal(P.steps({ created: MON + 4.5 * DAY }, MON, MON).age.ok, false);
+  assert.equal(P.steps({ created: MON + 4.5 * DAY }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
   // Telegram's answers: member, admin, restricted but in the group count; left, kicked and "user not found" don't
   for (const [st, ok] of [['member', true], ['administrator', true], ['creator', true], ['left', false], ['kicked', false], [null, false]]) {
     if (st) members.set(77, st); else members.delete(77);
