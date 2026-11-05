@@ -159,3 +159,10 @@ test('ideas: the webhook routes button taps and admin commands; the cron adds ca
   const env2 = makeEnv(); hook = { url: 'https://elsewhere.test/hook' }; sent = [];
   await updatesCheck(env2); assert.equal(sent.some(s => s.method === 'setWebhook'), false);         // never moves a webhook that points elsewhere
 });
+
+test('ideas: bot answers escape player text (they go out as Telegram HTML)', async () => {
+  const env = makeEnv();
+  await propose(env, 1, { kind: 'other', title: 'Fish <b>& chips', text: 'Make <script> worms eat fish & chips.' }); await I.decide(env, 1, true, '', null, T0);
+  const show = await I.command(env, '1', {}, T0 + 1), tag = await I.command(env, 'tag 1 done', {}, T0 + 1);
+  for (const t of [show, tag, await I.command(env, '', {}, T0 + 1)]) { assert.doesNotMatch(t, /<script>|<b>&/); assert.match(t, /Fish &lt;b&gt;&amp; chips/) }
+});

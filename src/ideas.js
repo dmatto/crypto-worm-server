@@ -186,7 +186,7 @@ export async function newPoll(env, arg, adminPlayer, now = Date.now()) {
   return `🗳️ Poll #${r.id} is live in the game for ${days} day${days === 1 ? '' : 's'}:\n${title}\n${(opts.length ? opts : ['Yes', 'No']).map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\n/idea end ${r.id} closes it early, /idea del ${r.id} takes it out.`;
 }
 
-// /idea ok|no|edit|tag|end|del <id> ..., or /idea <id> for one idea's numbers.
+// /idea ok|no|edit|tag|end|del <id> ..., or /idea <id> for one idea's numbers. The answer is Telegram HTML: player text is escaped.
 export async function command(env, arg, { by, chat } = {}, now = Date.now()) {
   const m = /^(?:(ok|yes|approve|no|reject|edit|tag|end|close|del|delete|remove)\s+)?#?(\d+)\s*([\s\S]*)$/i.exec(String(arg || '').trim());
   if (!m) return adminList(env, now);
@@ -199,7 +199,7 @@ export async function command(env, arg, { by, chat } = {}, now = Date.now()) {
     if (title.length < 4) return `Write it like this: /idea edit ${id} New title | New description`;
     await q(env, 'UPDATE ideas SET title = ?, text = ? WHERE id = ?', title, text, id).run();
     if (r.state === 'wait' && chat != null) { await tellAdmins(env, id, null, chat); return null }   // the fixed version, with the buttons again
-    return `✏️ Idea #${id} now reads:\n${title}${text ? '\n' + text : ''}`;
+    return `✏️ Idea #${id} now reads:\n${esc(title)}${text ? '\n' + esc(text) : ''}`;
   }
   if (r.state !== 'open') return `Idea #${id} is ${r.state === 'wait' ? 'still waiting: /idea ok ' + id + ' or /idea no ' + id : 'not a poll (rejected)'}.`;
   if (what === 'end' || what === 'close') {
@@ -215,12 +215,12 @@ export async function command(env, arg, { by, chat } = {}, now = Date.now()) {
     if (tag === 'done' && !r.team && r.player && changed(await q(env, 'UPDATE ideas SET paid = paid | 2 WHERE id = ? AND (paid & 2) = 0', id).run())) {
       await q(env, "INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, 'ideadone', ?, ?)", r.player, DONE_REWARD, r.title.slice(0, 60), now).run();
       await dm(env, r.player, `🎉 Your idea "${r.title}" made it into the game! Thank you.\n\n+${fmt(DONE_REWARD)} $CWORM for you (play money).`).catch(() => false);
-      extra = `\n${r.author || 'The player'} got +${fmt(DONE_REWARD)} play $CWORM. For the update note: "Idea by ${r.author || 'a player'}".`;
+      extra = `\n${esc(r.author || 'The player')} got +${fmt(DONE_REWARD)} play $CWORM. For the update note: "Idea by ${esc(r.author || 'a player')}".`;
     }
-    return `${tag ? TAGNAME[tag] : 'No tag'} on #${id}: ${r.title}${extra}`;
+    return `${tag ? TAGNAME[tag] : 'No tag'} on #${id}: ${esc(r.title)}${extra}`;
   }
   const c = (await counts(env, [r])).get(r.id);
-  return `#${id} ${r.team ? '🗳️ Team poll' : ICON[r.kind] + ' by ' + (r.author || 'Worm')}\n${r.title}${r.text ? '\n' + r.text : ''}\n\n${result(r, c).replace(/<[^>]+>/g, '')}\n${r.ends > now ? left(r, now) : 'Closed'}${r.tag ? ' · ' + TAGNAME[r.tag] : ''}`;
+  return `#${id} ${r.team ? '🗳️ Team poll' : ICON[r.kind] + ' by ' + esc(r.author || 'Worm')}\n<b>${esc(r.title)}</b>${r.text ? '\n' + esc(r.text) : ''}\n\n${result(r, c)}\n${r.ends > now ? left(r, now) : 'Closed'}${r.tag ? ' · ' + TAGNAME[r.tag] : ''}`;
 }
 
 // Cron (every 15 minutes): the results of each poll that just closed go to the admins once, with the tag commands.
