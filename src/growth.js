@@ -310,8 +310,10 @@ export async function sourcesText(env, now = Date.now()) {
 async function send(env, row, text, link) {
   const r = await tg(env, 'sendMessage', { chat_id: row.tg_id, text: text + '\n\nTurn these off with /stop or in the game\'s Settings.',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: link }]] } });
-  const q = r && r.ok ? 'UPDATE player_meta SET reminded = ? WHERE player = ?' : r && r.error_code === 403 ? 'UPDATE player_meta SET no_dm = 1, reminded = ? WHERE player = ?' : null;
-  if (q) await env.DB.prepare(q).bind(Date.now(), row.id).run();
+  // blocked (403) or never started the bot (400 "chat not found"): no more DMs until their next /start; any other failure waits a day,
+  // so one player Telegram refuses isn't tried again every 15 minutes
+  const q = r && (r.error_code === 403 || r.error_code === 400) ? 'UPDATE player_meta SET no_dm = 1, reminded = ? WHERE player = ?' : 'UPDATE player_meta SET reminded = ? WHERE player = ?';
+  await env.DB.prepare(q).bind(Date.now(), row.id).run();
   return !!(r && r.ok);
 }
 export async function reminders(env, now = Date.now()) {
