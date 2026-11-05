@@ -12,6 +12,8 @@
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
 // /pay (admins, private chat) sends prizes from the prize wallet after a typed OK (payout.js).
 // /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js); /poll (admins) the in-game poll's votes (poll.js).
+// Ideas & polls (ideas.js): players' ideas reach admins with Approve/Reject buttons; /ideas lists them, /idea ok|no|edit|tag|end|del <id>
+// looks after one, /newpoll Question | option | option posts the team's own poll.
 // /gift (admins) makes gift codes for play $CWORM, looks and free Custom Worms, lists them and turns them off (gifts.js); for
 // everyone else it says where to type a code in the game.
 // Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
@@ -32,6 +34,7 @@ import { teamMessage, teamBoard, adminTeams } from './teams.js';
 import { clubBoard, adminClubs, derbyCommand, postDerby } from './clubs.js';
 import { votesText as burnVotes } from './burn.js';
 import { resultsText as pollResults } from './poll.js';
+import { callback as ideaCallback, command as ideaCommand, newPoll, cron as ideasCron } from './ideas.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
@@ -52,7 +55,7 @@ export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 Free to play 
 export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn $CWORM' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
   { command: 'privacy', description: 'Privacy policy' }, { command: 'paysupport', description: 'Help with a purchase' }, { command: 'terms', description: 'Purchase terms' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
 export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
-export const UPDATES = ['message', 'inline_query', 'pre_checkout_query'];   // pre_checkout_query: Telegram Stars payments (stars.js)
+export const UPDATES = ['message', 'inline_query', 'pre_checkout_query', 'callback_query'];   // pre_checkout_query: Telegram Stars payments (stars.js); callback_query: the Approve/Reject buttons on ideas (ideas.js)
 export const privacyUrl = env => (env.SITE_URL || (env.MENU_URL || 'https://play.cryptoworm.io/')).replace(/\/+$/, '') + '/privacy.html';
 
 export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x.com/CryptoWorm72' };
@@ -218,6 +221,12 @@ export async function webhook(req, env) {
       await tg(env, 'answerPreCheckoutQuery', { pre_checkout_query_id: u.pre_checkout_query.id, ok: false, error_message: 'Something went wrong. Please try again.' }) });
     return new Response('ok');
   }
+  if (u && u.callback_query && u.callback_query.from && env.DB) {                      // a button under a bot message: Approve/Reject on an idea (ideas.js)
+    const cq = u.callback_query;
+    const handled = await ideaCallback(env, cq, await isAdmin(env, cq.from)).catch(async e => { await botLog(env, 'idea button error ' + (e && e.message)); return false });
+    if (!handled) await tg(env, 'answerCallbackQuery', { callback_query_id: cq.id }).catch(() => { });
+    return new Response('ok');
+  }
   if (m && m.successful_payment && env.DB) { await paid(env, m).catch(e => botLog(env, 'payment error ' + (e && e.message) + ' ' + JSON.stringify(m.successful_payment).slice(0, 600))); return new Response('ok') }
   if (m && m.refunded_payment && env.DB) { await refundedByTelegram(env, m).catch(e => botLog(env, 'refund error ' + (e && e.message))); return new Response('ok') }
   if (!m || !m.chat || typeof m.text !== 'string') return new Response('ok');
@@ -292,6 +301,15 @@ export async function webhook(req, env) {
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
   else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
+  else if ((cmd === '/ideas' || cmd === '/idea') && env.DB && await isAdmin(env, m.from)) {   // Ideas & polls (ideas.js)
+    const by = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') || m.from.username || '';
+    const text = await ideaCommand(env, cmd === '/ideas' ? '' : m.text.trim().slice(head.length).trim(), { by, chat: chat_id });
+    if (text) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  }
+  else if (cmd === '/newpoll' && env.DB && await isAdmin(env, m.from)) {
+    const p = await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    await tg(env, 'sendMessage', { chat_id, text: (await newPoll(env, m.text.trim().slice(head.length).trim(), p && p.id)).slice(0, 4000) });
+  }
   else if (cmd === '/pay' && env.DB && await isAdmin(env, m.from)) {                 // admins: prize payouts from the prize wallet (payout.js), private chat only
     if (m.chat.type !== 'private') await tg(env, 'sendMessage', { chat_id, text: 'Use /pay in a private chat with the bot.' });
     else { const lastWeek = () => { const now = Date.now(); return adminList(env, weekOf(now) - 7 * 864e5, now) };
@@ -412,7 +430,7 @@ export async function cron(env, now = Date.now()) {
   const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);
   if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
-  for (const job of quarter ? [weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [updatesCheck, weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
@@ -453,6 +471,18 @@ export async function startNudge(env, now = Date.now()) {
     if (res && res.ok) sent++;
   }
   return sent;
+}
+// The webhook's update list only changes through setWebhook. When UPDATES grows (callback_query for the idea buttons,
+// 2026-11-05), the cron sets it once, keeping the same address and secret, and only on a webhook that points here.
+export async function updatesCheck(env) {
+  const want = UPDATES.join(','), seen = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'updates'").first().catch(() => null);
+  if (seen && seen.v === want) return;
+  const info = (await tg(env, 'getWebhookInfo')).result || {}, mine = env.PUBLIC_URL && env.PUBLIC_URL + '/telegram/webhook';
+  if (!mine || info.url !== mine) return botLog(env, 'updates: left alone, the webhook is ' + (info.url || 'not set'));
+  const have = info.allowed_updates || [];
+  const ok = UPDATES.every(x => have.includes(x)) || (await tg(env, 'setWebhook', { url: mine, secret_token: await webhookSecret(env), allowed_updates: UPDATES, drop_pending_updates: false })).ok;
+  if (ok) await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('updates', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(want).run();
+  await botLog(env, 'updates ' + (ok ? 'set to ' : 'not set: ') + want);
 }
 export async function sync(env) {
   try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }

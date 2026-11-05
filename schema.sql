@@ -648,3 +648,31 @@ CREATE TABLE IF NOT EXISTS team_war_pts (  -- war points by member and UTC day: 
   clash    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (war, team, player, day)
 );
+-- Ideas & polls (ideas.js, Damian 2026-11-05): players' ideas wait for an admin; approved ones and the team's own polls run 7 days.
+CREATE TABLE IF NOT EXISTS ideas (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  player   INTEGER,                         -- the author (the admin, for team polls)
+  team     INTEGER NOT NULL DEFAULT 0,      -- 1: a poll from the Crypto Worm team (/newpoll)
+  kind     TEXT NOT NULL,                   -- weapon | change | other | poll
+  title    TEXT NOT NULL,
+  text     TEXT,
+  options  TEXT,                            -- JSON list for team polls; NULL: Yes / No
+  state    TEXT NOT NULL,                   -- wait | open | no | gone
+  note     TEXT,                            -- why not, for the author
+  tag      TEXT,                            -- planned | done | notnow
+  created  INTEGER NOT NULL,
+  opened   INTEGER,                         -- when it became a poll
+  ends     INTEGER,                         -- votes close (exclusive)
+  msgs     TEXT,                            -- JSON [[chat, message]]: the admin messages with the buttons
+  paid     INTEGER NOT NULL DEFAULT 0,      -- bits: 1 the +500 for becoming a poll, 2 the +2,000 for Done
+  told     INTEGER NOT NULL DEFAULT 0       -- 1: admins got the results after the end
+);
+CREATE INDEX IF NOT EXISTS ideas_state ON ideas (state, ends);
+CREATE INDEX IF NOT EXISTS ideas_player ON ideas (player, created);
+CREATE TABLE IF NOT EXISTS idea_votes (    -- one vote per player and poll, changeable while it runs
+  idea     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  choice   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (idea, player)
+);
