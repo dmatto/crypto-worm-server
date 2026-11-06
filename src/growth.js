@@ -384,17 +384,30 @@ export async function announce(env, now = Date.now()) {
   const a = await env.DB.prepare('SELECT * FROM announcements WHERE done = 0 AND created <= ? ORDER BY id LIMIT 1').bind(now).first();   // created in the future = send then
   if (!a) return false;
   const kb = { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] };
+  // A note can carry a video (Damian 2026-11-06, the Invite Race video): bot_kv note_video_<id> holds its URL, and after the first
+  // send Telegram's file id, so the file is fetched once. If Telegram refuses the video, the note goes out as text from then on.
+  let vid = await kv.get(env, 'note_video_' + a.id);
+  const send = async (chat_id, text) => {
+    if (vid) {
+      const res = await tg(env, 'sendVideo', { chat_id, video: vid, caption: text.slice(0, 1024), reply_markup: kb, supports_streaming: true, width: 720, height: 1280 });
+      const id = res && res.ok && res.result && res.result.video && res.result.video.file_id;
+      if (id && id !== vid) { vid = id; await kv.set(env, 'note_video_' + a.id, id) }
+      if ((res && res.ok) || (res && res.error_code === 403)) return res;
+      vid = ''; await kv.set(env, 'note_video_' + a.id, '');
+    }
+    return tg(env, 'sendMessage', { chat_id, text, reply_markup: kb, disable_web_page_preview: true });
+  };
   if (!a.group_done) {
     if (await kv.get(env, 'note_day') === utcDay(now)) return false;              // one note a day: this one starts tomorrow
     await kv.set(env, 'note_day', utcDay(now));
     const group = await kv.get(env, 'group');
-    if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: a.text, reply_markup: kb, disable_web_page_preview: true });
+    if (group) await send(Number(group), a.text);
     await env.DB.prepare('UPDATE announcements SET group_done = 1 WHERE id = ?').bind(a.id).run();
   }
   const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id FROM players p LEFT JOIN player_meta m ON m.player = p.id
       WHERE p.tg_id IS NOT NULL AND p.id > ? AND COALESCE(m.remind, 1) = 1 AND COALESCE(m.no_dm, 0) = 0 ORDER BY p.id LIMIT ?`).bind(a.last_player, ANNOUNCE_BATCH).all();
   for (const r of results) {
-    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: a.text + '\n\nNo more of these: /stop', reply_markup: kb, disable_web_page_preview: true });
+    const res = await send(r.tg_id, a.text + '\n\nNo more of these: /stop');
     const ok = !!(res && res.ok);
     if (res && res.error_code === 403) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, no_dm) VALUES (?, 0, 1) ON CONFLICT(player) DO UPDATE SET no_dm = 1').bind(r.id).run();
     else if (ok) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, reminded) VALUES (?, 0, ?) ON CONFLICT(player) DO UPDATE SET reminded = excluded.reminded').bind(r.id, now).run();

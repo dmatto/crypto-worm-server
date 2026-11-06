@@ -13,6 +13,7 @@ globalThis.fetch = async (url, init) => {
   calls.push([method, body]);
   if (method === 'savePreparedInlineMessage') return Response.json({ ok: true, result: { id: 'PREP1', expiration_date: 0 } });
   if (method === 'sendMessage' && body.chat_id === 666) return Response.json({ ok: false, error_code: 403 });
+  if (method === 'sendVideo') return body.chat_id === 666 ? Response.json({ ok: false, error_code: 403 }) : body.chat_id === 777 ? Response.json({ ok: false, error_code: 400 }) : Response.json({ ok: true, result: { video: { file_id: body.video.startsWith('FID') ? body.video : 'FID-' + body.video.length } } });
   return Response.json({ ok: true, result: {} });
 };
 const { default: worker } = await import('../src/index.js');
@@ -276,4 +277,29 @@ test('growth: an announcement goes to the group once and to every Telegram playe
   calls.length = 0; env.now += 86400000; await cron(env, env.now); assert.equal(calls.filter(c => /Timed note/.test(c[1].text || '')).length, 0);
   env.now += 86400000 + 60e3; await cron(env, env.now); assert.equal(calls.filter(c => /Timed note/.test(c[1].text || '')).length, 2);
   assert.ok(a);
+});
+
+test('growth: a note with a video sends it by URL once, then by Telegram\'s file id; a refused video falls back to text', async () => {
+  const env = makeEnv(); calls.length = 0;
+  await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
+  await call(env, '/auth/telegram', { initData: tgInit(666, 'Blocked') });
+  await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana') });
+  await hook(env, msg('/setgroup', 42, { id: -100, type: 'supergroup' }));
+  env.sql.prepare('INSERT INTO announcements (text, created) VALUES (?, ?)').run('🏁 The Invite Race starts today!', Date.now() - 1);
+  env.sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('note_video_1', 'https://play.test/promo/race.mp4')").run();
+  calls.length = 0; await cron(env, Date.now());
+  const v = calls.filter(c => c[0] === 'sendVideo');
+  assert.deepEqual(v.map(c => [c[1].chat_id, c[1].video]), [[-100, 'https://play.test/promo/race.mp4'], [42, 'FID-32'], [666, 'FID-32'], [55, 'FID-32']]);
+  assert.match(v[1][1].caption, /Invite Race starts today!\n\nNo more of these: \/stop$/); assert.equal(v[0][1].reply_markup.inline_keyboard[0][0].text, '🎮 Play');
+  assert.equal(calls.filter(c => c[0] === 'sendMessage' && /Invite Race/.test(c[1].text)).length, 0);
+  assert.equal(env.sql.prepare('SELECT no_dm FROM player_meta p JOIN players x ON x.id = p.player WHERE x.tg_id = 666').get().no_dm, 1);
+  assert.equal(env.sql.prepare('SELECT sent FROM announcements').get().sent, 2);
+  // Telegram refuses the video for a player: that player and everyone after get the text
+  await call(env, '/auth/telegram', { initData: tgInit(777, 'Odd') }); await call(env, '/auth/telegram', { initData: tgInit(88, 'Bo') });
+  env.sql.prepare('INSERT INTO announcements (text, created) VALUES (?, ?)').run('Second video note', Date.now());
+  env.sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('note_video_2', 'https://play.test/v.mp4')").run();
+  env.sql.prepare("UPDATE bot_kv SET v = '' WHERE k = 'note_day'").run();
+  calls.length = 0; await cron(env, Date.now());
+  assert.deepEqual(calls.filter(c => /Second video note/.test(c[1].caption || c[1].text || '')).map(c => [c[0], c[1].chat_id]),
+    [['sendVideo', -100], ['sendVideo', 42], ['sendVideo', 55], ['sendVideo', 777], ['sendMessage', 777], ['sendMessage', 88]]);
 });
