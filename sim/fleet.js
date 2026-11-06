@@ -35,6 +35,9 @@ export function moments(mode, won, r = Math.random) {
   else if (x < .82 && mode !== 'online') out.push({ k: 'died', w: one(OWN), wp: wp() });
   return out.length ? out : null;
 }
+// Damian 2026-11-06: the bots stop playing on the World Map (no land, no attacks, no alert checks) and just keep battling.
+// battle() stays for a later switch back: set MAP_BATTLES to true.
+const MAP_BATTLES = false;
 const OFFLINE = [['cpu', 'cpu'], ['cpu', 'cpu'], ['cpu', 'cpu'], ['cpu', 'camp'], ['cpu', 'daily'], ['mini', 'cpu'], ['team', 'cpu']];   // [started, played]
 
 // World Map neighbours (the same hex grid as src/map.js)
@@ -235,7 +238,7 @@ export class Fleet {
     const end = Math.min(Date.now() + this.t(ms), b.until); b.inMenu = true;
     while (Date.now() < end && this.keep(b) && !b.invite) {
       if ((!b.lobby || b.lobby.gone) && Date.now() - (b.lobbyAt || 0) > 5000) await this.openLobby(b);
-      if (b.land && Date.now() - (b.alertAt || 0) >= this.t(12e3)) { b.alertAt = Date.now(); await this.api(b, 'GET', '/map/alert') }
+      if (MAP_BATTLES && b.land && Date.now() - (b.alertAt || 0) >= this.t(12e3)) { b.alertAt = Date.now(); await this.api(b, 'GET', '/map/alert') }
       await sleep(Math.min(1000, end - Date.now()));
     }
     b.inMenu = false;
@@ -244,7 +247,7 @@ export class Fleet {
 
   async game(b) {
     const today = Math.floor(Date.now() / DAY); if (b.ad !== today) { b.ad = today; b.attacks = 0 }
-    const r = Math.random(), pMap = b.attacks < 10 ? (b.rush ? .12 : .22) : 0, pOnline = b.rush ? .65 : b.prof.online;
+    const r = Math.random(), pMap = MAP_BATTLES && b.attacks < 10 ? (b.rush ? .12 : .22) : 0, pOnline = b.rush ? .65 : b.prof.online;
     this.win.games++;
     if (r < pMap) return this.battle(b);
     if (r < pMap + pOnline && await this.duel(b)) return;
