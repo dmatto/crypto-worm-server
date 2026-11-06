@@ -676,3 +676,18 @@ CREATE TABLE IF NOT EXISTS idea_votes (    -- one vote per player and poll, chan
   at       INTEGER NOT NULL,
   PRIMARY KEY (idea, player)
 );
+CREATE TABLE IF NOT EXISTS race_friends (    -- Invite Race (race.js): a friend who counts for their inviter, and since when
+  race    TEXT NOT NULL,
+  friend  INTEGER NOT NULL,
+  inviter INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (race, friend)
+);
+CREATE INDEX IF NOT EXISTS race_friends_inviter ON race_friends (race, inviter);
+CREATE TABLE IF NOT EXISTS race_skip (       -- players an admin took out of the Invite Race (/race skip): they neither win nor count
+  race    TEXT NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  why     TEXT,
+  PRIMARY KEY (race, player)
+);

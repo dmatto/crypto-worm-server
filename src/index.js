@@ -77,6 +77,7 @@ import { handle as chatHandle, teamUnread, dmUnread } from './chat.js';
 import { handle as burnHandle } from './burn.js';
 import { handle as pollHandle, card as pollCard, mergePoll } from './poll.js';
 import { handle as ideasHandle, mergeIdeas } from './ideas.js';
+import { handle as raceHandle, check as raceCheck, mergeRace } from './race.js';
 import { handle as giftHandle, giftItems } from './gifts.js';
 import { handle as starsHandle, sessionStars, isSupporter, SUP_SQL } from './stars.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
@@ -208,6 +209,7 @@ async function link(env, me, target) {
   await mergeClubs(env, a, b).catch(() => { });                                       // football club: the target's own pick wins
   await mergePoll(env, a, b).catch(() => { });                                        // poll votes: the target's own vote wins
   await mergeIdeas(env, a, b).catch(() => { });                                       // Ideas & polls: ideas follow, the target's own votes win
+  await mergeRace(env, a, b).catch(() => { });                                        // Invite Race: an inviter's counted friends follow
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
@@ -315,7 +317,9 @@ const app = {
       // per wallet; holder status starts over with the new wallet). A wallet that has its own account switches the device to it.
       if (!p && me) { await env.DB.prepare("UPDATE players SET wallet = ?, name = CASE WHEN name LIKE 'Guest %' OR name = ? THEN ? ELSE name END WHERE id = ?").bind(body.address, me.wallet ? me.wallet.slice(0, 4) + '…' + me.wallet.slice(-4) : '', body.address.slice(0, 4) + '…' + body.address.slice(-4), me.id).run(); p = await playerById(env, me.id) }
       else if (!p) { p = await env.DB.prepare('INSERT INTO players (wallet, name, created) VALUES (?, ?, ?) RETURNING *').bind(body.address, body.address.slice(0, 4) + '…' + body.address.slice(-4), Date.now()).first(); await newPlayer(env, p.id, body.src) }
-      return session(env, await link(env, me, p), cors);
+      const signed = await link(env, me, p);
+      await raceCheck(env, signed.id).catch(() => { });                                  // Invite Race: a friend who links a wallet may count now
+      return session(env, signed, cors);
     }
 
     if (path === '/auth/guest' && req.method === 'POST') {
@@ -424,7 +428,10 @@ const app = {
     if (path === '/result' && req.method === 'POST') return json(await result(env, me, String(body.mode || '').slice(0, 12), body.won), 200, cors);
     // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
-    if (path === '/played' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await warRun(env, me.id, await runEnd(env, me.id)).catch(() => { }); return json(await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed), 200, cors) }
+    if (path === '/played' && req.method === 'POST') { const sim = req.headers.has('x-sim-key'); if (!sim) await warRun(env, me.id, await runEnd(env, me.id)).catch(() => { });
+      const out = await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed); if (!sim) await raceCheck(env, me.id).catch(() => { });   // Invite Race: a friend's 3rd match
+      return json(out, 200, cors) }
+    if (path === '/race' && req.method === 'GET') return json(await raceHandle(path, env, me), 200, cors);   // the Invite Race (race.js)
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)

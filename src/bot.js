@@ -12,6 +12,7 @@
 // /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
 // /pay (admins, private chat) sends prizes from the prize wallet after a typed OK (payout.js).
 // /id tells a player their player ID; /player <id or name> (admins) shows who a player ID is (players.js).
+// /race (admins): the Invite Race standings, /race check|skip|unskip <id>, /race post to the group (race.js).
 // /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js); /poll (admins) the in-game poll's votes (poll.js).
 // Ideas & polls (ideas.js): players' ideas reach admins with Approve/Reject buttons; /ideas lists them, /idea ok|no|edit|tag|end|del <id>
 // looks after one, /newpoll Question | option | option posts the team's own poll.
@@ -37,6 +38,7 @@ import { votesText as burnVotes } from './burn.js';
 import { resultsText as pollResults } from './poll.js';
 import { callback as ideaCallback, command as ideaCommand, newPoll, cron as ideasCron } from './ideas.js';
 import { idMessage, lookup as playerLookup } from './players.js';
+import { command as raceCommand, sweep as raceSweep } from './race.js';
 import { parodyCron, parodyCommand } from './parody.js';
 import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
@@ -280,6 +282,7 @@ export async function webhook(req, env) {
     await tg(env, 'sendMessage', { chat_id, text: r.text + (r.post ? (posted ? '\n\n📣 Posted in the community group.' : '\n\nThe group post did not go out: is the bot set up in the group (/setgroup)?') : '') });
   }
   else if ((cmd === '/id' || cmd === '/myid') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await idMessage(env, m.from) });   // players.js
+  else if (cmd === '/race' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await raceCommand(env, arg, { by: m.from.id, tg })).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
   else if ((cmd === '/player' || cmd === '/who') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await playerLookup(env, arg)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
   else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
   else if (cmd === '/paysupport' && env.DB) await tg(env, 'sendMessage', { chat_id, text: arg.trim() && m.from ? await paySupport(env, m.from, m.text.trim().slice(head.length).trim()) : PAYSUPPORT });   // Telegram Stars (stars.js)
@@ -435,7 +438,7 @@ export async function cron(env, now = Date.now()) {
   const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);
   if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
-  for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
