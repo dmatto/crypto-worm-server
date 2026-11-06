@@ -44,20 +44,26 @@ export function base58decode(s) {
   return new Uint8Array(out);
 }
 
-// Sign-In with Solana: the server hands out a nonce, the wallet signs a plain text message holding it, the server checks
+// Wallet sign-in: the server hands out a nonce, the wallet signs a plain text message holding it, the server checks
 // the ed25519 signature. Nonces are stateless: "<issued ms>.<hmac>" bound to the address, valid for 10 minutes.
+// The text deliberately doesn't use the "<domain> wants you to sign in with your Solana account:" layout: Phantom treats
+// that layout as a Sign In With Solana request, wants all its fields (URI, version, chain, issued-at, a letters-only
+// nonce) and otherwise warns that the request is badly formatted.
 export async function makeNonce(address, secret, now = Date.now()) {
   return `${now}.${hex(await hmac(secret, `nonce:${address}:${now}`)).slice(0, 32)}`;
 }
 export function signInMessage(domain, address, nonce) {
-  return `${domain} wants you to sign in with your Solana account:\n${address}\n\n` +
-    `Sign in to Crypto Worm Wars. This is not a transaction and costs nothing.\n\nNonce: ${nonce}`;
+  return `Sign in to Crypto Worm Wars on ${domain}\n\nWallet: ${address}\n\n` +
+    `This is not a transaction and costs nothing.\n\nNonce: ${nonce}`;
 }
+// The old layout, still accepted while a sign-in started before the change finishes (nonces last 10 minutes).
+const oldSignInMessage = (domain, address, nonce) => `${domain} wants you to sign in with your Solana account:\n${address}\n\n` +
+  `Sign in to Crypto Worm Wars. This is not a transaction and costs nothing.\n\nNonce: ${nonce}`;
 export async function verifySolana({ address, message, signature }, domain, secret, now = Date.now()) {
   const pub = base58decode(address), sig = base58decode(signature);
   if (!pub || pub.length !== 32 || !sig || sig.length !== 64 || typeof message !== 'string') return false;
   const m = message.match(/\nNonce: (\d+)\.([0-9a-f]{32})$/);
-  if (!m || message !== signInMessage(domain, address, `${m[1]}.${m[2]}`)) return false;
+  if (!m || ![signInMessage, oldSignInMessage].some(f => message === f(domain, address, `${m[1]}.${m[2]}`))) return false;
   const issued = Number(m[1]);
   if (!(now - issued < 600000 && issued <= now + 60000)) return false;
   if (!sameHex(await makeNonce(address, secret, issued), `${m[1]}.${m[2]}`)) return false;
@@ -75,4 +81,30 @@ export async function readToken(token, secret, now = Date.now() / 1000) {
   const [id, exp, sig] = token.split('.');
   if (!id || !exp || !sig || Number(exp) < now) return null;
   return sameHex(sig, b64url(await hmac(secret, `${id}.${exp}`))) ? Number(id) : null;
+}
+
+// Telegram Login Widget, for signing in with Telegram on the web: https://core.telegram.org/widgets/login#checking-authorization
+// The key is SHA-256 of the bot token (the Mini App check above uses an HMAC key instead). Returns the user or null.
+export async function verifyTelegramLogin(data, botToken, maxAge = 86400, now = Date.now() / 1000) {
+  if (!data || typeof data !== 'object' || !botToken || typeof data.hash !== 'string') return null;
+  const check = Object.keys(data).filter(k => k !== 'hash' && data[k] != null).sort().map(k => `${k}=${data[k]}`).join('\n');
+  const key = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(botToken)));
+  if (!sameHex(hex(await hmac(key, check)), data.hash)) return null;
+  const authDate = Number(data.auth_date);
+  if (!authDate || now - authDate > maxAge) return null;
+  return data.id ? { id: Number(data.id), first_name: data.first_name, last_name: data.last_name, username: data.username } : null;
+}
+
+// Friend codes: the player id in base 36 plus 4 signed characters, so codes can't be guessed by counting up.
+export async function friendCode(playerId, secret) {
+  const id = Number(playerId).toString(36).toUpperCase();
+  const sig = [...(await hmac(secret, `friend:${id}`)).slice(0, 4)].map(b => '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'[b % 34]).join('');
+  return id + sig;
+}
+export async function readFriendCode(code, secret) {
+  if (typeof code !== 'string') return null;
+  code = code.trim().toUpperCase();
+  if (!/^[0-9A-Z]{5,14}$/.test(code)) return null;
+  const id = parseInt(code.slice(0, -4), 36);
+  return id > 0 && sameHex(await friendCode(id, secret), code) ? id : null;
 }

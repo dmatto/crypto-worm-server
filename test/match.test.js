@@ -66,3 +66,86 @@ test('match: game over and leaving are recorded once', async () => {
   assert.equal(m.mem.done.reason, 'played');
   assert.equal((await open(m, 1)).code, 410);
 });
+
+test('match: quick chat relays only a line number, from either side, at most every 1.5 s', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); await open(m, 22);
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 1 }));               // nothing before the match starts
+  assert.notEqual(s0.out.at(-1).t, 'chat');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 5 }));
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 3, text: 'anything' }));   // the other side can talk on any turn
+  assert.deepEqual(s0.out.at(-1), { t: 'chat', id: 3 });
+  const n = s0.out.length;
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'chat', id: 4 }));               // too soon
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 'x' }));             // not a number
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 99 }));              // not on the list
+  assert.equal(s0.out.length, n); assert.notEqual(s1.out.at(-1).t, 'chat');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'chat', id: 0 }));
+  assert.deepEqual(s1.out.at(-1), { t: 'chat', id: 0 });
+});
+
+test('match: both phones get each player\'s country for the flag, unknown ones as null', async () => {
+  const c = ctx(), m = new Match(c, {});
+  const at = (player, cc, av = '') => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-country': cc, 'x-av': av } }));
+  await at(11, 'br'); await at(22, 'XX', 'BAD!');
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null], av: [null, null], club: [null, null], derby: null }); assert.deepEqual(s1.out.at(-1), { t: 'flags', cc: ['BR', null], tier: [0, 0], cw: [null, null], av: [null, null], club: [null, null], derby: null });
+  await at(22, 'UY', 'queen');                                                     // rejoining from somewhere else updates it
+  assert.deepEqual(s0.out.at(-1), { t: 'flags', cc: ['BR', 'UY'], tier: [0, 0], cw: [null, null], av: [null, 'queen'], club: [null, null], derby: null });
+});
+
+test('match: the waiting phone takes over a turn only after the other phone has been quiet for a while', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); await open(m, 22);
+  const s0 = c.socks.get('0'), s1 = c.socks.get('1');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 5, theme: 'island', count: 1, hats: [] }));
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: {} }));
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'skip' }));                    // side 0 was just heard from: refused
+  assert.equal(m.mem.holder, 0); assert.notEqual(s1.out.at(-1).t, 'took');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'skip' }));                    // the holder can't skip itself
+  assert.equal(m.mem.holder, 0);
+  m.heard[0] = Date.now() - 8000;                                                 // side 0 minimised the app 8 s ago
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'skip' }));
+  assert.equal(m.mem.holder, 1); assert.deepEqual(s1.out.at(-1), { t: 'took' }); assert.deepEqual(s0.out.at(-1), { t: 'lost' });
+  const n = s1.out.length;
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: {} }));        // the away phone's late frames are dropped
+  assert.equal(s1.out.length, n);
+  await m.webSocketMessage(s1, JSON.stringify({ t: 'f', e: [], s: {} }));
+  assert.equal(s0.out.at(-1).t, 'f');
+});
+
+test('match: a match against a bot streams to viewers with the bot as the opponent and records nothing', async () => {
+  const c = ctx(), m = new Match(c, {});
+  await open(m, 11); const s0 = c.socks.get('0');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'start', seed: 7, theme: 'moon', count: 2, hats: ['unicorn|galaxy|comet|pyramid', 'team'], bot: { name: 'TokyoLambo', cc: 'jp', team: 1, av: 'pirate' } }));
+  assert.equal(m.mem.bot, true); assert.equal(m.mem.names[1], 'TokyoLambo'); assert.equal(m.mem.cc[1], 'JP'); assert.equal(m.mem.av[1], 'pirate');
+  assert.equal(m.mem.start.hats[0], 'unicorn|galaxy|comet|pyramid');            // a whole look, not cut short
+  assert.equal((await open(m, 22)).code, 409);                                   // nobody else can take the bot's seat
+  const v = await m.fetch(new Request('https://x/match/ABCDEF/watch', { headers: { Upgrade: 'websocket' } }));
+  const vs = c.socks.get('v'); assert.equal(vs.out[0].t, 'watch'); assert.equal(vs.out[0].names[1], 'TokyoLambo'); assert.equal(vs.out[0].av[1], 'pirate');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [], s: { a: 1 } }));
+  assert.equal(vs.out.at(-1).t, 'f');
+  await m.webSocketMessage(s0, JSON.stringify({ t: 'f', e: [['gameOver', [0]]], s: {} }));
+  assert.equal(m.mem.done.reason, 'played');
+});
+
+test('match: each phone gets both players\' football clubs and the derby\'s name when they are rivals; a bot\'s club comes from the list', async () => {
+  const c = ctx(), m = new Match(c, {});
+  const club = (id, n) => encodeURIComponent(JSON.stringify({ id, n, c: ['#111111', '#ffffff'] }));
+  const at = (player, cl) => m.fetch(new Request('https://x/match/ABCDEF/ws', { headers: { Upgrade: 'websocket', 'x-player': String(player), 'x-club': cl } }));
+  await at(11, club('uy-ca-penarol', 'CA Peñarol')); await at(22, club('uy-nacional-de-montevideo', 'Nacional de Montevideo'));
+  const f = c.socks.get('0').out.at(-1);
+  assert.deepEqual(f.club.map(x => x.id), ['uy-ca-penarol', 'uy-nacional-de-montevideo']); assert.ok(f.derby);
+  await at(22, 'not json');                                                           // no club (or a broken header): null, no derby
+  assert.deepEqual(c.socks.get('0').out.at(-1).club, [{ id: 'uy-ca-penarol', n: 'CA Peñarol', c: ['#111111', '#ffffff'] }, null]); assert.equal(c.socks.get('0').out.at(-1).derby, null);
+
+  const c2 = ctx(), b = new Match(c2, {});
+  await b.fetch(new Request('https://x/match/BCDEFG/ws', { headers: { Upgrade: 'websocket', 'x-player': '11', 'x-club': club('uy-ca-penarol', 'CA Peñarol') } }));
+  await b.webSocketMessage(c2.socks.get('0'), JSON.stringify({ t: 'start', seed: 1, bot: { name: 'MateHodler', cc: 'UY', team: 1, club: 'uy-nacional-de-montevideo' } }));
+  assert.equal(b.mem.club[1].n, 'Club Nacional de Football'); assert.equal(b.watchMsg(b.mem).club[0].id, 'uy-ca-penarol'); assert.ok(b.watchMsg(b.mem).derby);
+  const c3 = ctx(), x = new Match(c3, {});
+  await x.fetch(new Request('https://x/match/CDEFGH/ws', { headers: { Upgrade: 'websocket', 'x-player': '11' } }));
+  await x.webSocketMessage(c3.socks.get('0'), JSON.stringify({ t: 'start', seed: 1, bot: { name: 'B', team: 0, club: 'made-up-club' } }));
+  assert.deepEqual(x.mem.club, [null, null]);                                         // not a club from the list: none
+});
