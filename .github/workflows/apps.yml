@@ -1,0 +1,115 @@
+# Builds the Crypto Worm Wars apps (Android APK, Windows installer, Mac DMG, Linux AppImage)
+# from apps/ and attaches them to a GitHub pre-release. Nothing is published to any store.
+name: Build apps
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'apps/**'
+      - '.github/workflows/apps.yml'
+
+permissions:
+  contents: write
+
+env:
+  APP_VERSION: 1.0.${{ github.run_number }}
+  APP_BUILD: ${{ github.run_number }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Signing key
+        working-directory: apps/android
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > sideload.keystore
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PW" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 secret not set: signing with a throwaway key (uninstall the old APK before installing this one)"
+            PW=$(openssl rand -hex 16)
+            echo "::add-mask::$PW"
+            keytool -genkeypair -keystore sideload.keystore -storepass "$PW" -keypass "$PW" -alias cworm \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Crypto Worm Wars, O=Crypto Worm"
+            echo "KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+          fi
+      - name: Build APK
+        working-directory: apps/android
+        run: gradle --no-daemon assembleRelease
+      - name: Rename
+        run: cp apps/android/app/build/outputs/apk/release/app-release.apk CryptoWormWars-${APP_VERSION}-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: CryptoWormWars-*-android.apk
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-latest
+            target: mac
+          - os: ubuntu-latest
+            target: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm pkg set version=$APP_VERSION
+          npm install --no-audit --no-fund
+          npm run dist:${{ matrix.target }}
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [android, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -la out
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apps-v${{ env.APP_VERSION }}
+          name: Crypto Worm Wars apps ${{ env.APP_VERSION }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Test builds of the Crypto Worm Wars apps. They open the live game at play.cryptoworm.io.
+            - Android: CryptoWormWars-*-android.apk (allow installing from this source)
+            - Windows: CryptoWormWars-*-win-x64.exe (SmartScreen: More info, Run anyway)
+            - Mac: *-mac-arm64.dmg for Apple Silicon (M1 and newer), *-mac-x64.dmg for Intel (first open: System Settings, Privacy & Security, Open Anyway)
+            - Linux: *.AppImage
+          files: out/*

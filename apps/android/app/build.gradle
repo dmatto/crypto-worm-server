@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Version comes from CI (APP_VERSION / APP_BUILD), so every build can install over the last one.
+def appVersion = System.getenv('APP_VERSION') ?: '1.0.0'
+def appBuild = (System.getenv('APP_BUILD') ?: '1') as Integer
+
+android {
+    namespace 'io.cryptoworm.wars'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.cryptoworm.wars'
+        minSdk 24
+        targetSdk 35
+        versionCode appBuild
+        versionName appVersion
+    }
+
+    signingConfigs {
+        // Key for direct-download builds. CI writes it from the ANDROID_KEYSTORE_B64 secret
+        // (or a throwaway key when the secret is missing). Never commit a keystore.
+        sideload {
+            storeFile file(System.getenv('KEYSTORE_FILE') ?: '../sideload.keystore')
+            storePassword System.getenv('KEYSTORE_PASSWORD')
+            keyAlias System.getenv('KEY_ALIAS') ?: 'cworm'
+            keyPassword System.getenv('KEYSTORE_PASSWORD')
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.sideload
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

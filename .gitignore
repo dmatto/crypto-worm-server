@@ -1,3 +1,9 @@
 node_modules/
 .wrangler/
 .dev.vars
+apps/desktop/dist/
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
+*.keystore
