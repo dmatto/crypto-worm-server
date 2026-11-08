@@ -55,9 +55,12 @@ export const gameLink = (env, param) => { const l = env.GAME_LINK || 'https://t.
 const botName = env => ((env.GAME_LINK || '').match(/t\.me\/(\w+)/) || [])[1] || 'CryptoWormWarsBot';
 const country = c => { c = String(c || '').toUpperCase(); return /^[A-Z]{2}$/.test(c) && c !== 'XX' && c !== 'T1' ? c : null };
 
-// A brand-new account: remember where it came from (first touch only).
-export function newPlayer(env, id, src) {
-  return env.DB.prepare('INSERT OR IGNORE INTO player_meta (player, source, last_seen) VALUES (?, ?, ?)').bind(id, cleanSource(src), Date.now()).run().catch(() => { });
+// A brand-new account: remember where it came from (first touch only), and for web visitors the website that sent them
+// (just its name, like google.com or t.co; 'direct' when there was none), so /sources can split up "web".
+export const cleanRef = r => { r = String(r || '').trim().toLowerCase(); return /^[a-z0-9][a-z0-9.-]{0,59}$/.test(r) ? r : null };
+export async function newPlayer(env, id, src, ref) {
+  await env.DB.prepare('INSERT OR IGNORE INTO player_meta (player, source, last_seen) VALUES (?, ?, ?)').bind(id, cleanSource(src), Date.now()).run().catch(() => { });
+  if (cleanRef(ref)) await env.DB.prepare('INSERT OR IGNORE INTO player_ref (player, ref, at) VALUES (?, ?, ?)').bind(id, cleanRef(ref), Date.now()).run().catch(() => { });
 }
 export function seen(env, id, cc) {
   return env.DB.prepare('INSERT INTO player_meta (player, last_seen, cc) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET last_seen = excluded.last_seen, cc = COALESCE(excluded.cc, cc)')
@@ -301,8 +304,15 @@ export async function sourcesText(env, now = Date.now()) {
   const b = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(EXISTS (SELECT 1 FROM players p WHERE p.tg_id = b.tg_id)) AS opened, SUM(nudged > 0) AS nudged,
       SUM(nudged > 0 AND EXISTS (SELECT 1 FROM players p WHERE p.tg_id = b.tg_id AND p.created > b.nudged)) AS back FROM bot_starts b WHERE first > ?`).bind(wk).first().catch(() => null);
   const starts = b && b.n ? `🤖 <b>Bot START, last 7 days</b>: ${b.n | 0} people · ${b.opened | 0} opened the game · ${b.nudged | 0} got the reminder, ${b.back | 0} of them came\n\n` : '';
+  // web visitors by the website that sent them (recorded from 2026-11-08), last 7 days
+  const refs = (await env.DB.prepare(`SELECT r.ref, COUNT(*) AS n, SUM(COALESCE(m.played, 0) >= 1) AS p1, SUM(COALESCE(m.played, 0) >= 3) AS p3
+      FROM player_ref r JOIN players p ON p.id = r.player LEFT JOIN player_meta m ON m.player = r.player WHERE p.created > ? GROUP BY r.ref ORDER BY n DESC LIMIT 15`)
+    .bind(wk).all().catch(() => ({ results: [] }))).results || [];
+  const NAMES = { 't.co': 't.co (X)', 'direct': 'no website (typed, bookmark or an app)', 'org.telegram.messenger': 'Telegram app' };
+  const web = refs.length ? '\n\n🌐 <b>Web players by the website that sent them, last 7 days</b>\nnew players · finished 1+ · finished 3+\n' +
+    refs.map(r => `${esc(NAMES[r.ref] || r.ref)}: ${r.n | 0} · ${r.p1 | 0} · ${r.p3 | 0}`).join('\n') : '';
   return starts + '📊 <b>Where new players come from</b>\nnew players · finished 1+ · finished 3+ matches\n\n' +
-    results.map(r => `<b>${esc(r.s)}</b>\n  last 7 days: ${r.n7 | 0} · ${r.p17 | 0} · ${r.p37 | 0}\n  all time: ${r.n | 0} · ${r.p1 | 0} · ${r.p3 | 0}`).join('\n') +
+    results.map(r => `<b>${esc(r.s)}</b>\n  last 7 days: ${r.n7 | 0} · ${r.p17 | 0} · ${r.p37 | 0}\n  all time: ${r.n | 0} · ${r.p1 | 0} · ${r.p3 | 0}`).join('\n') + web +
     '\n\n<i>"untagged" are players from before tracking started (Oct 8). Tag a link with ?startapp=s_yourtag.</i>';
 }
 

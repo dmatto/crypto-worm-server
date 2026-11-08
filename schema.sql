@@ -691,3 +691,10 @@ CREATE TABLE IF NOT EXISTS race_skip (       -- players an admin took out of the
   why     TEXT,
   PRIMARY KEY (race, player)
 );
+-- The website that sent a new web player (growth.js newPlayer, Damian 2026-11-08): just its name, like google.com or t.co,
+-- 'direct' when the browser gave none. First visit only; the bot's /sources splits "web" by it.
+CREATE TABLE IF NOT EXISTS player_ref (
+  player INTEGER PRIMARY KEY,
+  ref    TEXT NOT NULL,
+  at     INTEGER NOT NULL
+);

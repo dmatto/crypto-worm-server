@@ -44,6 +44,21 @@ const secret = createHash('sha256').update('webhook:test-secret').digest('hex').
 const hook = (env, update) => webhook(new Request('https://w/telegram/webhook', { method: 'POST', headers: { 'X-Telegram-Bot-Api-Secret-Token': secret }, body: JSON.stringify(update) }), env);
 const msg = (text, from, chat = { id: from, type: 'private' }) => ({ message: { chat, from: { id: from, first_name: 'Dami' }, text } });
 
+test('growth: a web player keeps the website that sent them, and /sources splits web by it', async () => {
+  const env = makeEnv(); calls.length = 0;
+  const a = await call(env, '/auth/guest', { src: 'web', ref: 'Google.com' });
+  const b = await call(env, '/auth/guest', { src: 'web', ref: 'direct' });
+  const c = await call(env, '/auth/guest', { src: 'web', ref: 'bad host!<b>' });      // junk is dropped
+  await call(env, '/auth/guest', { src: 'web', ref: 't.co' });
+  const ref = id => (env.sql.prepare('SELECT ref FROM player_ref WHERE player = ?').get(id) || {}).ref;
+  assert.equal(ref(a.player.id), 'google.com'); assert.equal(ref(b.player.id), 'direct'); assert.equal(ref(c.player.id), undefined);
+  await call(env, '/played', { mode: 'cpu' }, a.token);
+  const { sourcesText } = await import('../src/growth.js');
+  const t = await sourcesText(env);
+  assert.match(t, /Web players by the website that sent them/); assert.match(t, /google\.com: 1 · 1 · 0/); assert.match(t, /t\.co \(X\): 1 · 0 · 0/); assert.match(t, /no website/);
+  assert.doesNotMatch(t, /bad host/);
+});
+
 test('growth: a source tag sticks to a new account; a friend link pays both players once the new one finishes a match', async () => {
   const env = makeEnv(); calls.length = 0;
   const host = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami'), src: 'telegram' });
