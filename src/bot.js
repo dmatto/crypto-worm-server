@@ -48,6 +48,7 @@ import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySup
 import { command as payCommand, cron as payCron } from './payout.js';
 import { teamPrizeText } from './teamprize.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
+import { joinsCron, joinsCommand } from './growth.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
@@ -306,6 +307,7 @@ export async function webhook(req, env) {
       const today = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'note_day'").first().then(r => r && r.v) === utcDay();
       await tg(env, 'sendMessage', { chat_id, text: today ? '📣 Queued. A note already went out today, so this one goes to the group and every player tomorrow (one note a day).' : '📣 Sending now to the group and every Telegram player (except those who sent /stop).' }) }
   }
+  else if (cmd === '/joins' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await joinsCommand(env, arg), parse_mode: 'HTML' });
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
   else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
   else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
@@ -437,6 +439,7 @@ export async function cron(env, now = Date.now()) {
   if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
   const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);
   if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
+  try { await joinsCron(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'joins error ' + (e && e.message)).run().catch(() => { }) }   // hourly welcome of new players in the group
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
   for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)

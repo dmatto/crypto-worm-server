@@ -283,6 +283,37 @@ const kv = {
   set: (env, k, v) => env.DB.prepare('INSERT INTO bot_kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').bind(k, String(v)).run(),
 };
 export const setGroup = (env, id) => kv.set(env, 'group', id);
+// Every hour: a short welcome in the community group naming that hour's new players (Damian 2026-11-08). Real players only (no
+// load-test bots), first names only, guests and wallet-named accounts counted but not named; skipped when nobody joined.
+// Admins: /joins (preview), /joins off, /joins on.
+const JOIN_NAMES = 8;
+export async function joinsText(env, from, to) {
+  const { results } = await env.DB.prepare(`SELECT p.name, m.cc FROM players p LEFT JOIN player_meta m ON m.player = p.id
+      WHERE p.created >= ? AND p.created < ? AND COALESCE(m.source, '') != 'loadtest' AND p.id NOT IN (SELECT player FROM sim_players) ORDER BY p.created`).bind(from, to).all();
+  if (!results.length) return null;
+  const first = n => String(n || '').trim().split(/\s+/)[0].slice(0, 16);
+  const named = results.filter(r => r.name && !/^Guest \d+$/.test(r.name) && !r.name.includes('…') && first(r.name));
+  const show = named.slice(0, JOIN_NAMES).map(r => esc(first(r.name)) + (flag(r.cc) ? ' ' + flag(r.cc) : '')), n = results.length, rest = n - show.length;
+  const head = n === 1 ? '🪖 A new recruit just joined Crypto Worm Wars!' : `🪖 ${n} new recruits joined Crypto Worm Wars this hour!`;
+  const names = show.length ? '\n' + show.join(', ') + (rest > 0 ? ` and ${rest} more` : '') : '';
+  return head + names + '\nWelcome to the battlefield, worms. 🪱';
+}
+export async function joinsCron(env, now = Date.now()) {
+  const hour = Math.floor(now / 3600e3) * 3600e3, last = +(await kv.get(env, 'joins_hour')) || 0;
+  if (last >= hour) return;
+  await kv.set(env, 'joins_hour', hour);
+  if (!last || await kv.get(env, 'joins_off') === '1') return;                    // the first run only starts the clock
+  const group = await kv.get(env, 'group'); if (!group) return;
+  const text = await joinsText(env, Math.max(last, hour - 3600e3), hour); if (!text) return;
+  return tg(env, 'sendMessage', { chat_id: Number(group), text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
+}
+export async function joinsCommand(env, arg, now = Date.now()) {
+  arg = String(arg || '').trim().toLowerCase();
+  if (arg === 'off' || arg === 'on') { await kv.set(env, 'joins_off', arg === 'off' ? '1' : '0'); return arg === 'off' ? 'New-player posts in the group are off. /joins on starts them again.' : 'New-player posts in the group are on: one post an hour when someone joined.' }
+  const off = await kv.get(env, 'joins_off') === '1';
+  const text = await joinsText(env, now - 3600e3, now);
+  return `New-player posts in the group are <b>${off ? 'off' : 'on'}</b> (/joins ${off ? 'on' : 'off'}).\n\nThe last hour would look like this:\n\n${text || 'Nobody joined in the last hour.'}`;
+}
 // Monday from 00:05 UTC: last week's top 10 to the community group, once.
 export async function weekly(env, now = Date.now()) {
   const start = weekStart(now); if (now - start < 5 * 60e3) return;

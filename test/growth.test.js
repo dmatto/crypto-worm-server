@@ -194,6 +194,29 @@ test('growth: challenge cards, inline mode and group duels carry Play links', as
   assert.equal(calls[0][1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/CryptoWormWarsBot/play?startapp=s_ads1');
 });
 
+test('growth: an hourly welcome names the new players in the group; bots, empty hours and /joins off post nothing', async () => {
+  const env = makeEnv(); calls.length = 0;
+  await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });                        // player 1 = admin
+  await hook(env, msg('/setgroup', 42, { id: -100, type: 'supergroup' }));
+  const H = Math.floor(Date.now() / 3600e3) * 3600e3 + 10 * 3600e3;                           // some hour in the future
+  await cron(env, H + 60e3);                                                                  // the first run only starts the clock
+  const at = (id, t) => env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(t, id);
+  const ana = await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana Maria Lopez') }); at(ana.player.id, H + 10 * 60e3);
+  env.sql.prepare("UPDATE player_meta SET cc = 'BR' WHERE player = ?").run(ana.player.id);
+  const g = await call(env, '/auth/guest', { src: 'web' }); at(g.player.id, H + 20 * 60e3);
+  const bot = await call(env, '/auth/guest', { src: 'loadtest' }); at(bot.player.id, H + 30 * 60e3);
+  calls.length = 0; await cron(env, H + 30 * 60e3); assert.equal(calls.filter(c => c[1].chat_id === -100 && /recruit/.test(c[1].text)).length, 0);   // not before the hour is over
+  await cron(env, H + 3600e3 + 60e3); await cron(env, H + 3600e3 + 120e3);
+  const posts = calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === -100 && /recruit/.test(c[1].text));   // (the weekly top 10 also goes out on a fresh database)
+  assert.equal(posts.length, 1); assert.match(posts[0][1].text, /2 new recruits joined Crypto Worm Wars this hour!\nAna 🇧🇷 and 1 more\nWelcome/);
+  assert.doesNotMatch(posts[0][1].text, /Lopez|Guest|\$CWORM/);
+  calls.length = 0; await cron(env, H + 2 * 3600e3 + 60e3); assert.equal(calls.filter(c => c[1].chat_id === -100 && /recruit/.test(c[1].text)).length, 0);   // nobody joined
+  await hook(env, msg('/joins', 42)); assert.match(calls.at(-1)[1].text, /are <b>on<\/b>/);
+  await hook(env, msg('/joins off', 42)); const k = await call(env, '/auth/telegram', { initData: tgInit(77, 'Kez') }); at(k.player.id, H + 2 * 3600e3 + 5 * 60e3);
+  calls.length = 0; await cron(env, H + 3 * 3600e3 + 60e3); assert.equal(calls.filter(c => c[1].chat_id === -100 && /recruit/.test(c[1].text)).length, 0);   // muted
+  calls.length = 0; await hook(env, msg('/joins', 55)); assert.equal(calls.length, 0);       // admins only
+});
+
 test('growth: the Monday top 10 goes to the group once, /sources is for admins, /stop and reminders', async () => {
   const env = makeEnv(); calls.length = 0;
   const admin = await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });          // player 1 = admin
