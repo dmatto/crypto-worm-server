@@ -341,3 +341,42 @@ test('growth: a note with a video sends it by URL once, then by Telegram\'s file
   assert.deepEqual(calls.filter(c => /Second video note/.test(c[1].caption || c[1].text || '')).map(c => [c[0], c[1].chat_id]),
     [['sendVideo', -100], ['sendVideo', 42], ['sendVideo', 55], ['sendVideo', 777], ['sendMessage', 777], ['sendMessage', 88]]);
 });
+
+test('growth: "Continue in Telegram" carries the web progress once, joins the accounts and pays +500 play money once', async () => {
+  const env = makeEnv(); calls.length = 0;
+  const web = await call(env, '/auth/guest', { src: 'web' });
+  assert.equal((await call(env, '/me/carry', { data: [1, 2] }, web.token)).status, 400);
+  assert.equal((await call(env, '/me/carry', { data: { 'cww-bank': 900, 'cww-played': 4, 'evil': 1, 'cww-streak': { d: '2026-11-09', n: 2 } } }, web.token)).ok, true);
+  const { code } = await call(env, '/auth/code', {}, web.token);
+  const tgDev = await call(env, '/auth/telegram', { initData: tgInit(91, 'Rio') });           // the same person, now in Telegram
+  const joined = await call(env, '/auth/code/redeem', { code }, tgDev.token);
+  assert.equal(joined.player.id, web.player.id); assert.equal(joined.player.tg, true);         // the web account keeps going, now with Telegram
+  const got = await call(env, '/rewards', {}, joined.token);
+  assert.deepEqual(got.rewards.map(r => [r.amount, r.reason]), [[500, 'tglink']]);
+  const take = await call(env, '/me/carry/take', {}, joined.token);
+  assert.deepEqual(take.data, { 'cww-bank': 900, 'cww-played': 4, 'cww-streak': { d: '2026-11-09', n: 2 } });   // only cww-* keys
+  assert.equal((await call(env, '/me/carry/take', {}, joined.token)).data, null);              // taken once
+  // a second web guest joined to the same Telegram account pays nothing more
+  const web2 = await call(env, '/auth/guest', { src: 'web' }), c2 = (await call(env, '/auth/code', {}, web2.token)).code;
+  const again = await call(env, '/auth/code/redeem', { code: c2 }, joined.token);
+  assert.equal(again.player.id, web2.player.id); assert.equal(again.player.tg, true);
+  assert.deepEqual((await call(env, '/rewards', {}, again.token)).rewards, []);
+});
+
+test('growth: one day-two message, in their language, to a Telegram player who joined yesterday and has not come back', async () => {
+  const env = makeEnv(); await call(env, '/auth/telegram', { initData: tgInit(42, 'Dami') });
+  const a = await call(env, '/auth/telegram', { initData: tgInit(55, 'Ana') }), b = await call(env, '/auth/telegram', { initData: tgInit(56, 'Bea') }), c = await call(env, '/auth/telegram', { initData: tgInit(57, 'Cid') });
+  for (const p of [a, b, c]) await call(env, '/played', { mode: 'cpu' }, p.token);
+  const now = Math.floor(Date.now() / 9e5) * 9e5, H = 3600e3;
+  env.sql.prepare('UPDATE players SET created = ? WHERE id IN (?, ?)').run(now - 30 * H, a.player.id, b.player.id);   // Ana and Bea joined yesterday, Cid today
+  env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player IN (?, ?, ?)').run(now - 14 * H, a.player.id, c.player.id, b.player.id);
+  env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player = ?').run(now - 5 * H, b.player.id);   // Bea was back 5 hours ago
+  env.sql.prepare("INSERT INTO bot_starts (tg_id, first, last, lang) VALUES (55, 0, 0, 'es')").run();
+  calls.length = 0; await cron(env, now); await cron(env, now + 15 * 60e3);
+  const dms = calls.filter(c => c[0] === 'sendMessage' && [55, 56, 57].includes(c[1].chat_id));
+  assert.equal(dms.length, 1); assert.equal(dms[0][1].chat_id, 55);
+  assert.match(dms[0][1].text, /Tu premio diario/); assert.equal(dms[0][1].reply_markup.inline_keyboard[0][0].text, '🎮 Jugar ahora');
+  env.sql.prepare('UPDATE player_meta SET reminded = 0 WHERE player = ?').run(a.player.id);
+  calls.length = 0; await cron(env, now + 30 * 60e3);
+  assert.equal(calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === 55).length, 0);   // never a second one
+});

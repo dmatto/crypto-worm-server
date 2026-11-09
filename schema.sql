@@ -698,3 +698,8 @@ CREATE TABLE IF NOT EXISTS player_ref (
   ref    TEXT NOT NULL,
   at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS carry (          -- a web player's on-phone progress, uploaded before "Continue in Telegram" (growth.js carryPut), taken once there
+  player   INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);

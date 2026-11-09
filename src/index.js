@@ -9,6 +9,8 @@
 //   POST /auth/guest                                            -> session
 //   POST /auth/code                                             -> {code, expires}   a login code for another device
 //   POST /auth/code/redeem   {code}                             -> session   signs this device into that account
+//   POST /me/carry           {data}                             -> {ok}   a copy of this phone's progress for "Continue in Telegram" (growth.js)
+//   POST /me/carry/take                                         -> {data}  takes that copy once (the Telegram side, after the login code)
 //   GET  /me                                                    -> session without the token
 // A session is {token, player, friendCode}.
 //
@@ -64,7 +66,7 @@ import { Lobby } from './lobby.js';
 import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto, tellAdminsText } from './bot.js';
 import { handle as mapHandle } from './map.js';
-import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward } from './growth.js';
+import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward, carryPut, carryTake, tgLinkBonus } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
@@ -232,6 +234,7 @@ async function link(env, me, target) {
        ON CONFLICT(month_start, player) DO UPDATE SET cworm = cworm + excluded.cworm, last = MAX(last, excluded.last)`, b, a),   // the monthly ranking
     q('DELETE FROM month_scores WHERE player = ?', a),
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
+    q('UPDATE OR IGNORE carry SET player = ? WHERE player = ?', b, a), q('DELETE FROM carry WHERE player = ?', a),   // a progress copy on its way to Telegram
     q('UPDATE purchases SET player = ? WHERE player = ?', b, a),                        // Telegram Stars looks and badge follow the account
     q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
     q('UPDATE score_log SET player = ? WHERE player = ?', b, a),                        // weekly prize: points, play days, steps
@@ -256,14 +259,20 @@ async function link(env, me, target) {
   return playerById(env, b);
 }
 
+// Two accounts where exactly one has Telegram, which link() folds together (it leaves two wallets apart): a web account gets Telegram.
+const tgJoin = (a, b) => !!(a && b && a.id !== b.id && (a.tg_id != null) !== (b.tg_id != null) && !(a.wallet && b.wallet));
+
 async function telegramUser(env, req, u, cors, src) {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40) || u.username || 'Worm';
   const me = await signedIn(req, env);
   let p = await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(u.id).first();
-  if (p) { if (p.name !== name) await env.DB.prepare('UPDATE players SET name = ? WHERE id = ? AND id NOT IN (SELECT player FROM nicknames)').bind(name, p.id).run(); p = await playerById(env, p.id) }
-  else if (me && me.tg_id == null) { await env.DB.prepare('UPDATE players SET tg_id = ?, name = CASE WHEN id IN (SELECT player FROM nicknames) THEN name ELSE ? END WHERE id = ?').bind(u.id, name, me.id).run(); p = await playerById(env, me.id) }
+  let bonus = false;
+  if (p) { if (p.name !== name) await env.DB.prepare('UPDATE players SET name = ? WHERE id = ? AND id NOT IN (SELECT player FROM nicknames)').bind(name, p.id).run(); p = await playerById(env, p.id); bonus = tgJoin(me, p) }
+  else if (me && me.tg_id == null) { await env.DB.prepare('UPDATE players SET tg_id = ?, name = CASE WHEN id IN (SELECT player FROM nicknames) THEN name ELSE ? END WHERE id = ?').bind(u.id, name, me.id).run(); p = await playerById(env, me.id); bonus = true }
   else { p = await env.DB.prepare('INSERT INTO players (tg_id, name, created) VALUES (?, ?, ?) RETURNING *').bind(u.id, name, Date.now()).first(); await newPlayer(env, p.id, src) }
-  return session(env, await link(env, me, p), cors);
+  const joined = await link(env, me, p);
+  if (bonus) await tgLinkBonus(env, joined.id).catch(() => { });                         // Telegram linked to a web account: +500 play money once
+  return session(env, joined, cors);
 }
 
 const lobbyOf = env => env.LOBBY.get(env.LOBBY.idFromName('lobby'));
@@ -334,7 +343,9 @@ const app = {
       const row = await env.DB.prepare('DELETE FROM login_codes WHERE code = ? RETURNING player, expires').bind(code).first();
       const p = row && row.expires > Date.now() && await playerById(env, row.player);
       if (!p) return json({ error: 'that code is wrong or has expired' }, 404, cors);
-      return session(env, await link(env, await signedIn(req, env), p), cors);
+      const was = await signedIn(req, env), joined = await link(env, was, p);
+      if (tgJoin(was, p)) await tgLinkBonus(env, joined.id).catch(() => { });           // "Continue in Telegram": +500 play money once
+      return session(env, joined, cors);
     }
 
     const me = await signedIn(req, env);
@@ -468,6 +479,8 @@ const app = {
     }
     if (path === '/share/done' && req.method === 'POST') return json(await shareDone(env, me), 200, cors);
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
+    if (path === '/me/carry' && req.method === 'POST') { const r = await carryPut(env, me, body.data); return json(r, r.error ? 400 : 200, cors) }
+    if (path === '/me/carry/take' && req.method === 'POST') return json(await carryTake(env, me), 200, cors);
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
     if (path === '/holder' || path.startsWith('/holder/')) {
       try { const r = await holderHandle(path, req, env, me, body); if (r) return json(r, r.error ? 400 : 200, cors) } catch (e) { return json({ error: e && e.message || 'try again later' }, 502, cors) }

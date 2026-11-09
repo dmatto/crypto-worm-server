@@ -347,10 +347,41 @@ export async function sourcesText(env, now = Date.now()) {
     '\n\n<i>"untagged" are players from before tracking started (Oct 8). Tag a link with ?startapp=s_yourtag.</i>';
 }
 
+// ---- "Save your progress in Telegram" (Damian 2026-11-09, retention review) ----
+// A web player's coins, stars, hats and streak live on their phone (localStorage), not here. Before the game sends them to
+// Telegram with a login code it uploads a copy (POST /me/carry); the Telegram side takes it once (POST /me/carry/take) after the
+// code has joined the two accounts, and uses it when that phone has less progress. Linking Telegram to an account pays
+// +500 play money once (reward_once 'tglink'; the row follows merged accounts, so linking again pays nothing).
+export const TGLINK_REWARD = 500, CARRY_MAX = 48000, CARRY_MS = 7 * DAY;
+export async function carryPut(env, me, data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { error: 'nothing to save' };
+  const keep = {}; for (const [k, v] of Object.entries(data)) if (/^cww-[a-z0-9-]{1,30}$/.test(k)) keep[k] = v;
+  const s = JSON.stringify(keep); if (s.length > CARRY_MAX) return { error: 'too much to save' };
+  await env.DB.prepare('INSERT INTO carry (player, data, at) VALUES (?, ?, ?) ON CONFLICT(player) DO UPDATE SET data = excluded.data, at = excluded.at').bind(me.id, s, Date.now()).run();
+  return { ok: true };
+}
+export async function carryTake(env, me) {
+  const r = await env.DB.prepare('DELETE FROM carry WHERE player = ? RETURNING data, at').bind(me.id).first();
+  if (!r || r.at < Date.now() - CARRY_MS) return { data: null };
+  try { return { data: JSON.parse(r.data) } } catch (e) { return { data: null } }
+}
+export const tgLinkBonus = (env, id) => once(env, id, 'tglink', TGLINK_REWARD, 'tglink', '');
+const DAY2_FROM = 20 * 3600e3, DAY2_TO = 44 * 3600e3, DAY2_AWAY = 12 * 3600e3;
+const DAY2 = {
+  en: ['🎁 Your daily reward is ready in Crypto Worm Wars! Claim it on Home: it grows every day you come back, for 7 days.', '🎮 Play now'],
+  es: ['🎁 ¡Tu premio diario te espera en Crypto Worm Wars! Recógelo en Inicio: crece cada día que vuelves, durante 7 días.', '🎮 Jugar ahora'],
+  pt: ['🎁 Sua recompensa diária está pronta no Crypto Worm Wars! Pegue na tela inicial: ela cresce a cada dia que você volta, por 7 dias.', '🎮 Jogar agora'],
+  fr: ['🎁 Ta récompense du jour t\'attend dans Crypto Worm Wars ! Récupère-la sur l\'accueil : elle grandit chaque jour où tu reviens, pendant 7 jours.', '🎮 Jouer'],
+  de: ['🎁 Deine tägliche Belohnung wartet in Crypto Worm Wars! Hol sie dir auf dem Startbildschirm: Sie wächst jeden Tag, an dem du zurückkommst, 7 Tage lang.', '🎮 Jetzt spielen'],
+  ru: ['🎁 Твоя ежедневная награда ждёт в Crypto Worm Wars! Забери её на главном экране: она растёт каждый день, когда ты возвращаешься, 7 дней подряд.', '🎮 Играть'],
+  tr: ['🎁 Günlük ödülün Crypto Worm Wars\'ta hazır! Ana ekranda al: her geri geldiğin gün büyüyor, 7 gün boyunca.', '🎮 Şimdi oyna'],
+  zh: ['🎁 你的每日奖励已在 Crypto Worm Wars 准备好！在主页领取：连续回来 7 天，每天都会变多。', '🎮 开始游戏'],
+};
+
 // ---- reminders: at most one bot message a day, only for players active in the last 7 days who allowed them ----
-async function send(env, row, text, link) {
+async function send(env, row, text, link, play = '🎮 Play') {
   const r = await tg(env, 'sendMessage', { chat_id: row.tg_id, text: text + '\n\nTurn these off with /stop or in the game\'s Settings.',
-    reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: link }]] } });
+    reply_markup: { inline_keyboard: [[{ text: play, url: link }]] } });
   // blocked (403) or never started the bot (400 "chat not found"): no more DMs until their next /start; any other failure waits a day,
   // so one player Telegram refuses isn't tried again every 15 minutes
   const q = r && (r.error_code === 403 || r.error_code === 400) ? 'UPDATE player_meta SET no_dm = 1, reminded = ? WHERE player = ?' : 'UPDATE player_meta SET reminded = ? WHERE player = ?';
@@ -372,6 +403,19 @@ export async function reminders(env, now = Date.now()) {
       if (sent >= REMIND_MAX || done.has(r.id) || here.has(r.id)) continue; done.add(r.id);
       if (await send(env, r, `🟢 Your friend ${r.fname} is online in Crypto Worm Wars right now. Challenge them!`, gameLink(env))) sent++;
     }
+  }
+  // Day two (Damian 2026-11-09, retention review): one message, in their Telegram language, to a player who joined 20 to 44 hours
+  // ago, finished a match and hasn't been back for 12 hours: the daily streak reward on Home is waiting. Once per player
+  // (reward_once 'day2dm' marks it, set before sending so a failed send isn't retried every 15 minutes).
+  const { results: fresh } = await env.DB.prepare(`SELECT p.id, p.tg_id, (SELECT lang FROM bot_starts b WHERE b.tg_id = p.tg_id) AS lang FROM player_meta m
+      JOIN players p ON p.id = m.player WHERE p.created BETWEEN ? AND ? AND m.played > 0 AND m.last_seen < ? AND ${ok}
+      AND p.id NOT IN (SELECT player FROM sim_players) AND NOT EXISTS (SELECT 1 FROM reward_once o WHERE o.player = p.id AND o.k = 'day2dm') LIMIT ?`)
+    .bind(now - DAY2_TO, now - DAY2_FROM, now - DAY2_AWAY, REMIND_MAX).all();
+  for (const r of fresh) {
+    if (sent >= REMIND_MAX || done.has(r.id)) continue; done.add(r.id);
+    await env.DB.prepare("INSERT OR IGNORE INTO reward_once (player, k, created) VALUES (?, 'day2dm', ?)").bind(r.id, now).run();
+    const t = DAY2[String(r.lang || '').slice(0, 2)] || DAY2.en;
+    if (await send(env, r, t[0], gameLink(env), t[1])) sent++;
   }
   if (new Date(now).getUTCHours() === DAILY_HOUR) {
     const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id FROM player_meta m JOIN players p ON p.id = m.player WHERE m.daily = 1 AND m.daily_day < ? AND ${ok} LIMIT ?`)
