@@ -13,6 +13,7 @@
 // /race skip <id> [why], /race unskip <id>, /race post (the standings, or the winners once it's over, to the community group).
 import { rpc } from './holders.js';
 import { gameLink } from './growth.js';
+import { netShared, netMatch } from './net.js';
 
 export const RACE = { id: 'r1', start: Date.UTC(2026, 10, 9), end: Date.UTC(2026, 10, 23), show: Date.UTC(2026, 10, 6), until: Date.UTC(2026, 10, 30),
   prizes: [0.5, 0.3, 0.2], unit: 'SOL', min: 3, matches: 3, top: 10 };
@@ -108,7 +109,7 @@ async function checkText(env, id, now, R) {
   const mine = p.wallet ? await chain(env, p.wallet) : null, info = [];
   for (const f of results) info.push(f.wallet ? await chain(env, f.wallet) : null);
   const funders = new Map(); info.forEach(c => { if (c && c.funder) funders.set(c.funder, (funders.get(c.funder) || 0) + 1) });
-  const wallets = new Set(results.map(f => f.wallet).filter(Boolean));
+  const wallets = new Set(results.map(f => f.wallet).filter(Boolean)), fids = results.map(f => f.id), nets = await netShared(env, [id, ...fids], now).catch(() => new Map());
   const lines = results.map((f, i) => {
     const c = info[i], flags = [];
     if (f.skip) flags.push('🚫 taken out');
@@ -119,6 +120,9 @@ async function checkText(env, id, now, R) {
     if (c && c.first && c.first > f.created - 864e5) flags.push('wallet made today');
     const near = results.filter(g => g !== f && Math.abs(g.created - f.created) < 10 * 60e3).length;
     if (near) flags.push(`joined within 10 min of ${near} other(s)`);
+    const sameNet = netMatch(nets, f.id, fids).length;                              // same-network hints (net.js)
+    if (netMatch(nets, f.id, [id]).length) flags.push('same network as the inviter');
+    else if (sameNet) flags.push(`same network as ${sameNet} other friend(s)`);
     if (f.tg_id == null) flags.push('no Telegram');
     if (c && c.err) flags.push('chain check failed');
     return `${f.at ? '✅' : '⏳'} ${f.id} ${esc(f.name)} · joined ${day(f.created)} · ${Math.min(f.n, R.matches)}/${R.matches} matches · ${short(f.wallet)}${c && c.n != null ? ` (${c.n >= 1000 ? '1000+' : c.n} tx)` : ''}` +

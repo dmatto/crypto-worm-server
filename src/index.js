@@ -80,6 +80,7 @@ import { handle as burnHandle } from './burn.js';
 import { handle as pollHandle, card as pollCard, mergePoll } from './poll.js';
 import { handle as ideasHandle, mergeIdeas } from './ideas.js';
 import { handle as raceHandle, check as raceCheck, mergeRace } from './race.js';
+import { netSeen } from './net.js';
 import { handle as giftHandle, giftItems } from './gifts.js';
 import { handle as starsHandle, sessionStars, isSupporter, SUP_SQL } from './stars.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
@@ -254,6 +255,7 @@ async function link(env, me, target) {
     q('UPDATE OR IGNORE gift_redeems SET player = ? WHERE player = ?', b, a), q('DELETE FROM gift_redeems WHERE player = ?', a),   // gift codes used, and free Custom Worms left
     q('INSERT INTO gift_credits (player, worm) SELECT ?, worm FROM gift_credits WHERE player = ? ON CONFLICT(player) DO UPDATE SET worm = worm + excluded.worm', b, a), q('DELETE FROM gift_credits WHERE player = ?', a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
+    q('UPDATE OR IGNORE net_seen SET player = ? WHERE player = ?', b, a), q('DELETE FROM net_seen WHERE player = ?', a),   // same-network hints follow the account
     q('DELETE FROM players WHERE id = ?', a),
   ]);
   return playerById(env, b);
@@ -443,6 +445,7 @@ const app = {
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
     if (path === '/played' && req.method === 'POST') { const sim = req.headers.has('x-sim-key'); if (!sim) await warRun(env, me.id, await runEnd(env, me.id)).catch(() => { });
       const out = await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed); if (!sim) await raceCheck(env, me.id).catch(() => { });   // Invite Race: a friend's 3rd match
+      await netSeen(env, req, me.id).catch(() => { });                               // same-network hints for admins (net.js), never the IP itself
       return json(out, 200, cors) }
     if (path === '/race' && req.method === 'GET') return json(await raceHandle(path, env, me), 200, cors);   // the Invite Race (race.js)
     if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);

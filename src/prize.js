@@ -16,6 +16,7 @@
 
 import { tg } from './bot.js';
 import { balances } from './holders.js';
+import { netShared, netMatch } from './net.js';
 
 // Each place's prize in SOL (25%, 17%, 12%, 7%, then 6.5% each of the pool), paid in SOL
 export const PRIZES = [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065];   // 1 SOL
@@ -217,11 +218,12 @@ export async function adminList(env, w, now = Date.now()) {
   for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
     const m = f.gaps.reduce((a, b) => a + b, 0) / (f.gaps.length || 1), sd = Math.sqrt(f.gaps.reduce((a, g) => a + (g - m) ** 2, 0) / (f.gaps.length || 1));
     f.even = f.gaps.length >= 20 && sd < m * 0.25; f.same = f.reports >= 20 && Math.max(0, ...f.amounts.values()) >= f.reports / 2; delete f.gaps; delete f.amounts }
-  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok) } }));
+  const nets = await netShared(env, ids, now).catch(() => new Map());                 // same-network hints among the top (net.js)
+  const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok), net: netMatch(nets, r.id, ids) } }));
   const head = ['place', 'prize_sol', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
-    'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts', 'royale_place_mismatch'];
+    'checked_matches', 'points_without_checked_match', 'online_wins', 'win_opponents', 'even_timing', 'same_amounts', 'royale_place_mismatch', 'same_network_as'];
   const list = toCsv([head, ...winners.map(r => [r.place, r.prize, r.name, r.id, r.tg_id, r.x ? '@' + r.x : '', r.wallet, r.pts, r.raw, r.days, r.steps.hold.days, r.now == null ? 'check by hand' : r.now, r.balance, r.steps.age.days, r.fair.reports, r.fair.maxHour, r.fair.night,
-    r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : '', r.fair.royaleOdd || ''])]);
+    r.fair.runs, r.fair.unchecked, r.wins, r.opps, r.fair.even ? 'yes' : '', r.fair.same ? 'yes' : '', r.fair.royaleOdd || '', r.fair.net.join(' ')])]);
   const pay = winners.map(r => r.wallet + ',' + r.prize).join('\n');                       // wallet,SOL
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
   const out = (await env.DB.prepare('SELECT p.id, p.name FROM prize_skip k JOIN players p ON p.id = k.player ORDER BY k.at DESC LIMIT 20').all()).results;

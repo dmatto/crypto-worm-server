@@ -273,4 +273,9 @@ test('prize vs scripts: points need matches the server saw, ties go to online wi
   assert.match(text, /Ann[^]*⚠️ 950 pts without a checked match \(not counted\) · ⚠️ reports at even gaps · ⚠️ same amount again and again/);
   const csv = calls.find(([x]) => x === 'sendDocument')[1].csv;
   assert.match(csv, /checked_matches,points_without_checked_match,online_wins,win_opponents,even_timing,same_amounts/);
+  // a network both played from (net.js): a hint next to each of them, in the message and the file
+  for (const p of [ann, cat]) env.sql.prepare("INSERT INTO net_seen (player, h, day) VALUES (?, 'abc123abc123abc1', ?)").run(p.id, Math.floor(Date.now() / 864e5));
+  calls.length = 0; text = (await say('/prize'))[0];
+  assert.match(text, new RegExp(`Cat[^]*⚠️ same network as #${ann.id}`)); assert.match(text, new RegExp(`Ann[^]*⚠️ same network as #${cat.id}`));
+  assert.match(calls.find(([x]) => x === 'sendDocument')[1].csv, new RegExp(`,same_network_as\r\n1,0\\.25,Ann,[^\r]*,${cat.id}\r\n`));
 });

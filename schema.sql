@@ -703,3 +703,9 @@ CREATE TABLE IF NOT EXISTS carry (          -- a web player's on-phone progress,
   data     TEXT NOT NULL,
   at       INTEGER NOT NULL
 );
+
+-- Same-network hints (net.js): a scrambled code of the network a counted match came from, never the IP address itself.
+-- One row per player, code and UTC day; the cron deletes rows older than 30 days. Admins see them as flags only.
+CREATE TABLE IF NOT EXISTS net_seen (player INTEGER NOT NULL, h TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (player, h, day));
+CREATE INDEX IF NOT EXISTS net_seen_h ON net_seen (h, day);
+CREATE INDEX IF NOT EXISTS net_seen_day ON net_seen (day);

@@ -2,6 +2,7 @@
 // (players.id), the one admins use in /prize skip, /wormon, /chatmute and the payout lists. The game shows it in Settings and
 // More with a Copy button; here /id tells a Telegram player theirs, and /player <id or name> (admins) shows who a number is.
 import { gameLink } from './growth.js';
+import { netOthers, NET_DAYS } from './net.js';
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
 const fmt = n => Number(n || 0).toLocaleString('en-US');
@@ -38,6 +39,8 @@ export async function lookup(env, arg, now = Date.now()) {
     one('SELECT until FROM chat_mutes WHERE player = ? AND until > ?', id, now),
     one('SELECT 1 AS y FROM sim_players WHERE player = ?', id)]);
   const holder = h && p.wallet && h.wallet === p.wallet && h.tier > 0 ? ` · ${TIERS[h.tier] || 'Holder'} tier, ${fmt(Math.floor(h.balance || 0))} $CWORM` : '';
+  const net = await netOthers(env, id, now).catch(() => null);                        // same-network hints (net.js): other accounts seen on this player's networks
+  const netLine = !net || !net.nets ? '' : `🌐 ${net.nets} network${net.nets === 1 ? '' : 's'} in ${NET_DAYS} days` + (net.others.length ? ` · same network as ${net.others.map(o => `${o.id} ${esc(o.name)}`).join(', ')}${net.more ? ' and more' : ''} (a hint: mobile data and family wifi are shared too)` : ' · no other account on them');
   const flags = [sim ? '🤖 load-test bot' : '', skip ? `🚫 out of the weekly prize since ${day(skip.at)}` : '', mute ? `🔇 chat muted until ${when(mute.until)}` : ''].filter(Boolean);
   return `🆔 Player <b>${id}</b>: <b>${esc(p.name)}</b>\n` +
     `Telegram: ${p.tg_id != null ? `<a href="tg://user?id=${p.tg_id}">open chat</a> (${p.tg_id})` : 'not linked'}\n` +
@@ -45,5 +48,5 @@ export async function lookup(env, arg, now = Date.now()) {
     `Joined ${day(p.created)}${m && m.source ? ' from ' + esc(m.source) : ''} · ${fmt(m ? m.played : 0)} matches · online ${p.wins | 0} W / ${p.losses | 0} L\n` +
     `Last seen ${when(m && m.last_seen)}\n` +
     `Team: ${t ? `${esc(t.emoji)} ${esc(t.name)} [${esc(t.tag)}]${t.role === 'lead' ? ' (leader)' : ''}` : 'none'}${c ? ' · Club: ' + esc(c.club) : ''}` +
-    (flags.length ? '\n' + flags.join('\n') : '');
+    (netLine ? '\n' + netLine : '') + (flags.length ? '\n' + flags.join('\n') : '');
 }
