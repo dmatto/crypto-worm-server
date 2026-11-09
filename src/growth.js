@@ -101,8 +101,8 @@ async function payMilestones(env, id) {
 const dm = (env, p, text) => p && p.tg_id != null && env.BOT_TOKEN ? tg(env, 'sendMessage', { chat_id: p.tg_id, text,
   reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }, { text: '🎁 Invite more friends', url: gameLink(env, 'invite') }]] } }).catch(() => { }) : null;
 const fmt = n => n.toLocaleString('en-US');
-const mileLine = x => `🏅 ${x.n} friends! Bonus +${fmt(x.amount)} $CWORM${x.skin ? ` and the invite-only ${x.skin} skin` : ''}.`;
-const nextLine = n => { const x = nextMilestone(n); return x ? `Next bonus: +${fmt(x.amount)} $CWORM at ${x.n} friends (${x.n - n} to go).` : 'You reached every invite bonus. Legend! 👑' };
+const mileLine = x => `🏅 ${x.n} friends! Bonus +${fmt(x.amount)} BP${x.skin ? ` and the invite-only ${x.skin} skin` : ''}.`;
+const nextLine = n => { const x = nextMilestone(n); return x ? `Next bonus: +${fmt(x.amount)} BP at ${x.n} friends (${x.n - n} to go).` : 'You reached every invite bonus. Legend! 👑' };
 
 async function payInvite(env, me, m) {
   const inviter = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(m.invited_by).first();
@@ -114,7 +114,7 @@ async function payInvite(env, me, m) {
     env.DB.prepare('UPDATE player_meta SET invite_paid = ? WHERE player = ?').bind(now, me.id)]);
   const ms = await payMilestones(env, inviter.id);
   await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n` +
-    `${promoOn(now) ? 'Invite week: ' : ''}+${fmt(mine)} $CWORM for you, and +${fmt(INVITE_REWARD)} for ${me.name}. ` +
+    `${promoOn(now) ? 'Invite week: ' : ''}+${fmt(mine)} BP for you, and +${fmt(INVITE_REWARD)} for ${me.name}. ` +
     `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${fmt(LOYAL_REWARD)} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
     `Friends so far: ${ms.n}. ${nextLine(ms.n)}\n\nIt all lands in your game wallet next time you open the game. (Play money, not real tokens.)`);
 }
@@ -123,7 +123,7 @@ async function payLoyal(env, me, m) {
   if (!(m.invite_paid > 0)) return;
   const inviter = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(m.invited_by).first();
   if (!inviter || !await once(env, inviter.id, 'loyal:' + me.id, LOYAL_REWARD, 'loyal', me.name)) return;
-  await dm(env, inviter, `🔥 ${me.name} has played ${LOYAL_MATCHES} matches since joining with your invite! +${fmt(LOYAL_REWARD)} $CWORM for you. (Play money, not real tokens.)`);
+  await dm(env, inviter, `🔥 ${me.name} has played ${LOYAL_MATCHES} matches since joining with your invite! +${fmt(LOYAL_REWARD)} BP for you. (Play money, not real tokens.)`);
 }
 
 // The game started a match or a mini game. The first start puts the player in the players count on Home (GET /stats),
@@ -214,7 +214,7 @@ export async function shareDone(env, me) {
 // ---- share cards ----
 const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg?v=1028' };   // ?v=: Telegram keeps old pictures by URL (the invite card changed 2026-10-28)
 export const cardUrl = (env, k) => site(env) + '/cards/' + CARDS[k];
-export const INVITE_LINE = `🎁 Join with my link and get +${INVITE_REWARD} $CWORM in the game to start (play money).`;
+export const INVITE_LINE = `🎁 Join with my link and get +${INVITE_REWARD} BP in the game to start (play money).`;
 export function challengeCaption(kind, hp) {
   hp = Math.max(0, Math.min(300, Math.round(Number(hp) || 0)));
   if (kind === 'win') return `🏆 I just won a Crypto Worm Wars battle${hp ? ` with ${hp} HP left` : ''}. Think you can beat me? Tap Play and fight me! 🪱`;
@@ -226,7 +226,7 @@ async function cardResult(env, player, kind, hp, id) {
   const code = player ? await friendCode(player.id, env.SESSION_SECRET) : null, img = cardUrl(env, kind === 'win' ? 'win' : kind === 'invite' ? 'invite' : 'duel');
   const inv = kind === 'invite';
   return { type: 'photo', id: id || crypto.randomUUID().slice(0, 32), photo_url: img, thumbnail_url: img, photo_width: 1280, photo_height: 720,
-    title: inv ? 'Invite a friend' : 'Duel me', description: inv ? `+${INVITE_REWARD} $CWORM for your friend, up to +${fmt(perFriend())} for you` : 'Send a challenge card with a Play button',
+    title: inv ? 'Invite a friend' : 'Duel me', description: inv ? `+${INVITE_REWARD} BP for your friend, up to +${fmt(perFriend())} for you` : 'Send a challenge card with a Play button',
     caption: challengeCaption(kind, hp) + (code ? '\n\n' + INVITE_LINE : ''),
     reply_markup: { inline_keyboard: [[{ text: inv ? '🎮 Play with me' : '🎮 Play', url: gameLink(env, code ? 'f_' + code : null) }]] } };
 }
@@ -270,8 +270,8 @@ export async function weekTop(env, start, n = 10) {
 const MEDAL = ['🥇', '🥈', '🥉'];
 export function topText(rows, title) {
   if (!rows.length) return null;
-  return `🏆 <b>${title}</b>\n\n` + rows.map((r, i) => `${MEDAL[i] || (i + 1) + '.'} ${r.cc ? flag(r.cc) + ' ' : ''}${esc(r.name)}: ${(r.cworm | 0).toLocaleString('en-US')} $CWORM`).join('\n') +
-    '\n\n<i>$CWORM gained in all game modes. Play money, not real tokens.</i>';
+  return `🏆 <b>${title}</b>\n\n` + rows.map((r, i) => `${MEDAL[i] || (i + 1) + '.'} ${r.cc ? flag(r.cc) + ' ' : ''}${esc(r.name)}: ${(r.cworm | 0).toLocaleString('en-US')} BP`).join('\n') +
+    '\n\n<i>Battle Points (BP) gained in all game modes. Play money, not real tokens.</i>';
 }
 export async function postTop(env, chat_id, start, title, extra) {
   const text = topText(await weekTop(env, start), title);

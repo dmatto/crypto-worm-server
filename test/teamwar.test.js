@@ -63,7 +63,7 @@ test('team war: a member challenges, both sides chip in, 24 hours of points deci
     sent.length = 0;
     const made = await call(env, '/teams/war/new', { team: B, stake: 1000 }, a2);
     assert.equal(made.status, 200); assert.equal(made.war.state, 'filling'); assert.equal(made.war.pot, 2000); assert.equal(made.war.b.name, 'Bull Gang');
-    assert.match(dms(b1.tg)[0], /Frog Army \[FROG\] challenged your team 🐸 Bull Gang \[BULL\] to a team war: 1,000 play \$CWORM a side[^]*Play money in the game, not real tokens/);
+    assert.match(dms(b1.tg)[0], /Frog Army \[FROG\] challenged your team 🐸 Bull Gang \[BULL\] to a team war: 1,000 BP a side[^]*Play money in the game, not real tokens/);
     assert.equal((await call(env, '/teams/war/new', { team: B, stake: 1000 }, a1)).status, 409);          // one war at a time
     assert.equal((await call(env, '/teams/' + C, undefined, a1)).warOk, false);
     const id = made.war.id;
@@ -83,7 +83,7 @@ test('team war: a member challenges, both sides chip in, 24 hours of points deci
     sent.length = 0; now += 3600e3;
     r = await call(env, '/teams/war/pledge', { id, amount: 700 }, b1);
     assert.equal(r.war.state, 'live'); assert.equal(r.war.ends, now + TW.WAR_MS);
-    assert.match(dms(a1.tg)[0], /Team war on! 🐸 Frog Army \[FROG\] vs 🐸 Bull Gang \[BULL\], 2,000 play \$CWORM/); assert.equal(dms(b1.tg).length, 1);
+    assert.match(dms(a1.tg)[0], /Team war on! 🐸 Frog Army \[FROG\] vs 🐸 Bull Gang \[BULL\], 2,000 BP/); assert.equal(dms(b1.tg).length, 1);
     assert.equal((await call(env, '/teams/war/cancel', { id }, b1)).status, 409);                         // too late to call it off
     // war points: reports count up to the day's checked matches + 150, wins over other teams +100
     now += 3600e3;
@@ -102,7 +102,7 @@ test('team war: a member challenges, both sides chip in, 24 hours of points deci
     const row = env.sql.prepare('SELECT * FROM team_wars WHERE id = ?').get(id);
     assert.equal(row.state, 'done'); assert.equal(row.winner, A); assert.equal(row.burned, 100); assert.equal(row.sa, 450); assert.equal(row.sb, 300);
     assert.deepEqual(rewards(env, 'teamwar'), [{ player: a1.id, amount: 1140, note: 'Frog Army' }, { player: a2.id, amount: 760, note: 'Frog Army' }].sort((x, y) => x.player - y.player));
-    assert.match(dms(a1.tg)[0], /won the team war[^]*450 to 300[^]*1,900 play \$CWORM go to the members who chipped in \(100 burned\)/);
+    assert.match(dms(a1.tg)[0], /won the team war[^]*450 to 300[^]*1,900 BP go to the members who chipped in \(100 burned\)/);
     assert.match(dms(b1.tg)[0], /lost the team war/);
     const last = await call(env, '/teams/war', undefined, a2); assert.equal(last.war, null); assert.equal(last.last.winner, A); assert.equal(last.last.why, 'won');
     assert.equal(await ceiling(env, a1.id), 4400 + 1140);

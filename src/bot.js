@@ -58,7 +58,7 @@ const botLog = (env, note) => env.DB.prepare('INSERT INTO bot_log (at, note) VAL
 export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears worm battles, free right here in Telegram. Aim, fire and blast the Bear worms off the island. ' +
   'Play the CPU, people online, or 50 worms at once in Worm Royale. Tap Start, then Play!';
 export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 Free to play right inside Telegram. Tap Play!';
-export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn $CWORM' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
+export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn Battle Points' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
   { command: 'id', description: 'Your player ID' }, { command: 'privacy', description: 'Privacy policy' }, { command: 'paysupport', description: 'Help with a purchase' }, { command: 'terms', description: 'Purchase terms' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
 export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
 export const UPDATES = ['message', 'inline_query', 'pre_checkout_query', 'callback_query'];   // pre_checkout_query: Telegram Stars payments (stars.js); callback_query: the Approve/Reject buttons on ideas (ideas.js)
@@ -71,28 +71,28 @@ export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x
 // bot but never opened the game (startNudge).
 const WELCOME = {
   en: { hi: '🪱 Welcome, $1!', hi0: '🪱 Welcome to Crypto Worm Wars!', body: 'Bulls vs Bears: aim, fire and blast the Bear worms off the island. Free to play, right here in Telegram.',
-    go: '👇 Tap Play now. Your first battle starts in seconds.', play: '🎮 Play now', invite: '👥 Invite friends: +$1 play $CWORM per friend', group: '💬 Telegram group', x: '𝕏 Follow on X',
+    go: '👇 Tap Play now. Your first battle starts in seconds.', play: '🎮 Play now', invite: '👥 Invite friends: +$1 BP per friend', group: '💬 Telegram group', x: '𝕏 Follow on X',
     nudge: '🪱 Your first battle is waiting! It\'s an easy one and only takes a few minutes. Tap Play 👇' },
   es: { hi: '🪱 ¡Bienvenido, $1!', hi0: '🪱 ¡Bienvenido a Crypto Worm Wars!', body: 'Toros contra Osos: apunta, dispara y saca a los gusanos Osos de la isla. Gratis, aquí mismo en Telegram.',
-    go: '👇 Toca Jugar ahora. Tu primera batalla empieza en segundos.', play: '🎮 Jugar ahora', invite: '👥 Invita amigos: +$1 $CWORM de juego por amigo', group: '💬 Grupo de Telegram', x: '𝕏 Síguenos en X',
+    go: '👇 Toca Jugar ahora. Tu primera batalla empieza en segundos.', play: '🎮 Jugar ahora', invite: '👥 Invita amigos: +$1 BP por amigo', group: '💬 Grupo de Telegram', x: '𝕏 Síguenos en X',
     nudge: '🪱 ¡Tu primera batalla te espera! Es fácil y dura solo unos minutos. Toca Jugar 👇' },
   pt: { hi: '🪱 Bem-vindo, $1!', hi0: '🪱 Bem-vindo ao Crypto Worm Wars!', body: 'Touros contra Ursos: mire, atire e tire as minhocas Ursos da ilha. Grátis, aqui mesmo no Telegram.',
-    go: '👇 Toque em Jogar agora. Sua primeira batalha começa em segundos.', play: '🎮 Jogar agora', invite: '👥 Convide amigos: +$1 $CWORM de jogo por amigo', group: '💬 Grupo no Telegram', x: '𝕏 Siga no X',
+    go: '👇 Toque em Jogar agora. Sua primeira batalha começa em segundos.', play: '🎮 Jogar agora', invite: '👥 Convide amigos: +$1 BP por amigo', group: '💬 Grupo no Telegram', x: '𝕏 Siga no X',
     nudge: '🪱 Sua primeira batalha está esperando! É fácil e leva só alguns minutos. Toque em Jogar 👇' },
   fr: { hi: '🪱 Bienvenue, $1 !', hi0: '🪱 Bienvenue dans Crypto Worm Wars !', body: 'Taureaux contre Ours : vise, tire et éjecte les vers Ours de l\'île. Gratuit, directement dans Telegram.',
-    go: '👇 Touche Jouer. Ta première bataille commence dans quelques secondes.', play: '🎮 Jouer', invite: '👥 Invite des amis : +$1 $CWORM de jeu par ami', group: '💬 Groupe Telegram', x: '𝕏 Suis-nous sur X',
+    go: '👇 Touche Jouer. Ta première bataille commence dans quelques secondes.', play: '🎮 Jouer', invite: '👥 Invite des amis : +$1 BP par ami', group: '💬 Groupe Telegram', x: '𝕏 Suis-nous sur X',
     nudge: '🪱 Ta première bataille t\'attend ! Elle est facile et ne dure que quelques minutes. Touche Jouer 👇' },
   de: { hi: '🪱 Willkommen, $1!', hi0: '🪱 Willkommen bei Crypto Worm Wars!', body: 'Bullen gegen Bären: zielen, feuern und die Bären-Würmer von der Insel pusten. Kostenlos, direkt hier in Telegram.',
-    go: '👇 Tippe auf Jetzt spielen. Dein erster Kampf beginnt in Sekunden.', play: '🎮 Jetzt spielen', invite: '👥 Freunde einladen: +$1 Spiel-$CWORM pro Freund', group: '💬 Telegram-Gruppe', x: '𝕏 Folge uns auf X',
+    go: '👇 Tippe auf Jetzt spielen. Dein erster Kampf beginnt in Sekunden.', play: '🎮 Jetzt spielen', invite: '👥 Freunde einladen: +$1 BP pro Freund', group: '💬 Telegram-Gruppe', x: '𝕏 Folge uns auf X',
     nudge: '🪱 Dein erster Kampf wartet! Er ist leicht und dauert nur ein paar Minuten. Tippe auf Spielen 👇' },
   ru: { hi: '🪱 Добро пожаловать, $1!', hi0: '🪱 Добро пожаловать в Crypto Worm Wars!', body: 'Быки против Медведей: целься, стреляй и сбрасывай червей-медведей с острова. Бесплатно, прямо в Telegram.',
-    go: '👇 Нажми «Играть». Первый бой начнётся через пару секунд.', play: '🎮 Играть', invite: '👥 Пригласи друзей: +$1 игровых $CWORM за друга', group: '💬 Группа в Telegram', x: '𝕏 Мы в X',
+    go: '👇 Нажми «Играть». Первый бой начнётся через пару секунд.', play: '🎮 Играть', invite: '👥 Пригласи друзей: +$1 BP за друга', group: '💬 Группа в Telegram', x: '𝕏 Мы в X',
     nudge: '🪱 Твой первый бой ждёт! Он лёгкий и займёт всего пару минут. Жми «Играть» 👇' },
   tr: { hi: '🪱 Hoş geldin, $1!', hi0: '🪱 Crypto Worm Wars\'a hoş geldin!', body: 'Boğalar Ayılara karşı: nişan al, ateş et ve Ayı solucanlarını adadan uçur. Ücretsiz, hemen burada Telegram\'da.',
-    go: '👇 Şimdi oyna\'ya dokun. İlk savaşın saniyeler içinde başlıyor.', play: '🎮 Şimdi oyna', invite: '👥 Arkadaş davet et: arkadaş başına +$1 oyun $CWORM', group: '💬 Telegram grubu', x: '𝕏 X\'te takip et',
+    go: '👇 Şimdi oyna\'ya dokun. İlk savaşın saniyeler içinde başlıyor.', play: '🎮 Şimdi oyna', invite: '👥 Arkadaş davet et: arkadaş başına +$1 BP', group: '💬 Telegram grubu', x: '𝕏 X\'te takip et',
     nudge: '🪱 İlk savaşın seni bekliyor! Kolay ve sadece birkaç dakika sürüyor. Oyna\'ya dokun 👇' },
   zh: { hi: '🪱 欢迎你，$1！', hi0: '🪱 欢迎来到 Crypto Worm Wars！', body: '公牛对熊：瞄准、开火，把熊队的虫子轰出小岛。免费，就在 Telegram 里玩。',
-    go: '👇 点击“开始游戏”，几秒后就开始你的第一场战斗。', play: '🎮 开始游戏', invite: '👥 邀请好友：每位好友 +$1 游戏币 $CWORM', group: '💬 Telegram 群组', x: '𝕏 关注我们的 X',
+    go: '👇 点击“开始游戏”，几秒后就开始你的第一场战斗。', play: '🎮 开始游戏', invite: '👥 邀请好友：每位好友 +$1 BP', group: '💬 Telegram 群组', x: '𝕏 关注我们的 X',
     nudge: '🪱 你的第一场战斗在等你！很简单，只要几分钟。点击开始 👇' },
 };
 export const welcomeLang = code => { const l = String(code || '').slice(0, 2).toLowerCase(); return WELCOME[l] ? l : 'en' };
@@ -108,12 +108,12 @@ export const HELP_TEXT = '🎮 How to play\n\n' +
   '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
   '🛡️ /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
   '🆔 /id: your player ID, to give the team when you ask for help or win a prize.\n\n' +
-  '🎁 /invite: the fastest way to earn $CWORM. +2,000 for you for each friend who joins and plays, +500 for them (play money).\n\n' +   // perFriend() and INVITE_REWARD (growth.js loads after this file)
+  '🎁 /invite: the fastest way to earn Battle Points (BP). +2,000 for you for each friend who joins and plays, +500 for them (play money).\n\n' +   // perFriend() and INVITE_REWARD (growth.js loads after this file)
   `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
 
 // The Play button carries a source tag from the /start link (t.me/<bot>?start=s_<tag>), and the invite button the player's friend code.
 const shareUrl = (link, text) => 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text);
-export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and get +500 $CWORM in the game to start (play money).';   // 500: INVITE_REWARD
+export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and get +500 BP in the game to start (play money).';   // 500: INVITE_REWARD
 function buttons(env, src, invite, lang) {
   const play = gameLink(env, src ? 's_' + src : null), share = invite || env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play', t = WELCOME[welcomeLang(lang)];
   return { inline_keyboard: [[{ text: t.play, url: play }],
@@ -208,12 +208,12 @@ async function inviteMessage(env, from) {
   const p = from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
   const ladder = MILESTONES.map(x => `${x.n} friends: +${x.amount.toLocaleString('en-US')}${x.skin ? ' + ' + x.skin + ' skin' : ''}`).join('\n');
   const f = n => n.toLocaleString('en-US');
-  const how = `🎁 Invite friends: the fastest way to earn $CWORM\n\nEvery friend who opens your link and plays is worth +${f(perFriend())} $CWORM to you (a match pays about 50):\n` +
+  const how = `🎁 Invite friends: the fastest way to earn BP\n\nEvery friend who opens your link and plays is worth +${f(perFriend())} BP to you (a match pays about 50):\n` +
     `• +${f(inviterReward())} when they finish a first match${promoOn() ? ' (invite week)' : ''}\n• +${f(LOYAL_REWARD)} more when they have played ${LOYAL_MATCHES} matches\n• Your friend gets +${f(INVITE_REWARD)} to start\n\nBonuses:\n${ladder}\n\n`;
   if (!p) return { text: how + 'Open the game once to get your own invite link, then send /invite again.\n\n(Play money in the game, not real tokens.)',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } };
   const link = gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)), r = await invites(env, p);
-  const so = r.joined ? `Your friends so far: ${r.counted} played${r.joined > r.counted ? `, ${r.joined - r.counted} still to finish a first match` : ''}. You earned ${r.earned.toLocaleString('en-US')} $CWORM from invites.` : 'No friends joined yet. Be the first to bring your crew!';
+  const so = r.joined ? `Your friends so far: ${r.counted} played${r.joined > r.counted ? `, ${r.joined - r.counted} still to finish a first match` : ''}. You earned ${r.earned.toLocaleString('en-US')} BP from invites.` : 'No friends joined yet. Be the first to bring your crew!';
   return { text: how + so + (r.next ? `\nNext bonus at ${r.next.n} friends.` : '') + `\n\nYour invite link:\n${link}\n\n(Play money in the game, not real tokens.)`,
     disable_web_page_preview: true,
     reply_markup: { inline_keyboard: [[{ text: '📤 Share my invite link', url: shareUrl(link, SHARE_TEXT) }], [{ text: '🎮 Play', url: gameLink(env, 'invite') }]] } };
@@ -499,7 +499,8 @@ export async function updatesCheck(env) {
 // The bot's command menu follows COMMANDS: when the list changes (a new command such as /id), the next quarter-hour job sets it once.
 export async function commandsCheck(env) {
   if (!env.BOT_TOKEN || !env.DB) return;
-  const want = COMMANDS.map(c => c.command).join(','), seen = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'commands'").first().catch(() => null);
+  const want = COMMANDS.map(c => c.command + '=' + c.description).join('|');   // names and descriptions: a changed description is sent once too
+  const seen = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'commands'").first().catch(() => null);
   if (seen && seen.v === want) return;
   const ok = (await tg(env, 'setMyCommands', { commands: COMMANDS })).ok;
   if (ok) await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('commands', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(want).run();

@@ -69,7 +69,7 @@ test('growth: a source tag sticks to a new account; a friend link pays both play
   assert.equal(env.sql.prepare('SELECT source FROM player_meta WHERE player = ?').get(kid.player.id).source, 'promo_oct');   // first touch wins
   const first = await call(env, '/played', { mode: 'cpu' }, kid.token);
   assert.equal(first.played, 1); assert.deepEqual(first.rewards.map(r => [r.amount, r.reason]), [[500, 'invited']]);
-  assert.ok(calls.some(([m, b]) => m === 'sendMessage' && b.chat_id === 42 && /\+1,000 \$CWORM for you, and \+500 for /.test(b.text) && /you get \+1,000 more/.test(b.text) && /Play money/.test(b.text)));
+  assert.ok(calls.some(([m, b]) => m === 'sendMessage' && b.chat_id === 42 && /\+1,000 BP for you, and \+500 for /.test(b.text) && /you get \+1,000 more/.test(b.text) && /Play money/.test(b.text)));
   assert.equal((await call(env, '/played', { mode: 'cpu' }, kid.token)).played, 1);        // 20 s gap between counted matches
   const got = await call(env, '/rewards', {}, host.token);
   assert.deepEqual(got.rewards.map(r => [r.amount, r.reason, r.note]), [[1000, 'invite', kid.player.name]]);
@@ -77,7 +77,7 @@ test('growth: a source tag sticks to a new account; a friend link pays both play
   // an old account (or one that already played) can't be counted as an invite
   env.sql.prepare('UPDATE player_meta SET last_played = 0').run();
   const again = await call(env, '/friends/add', { code: host.friendCode }, kid.token); assert.equal(again.invited, false);
-  // the ranking doesn't move: invite rewards aren't $CWORM gained
+  // the ranking doesn't move: invite rewards aren't BP gained
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM cworm_scores').get().n, 0);
 });
 
@@ -90,14 +90,14 @@ test('growth: invite week: the inviter gets +1,500 per friend, the friend +500; 
     const kid = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid.token);
     assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, kid.token)).rewards.map(r => [r.amount, r.reason]), [[500, 'invited']]);
     const dm = calls.find(([m, b]) => m === 'sendMessage' && b.chat_id === 42)[1];
-    assert.match(dm.text, /Invite week: \+1,500 \$CWORM for you, and \+500 for /); assert.match(dm.text, /Play money/);
+    assert.match(dm.text, /Invite week: \+1,500 BP for you, and \+500 for /); assert.match(dm.text, /Play money/);
     const page = await call(env, '/invites', undefined, host.token);
     assert.deepEqual(page.rewards.map(r => [r.amount, r.reason]), [[1500, 'invite']]);
     assert.equal(page.inviterReward, 1500); assert.equal(page.perFriend, 2500); assert.equal(page.promoUntil, PROMO.until); assert.equal(page.earned, 1500); assert.equal(page.friends[0].paid, 1500);
     calls.length = 0; await hook(env, msg('/invite', 42));
-    assert.match(calls[0][1].text, /worth \+2,500 \$CWORM to you/); assert.match(calls[0][1].text, /• \+1,500 when they finish a first match \(invite week\)\n• \+1,000 more when they have played 5 matches\n• Your friend gets \+500 to start/);
+    assert.match(calls[0][1].text, /worth \+2,500 BP to you/); assert.match(calls[0][1].text, /• \+1,500 when they finish a first match \(invite week\)\n• \+1,000 more when they have played 5 matches\n• Your friend gets \+500 to start/);
     calls.length = 0; await hook(env, msg('/start', 42));
-    assert.equal(calls[0][1].reply_markup.inline_keyboard[1][0].text, '👥 Invite friends: +2,500 play $CWORM per friend');   // the welcome's invite button
+    assert.equal(calls[0][1].reply_markup.inline_keyboard[1][0].text, '👥 Invite friends: +2,500 BP per friend');   // the welcome's invite button
     // after the week: +1,000 again, and friends paid during it still show +1,500
     PROMO.until = Date.now() - 1;
     const kid2 = await call(env, '/auth/guest', {}); await call(env, '/friends/add', { code: host.friendCode }, kid2.token); await call(env, '/played', { mode: 'cpu' }, kid2.token);
@@ -137,7 +137,7 @@ test('growth: invite & earn: +1,000 when a friend plays 5 matches, friend-count 
   assert.deepEqual(rew().map(r => r[1]), ['invite', 'invite', 'invite', 'milestone']);
   assert.deepEqual(rew()[3], [500, 'milestone', '3']);
   const dm3 = calls.filter(([m, b]) => m === 'sendMessage' && b.chat_id === 42).pop()[1];
-  assert.match(dm3.text, /3 friends! Bonus \+500 \$CWORM and the invite-only Coral crew skin/); assert.match(dm3.text, /Next bonus: \+1,000 \$CWORM at 5 friends \(2 to go\)/); assert.match(dm3.text, /Play money/);
+  assert.match(dm3.text, /3 friends! Bonus \+500 BP and the invite-only Coral crew skin/); assert.match(dm3.text, /Next bonus: \+1,000 BP at 5 friends \(2 to go\)/); assert.match(dm3.text, /Play money/);
   assert.equal(dm3.reply_markup.inline_keyboard[0][1].url, 'https://t.me/CryptoWormWarsBot/play?startapp=invite');
   // the first friend keeps playing: +1,000 more at the 5th counted match, once
   const k0 = kids[0], play = () => { env.sql.prepare('UPDATE player_meta SET last_played = 0 WHERE player = ?').run(k0.player.id); return call(env, '/played', { mode: 'cpu' }, k0.token) };
@@ -165,13 +165,13 @@ test('growth: invite & earn: +1,000 when a friend plays 5 matches, friend-count 
   // /invite in the bot: the link, the ladder and the friends so far
   calls.length = 0; await hook(env, msg('/invite', 42));
   const [m, b] = calls[0]; assert.equal(m, 'sendMessage');
-  assert.match(b.text, /the fastest way to earn \$CWORM/); assert.match(b.text, /worth \+2,000 \$CWORM to you/); assert.match(b.text, /• \+1,000 when they finish a first match\n/); assert.match(b.text, /3 played, 1 still to finish a first match/); assert.match(b.text, /startapp=f_/); assert.match(b.text, /not real tokens/);
+  assert.match(b.text, /the fastest way to earn BP\b/); assert.match(b.text, /worth \+2,000 BP to you/); assert.match(b.text, /• \+1,000 when they finish a first match\n/); assert.match(b.text, /3 played, 1 still to finish a first match/); assert.match(b.text, /startapp=f_/); assert.match(b.text, /not real tokens/);
   assert.match(b.reply_markup.inline_keyboard[0][0].url, /^https:\/\/t\.me\/share\/url\?url=/);
   calls.length = 0; await hook(env, msg('/invite', 999)); assert.match(calls[0][1].text, /Open the game once/);
   // an invite card for Telegram's share dialog
   calls.length = 0; await call(env, '/share/prepare', { kind: 'invite' }, host.token);
   const [, p] = calls.find(c => c[0] === 'savePreparedInlineMessage');
-  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg?v=1028'); assert.match(p.result.caption, /get \+500 \$CWORM in the game to start \(play money\)/);
+  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg?v=1028'); assert.match(p.result.caption, /get \+500 BP in the game to start \(play money\)/);
 });
 
 test('growth: challenge cards, inline mode and group duels carry Play links', async () => {
@@ -209,7 +209,7 @@ test('growth: an hourly welcome names the new players in the group; bots, empty 
   await cron(env, H + 3600e3 + 60e3); await cron(env, H + 3600e3 + 120e3);
   const posts = calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === -100 && /recruit/.test(c[1].text));   // (the weekly top 10 also goes out on a fresh database)
   assert.equal(posts.length, 1); assert.match(posts[0][1].text, /2 new recruits joined Crypto Worm Wars this hour!\nAna 🇧🇷 and 1 more\nWelcome/);
-  assert.doesNotMatch(posts[0][1].text, /Lopez|Guest|\$CWORM/);
+  assert.doesNotMatch(posts[0][1].text, /Lopez|Guest|BP/);
   calls.length = 0; await cron(env, H + 2 * 3600e3 + 60e3); assert.equal(calls.filter(c => c[1].chat_id === -100 && /recruit/.test(c[1].text)).length, 0);   // nobody joined
   await hook(env, msg('/joins', 42)); assert.match(calls.at(-1)[1].text, /are <b>on<\/b>/);
   await hook(env, msg('/joins off', 42)); const k = await call(env, '/auth/telegram', { initData: tgInit(77, 'Kez') }); at(k.player.id, H + 2 * 3600e3 + 5 * 60e3);
@@ -230,7 +230,7 @@ test('growth: the Monday top 10 goes to the group once, /sources is for admins, 
   calls.length = 0; const monday = weekStart() + 15 * 60e3;
   await cron(env, monday); await cron(env, monday + 15 * 60e3);
   const posts = calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === -100);
-  assert.equal(posts.length, 1); assert.match(posts[0][1].text, /🥇 🇧🇷 Ana: 500 \$CWORM\n🥈 Dami: 90/); assert.match(posts[0][1].text, /not real tokens/);
+  assert.equal(posts.length, 1); assert.match(posts[0][1].text, /🥇 🇧🇷 Ana: 500 BP\n🥈 Dami: 90/); assert.match(posts[0][1].text, /not real tokens/);
   calls.length = 0; await hook(env, msg('/sources', 55)); assert.equal(calls.length, 0);
   await hook(env, msg('/sources', 42)); assert.match(calls[0][1].text, /untagged/);
   // friend-online reminder: Ana is a friend of Dami, Dami is online, Ana was last here 3 hours ago

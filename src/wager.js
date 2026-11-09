@@ -66,7 +66,7 @@ export async function handle(path, env, me, body, opt = {}) {
     if (!(stake >= MIN_STAKE)) return { status: 400, error: `the smallest stake is ${fmt(MIN_STAKE)}` };
     if (await played(env, me.id) < PLAYED_MIN) return { status: 403, error: `play ${PLAYED_MIN} matches first`, code: 'played' };
     if (await active(env, me.id)) return { status: 409, error: 'you already have a challenge going', code: 'busy' };
-    const max = await ceiling(env, me.id); if (stake > max) return { status: 400, error: `you can put in up to ${fmt(max)} $CWORM`, code: 'max', max };
+    const max = await ceiling(env, me.id); if (stake > max) return { status: 400, error: `you can put in up to ${fmt(max)} BP`, code: 'max', max };
     const today = await q(env, 'SELECT COUNT(*) AS n FROM wagers WHERE p0 = ? AND created > ?', me.id, now - 864e5).first();
     if (today.n >= PER_DAY) return { status: 429, error: 'that is plenty of challenges for today' };
     const w = await q(env, "INSERT INTO wagers (p0, stake, state, created, deadline) VALUES (?, ?, 'open', ?, ?) RETURNING *", me.id, stake, now, now + OPEN_MS).first();
@@ -79,7 +79,7 @@ export async function handle(path, env, me, body, opt = {}) {
     if (w.p0 === me.id) return { status: 400, error: 'that is your own challenge' };
     if (await played(env, me.id) < PLAYED_MIN) return { status: 403, error: `play ${PLAYED_MIN} matches first`, code: 'played' };
     if (await active(env, me.id)) return { status: 409, error: 'you already have a challenge going', code: 'busy' };
-    const max = await ceiling(env, me.id); if (w.stake > max) return { status: 400, error: `you can put in up to ${fmt(max)} $CWORM`, code: 'max', max };
+    const max = await ceiling(env, me.id); if (w.stake > max) return { status: 400, error: `you can put in up to ${fmt(max)} BP`, code: 'max', max };
     const t = await q(env, "UPDATE wagers SET p1 = ?, state = 'taken', taken = ?, code = ?, deadline = ?, here0 = NULL, here1 = NULL WHERE id = ? AND state = 'open' RETURNING *",
       me.id, now, newCode(), now + FIRST_MS, id).first();
     if (!t) return { status: 409, error: 'someone else just took it', code: 'gone' };
@@ -121,7 +121,7 @@ async function tellTaken(env, w, me, opt) {
   if (said) return;
   const p = await q(env, 'SELECT tg_id FROM players WHERE id = ?', w.p0).first();
   if (!p || p.tg_id == null || !env.BOT_TOKEN) return;
-  const send = tg(env, 'sendMessage', { chat_id: p.tg_id, text: `⚔️ ${me.name} took your ${fmt(w.stake)} $CWORM challenge! Best of 3, the winner takes ${fmt(2 * w.stake)}. They are waiting for you: open the game in the next 30 minutes to play.\n\nIn-game $CWORM is play money, not real tokens.`,
+  const send = tg(env, 'sendMessage', { chat_id: p.tg_id, text: `⚔️ ${me.name} took your ${fmt(w.stake)} BP challenge! Best of 3, the winner takes ${fmt(2 * w.stake)}. They are waiting for you: open the game in the next 30 minutes to play.\n\nIn-game BP is play money, not real tokens.`,
     reply_markup: { inline_keyboard: [[{ text: '⚔️ Play now', url: gameLink(env, 'b_' + w.id) }]] } }).catch(() => { });
   if (opt.wait) opt.wait(send); else await send;
 }

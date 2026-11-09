@@ -80,7 +80,7 @@ test('wager: post, take, best of 3 with a draw replayed, the winner gets both st
   assert.equal((await call(env, '/wager/take', { id }, cy.token)).code, 'gone');
   assert.deepEqual(env.told.at(-1), [ana.id, { t: 'wager', ev: 'taken', id, by: 'Bo', stake: 1000 }]);   // Ana wasn't in the game: the bot tells her
   const dm = calls.find(([m, b]) => m === 'sendMessage' && b.chat_id === 77);
-  assert.match(dm[1].text, /Bo took your 1,000 \$CWORM challenge/); assert.match(dm[1].text, /play money/);
+  assert.match(dm[1].text, /Bo took your 1,000 BP challenge/); assert.match(dm[1].text, /play money/);
   assert.equal(dm[1].reply_markup.inline_keyboard[0][0].url, 'https://t.me/CryptoWormWarsBot/play?startapp=b_' + id);
 
   // only the two players get into the series' matches

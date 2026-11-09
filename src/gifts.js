@@ -75,7 +75,7 @@ export const wormCredits = (env, id) => q(env, 'SELECT worm FROM gift_credits WH
 // ---- /gift (admins, in the bot's private chat)
 export const HELP = '🎁 Gift codes\n\n' +
   'Make one: /gift followed by what it holds, in any order:\n' +
-  '  1000        play $CWORM\n' +
+  '  1000        BP\n' +
   '  gold        a look from the store (any hat, skin, trail or grave id), as many as you like\n' +
   '  worm        a free Custom Worm (worm2 = two)\n' +
   '  x50         how many players can use it (1 if left out)\n' +
@@ -91,7 +91,7 @@ export const HELP = '🎁 Gift codes\n\n' +
 // What a code holds, in words.
 export function describe(g) {
   const parts = [];
-  if (g.cworm > 0) parts.push(`+${fmt(g.cworm)} $CWORM`);
+  if (g.cworm > 0) parts.push(`+${fmt(g.cworm)} BP`);
   for (const id of itemsOf(g.items)) parts.push(`${id} ${ITEM.get(id)}`);
   if (g.worm > 0) parts.push(g.worm > 1 ? `${g.worm} free Custom Worms` : 'a free Custom Worm');
   return parts.join(' + ') || 'nothing';
@@ -116,7 +116,7 @@ export function parse(arg) {
     else return { error: `I don't know "${w}". Send /gift for help.` };
   }
   if (!out.cworm && !out.items.length && !out.worm) return { error: 'A code needs something inside: an amount, a look or worm. Send /gift for help.' };
-  if (out.cworm > MAX_CWORM) return { error: `At most ${fmt(MAX_CWORM)} $CWORM per code.` };
+  if (out.cworm > MAX_CWORM) return { error: `At most ${fmt(MAX_CWORM)} BP per code.` };
   if (out.worm > MAX_WORMS) return { error: `At most ${MAX_WORMS} free Custom Worms per code.` };
   if (out.max < 1 || out.max > MAX_USES) return { error: `Uses: between x1 and x${fmt(MAX_USES)}.` };
   if (out.days > 365) return { error: 'At most 365 days.' };

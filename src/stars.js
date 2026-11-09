@@ -21,7 +21,7 @@
 import { tg, tellAdminsText } from './bot.js';
 import { gameLink } from './growth.js';
 
-const LOOKS = 'Looks only: no power in battles, no play $CWORM, never real tokens.';
+const LOOKS = 'Looks only: no power in battles, no BP, never real tokens.';
 export const CATALOG = {
   goldhelm:  { stars: 45, cat: 'hat', title: 'Gold helmet', text: 'A gold-plated army helmet with an emerald star, for all your worms.' },
   captain:   { stars: 30, cat: 'hat', title: "Captain's cap", text: 'A navy captain\'s cap with a gold star, for all your worms.' },
@@ -38,7 +38,7 @@ export const CATALOG = {
   tip500:    { stars: 500, tip: true, img: 'supporter', title: 'Support: 500 Stars', text: 'Pays for new art' },
   tip1000:   { stars: 1000, tip: true, img: 'supporter', title: 'Support: 1,000 Stars', text: 'Helps build a new mode' },
 };
-const TIP_TEXT = 'Thank you for supporting Crypto Worm Wars! A gift to help us keep the game free: servers, art and new modes. It gives no play $CWORM, points, prize entries or tokens. 150 Stars in total bring the green Supporter badge.';
+const TIP_TEXT = 'Thank you for supporting Crypto Worm Wars! A gift to help us keep the game free: servers, art and new modes. It gives no BP, points, prize entries or tokens. 150 Stars in total bring the green Supporter badge.';
 export const SUP_TIPS = 150;   // Stars of donations, in total, that bring the 💚 Supporter badge
 // players with the badge: the Supporter item, or 150 Stars of donations (index.js joins it for the ranking and the lobby)
 export const SUP_SQL = `SELECT player FROM purchases WHERE refunded IS NULL AND (item = 'supporter' OR item LIKE 'tip%') GROUP BY player
@@ -187,7 +187,7 @@ export async function paySupport(env, from, text) {
   return '✅ Thanks, we got it. We answer here in the bot within 48 hours.';
 }
 export const terms = env => '⭐ Purchase terms (Telegram Stars)\n\n' +
-  '• What you buy: looks for your worms (hats, skins, trails, graves, packs of them) and the 💚 Supporter badge in Crypto Worm Wars. They are cosmetic only: no power in battles, no play $CWORM, no ranking points, no weekly prize entries, and never real tokens.\n' +
+  '• What you buy: looks for your worms (hats, skins, trails, graves, packs of them) and the 💚 Supporter badge in Crypto Worm Wars. They are cosmetic only: no power in battles, no BP, no ranking points, no weekly prize entries, and never real tokens.\n' +
   '• Donations (💚 Support on Home) are gifts to help us build the game. They give nothing in the game except the 💚 Supporter badge once you have given 150 Stars in total.\n' +
   '• What you buy is kept on your game account and shows on every device where you play with it. It has no cash value and can\'t be traded or moved to another account.\n' +
   '• Delivery is instant. If something is missing or went wrong, send /paysupport within 14 days. A refunded item is taken back.\n' +

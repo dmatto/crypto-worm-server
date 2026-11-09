@@ -104,7 +104,7 @@ function preview(r, played) {
   return `💡 New idea #${r.id} from ${who} (player ${r.player}${played != null ? `, ${fmt(played)} matches` : ''})\n${ICON[r.kind] || r.kind}\n\n<b>${esc(r.title)}</b>\n${esc(r.text)}`;
 }
 const buttons = id => ({ inline_keyboard: [[{ text: '✅ Approve', callback_data: `idea:ok:${id}` }, { text: '❌ Reject', callback_data: `idea:no:${id}` }]] });
-const askText = r => `\n\n✅ Approve: it becomes a Yes/No poll in the game for ${OPEN_DAYS} days and ${esc(r.author || 'the player')} gets +${fmt(POLL_REWARD)} play $CWORM.\n` +
+const askText = r => `\n\n✅ Approve: it becomes a Yes/No poll in the game for ${OPEN_DAYS} days and ${esc(r.author || 'the player')} gets +${fmt(POLL_REWARD)} BP.\n` +
   `✏️ To fix the wording first: /idea edit ${r.id} New title | New description`;
 
 async function tellAdmins(env, id, played, only) {
@@ -135,7 +135,7 @@ export async function decide(env, id, ok, by, note, now = Date.now()) {
   if (!changed(res)) return { done: false, text: `Idea #${id} was already decided.` };
   if (ok) {
     await q(env, "INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, 'idea', ?, ?)", r.player, POLL_REWARD, r.title.slice(0, 60), now).run();
-    await dm(env, r.player, `💡 Your idea "${r.title}" is now a poll in the game! Players vote on it for ${OPEN_DAYS} days.\n\n+${fmt(POLL_REWARD)} $CWORM for you (play money). If it gets made, you get +${fmt(DONE_REWARD)} more.`).catch(() => false);
+    await dm(env, r.player, `💡 Your idea "${r.title}" is now a poll in the game! Players vote on it for ${OPEN_DAYS} days.\n\n+${fmt(POLL_REWARD)} BP for you (play money). If it gets made, you get +${fmt(DONE_REWARD)} more.`).catch(() => false);
   }
   const end = ok ? `\n\n✅ Approved${by ? ' by ' + esc(by) : ''}: live in the game until ${new Date(now + OPEN_DAYS * DAY).toISOString().slice(0, 10)}. ${esc(r.author || 'The player')} got +${fmt(POLL_REWARD)}.`
     : `\n\n❌ Rejected${by ? ' by ' + esc(by) : ''}. Nobody else sees it.`;
@@ -214,8 +214,8 @@ export async function command(env, arg, { by, chat } = {}, now = Date.now()) {
     let extra = '';
     if (tag === 'done' && !r.team && r.player && changed(await q(env, 'UPDATE ideas SET paid = paid | 2 WHERE id = ? AND (paid & 2) = 0', id).run())) {
       await q(env, "INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, 'ideadone', ?, ?)", r.player, DONE_REWARD, r.title.slice(0, 60), now).run();
-      await dm(env, r.player, `🎉 Your idea "${r.title}" made it into the game! Thank you.\n\n+${fmt(DONE_REWARD)} $CWORM for you (play money).`).catch(() => false);
-      extra = `\n${esc(r.author || 'The player')} got +${fmt(DONE_REWARD)} play $CWORM. For the update note: "Idea by ${esc(r.author || 'a player')}".`;
+      await dm(env, r.player, `🎉 Your idea "${r.title}" made it into the game! Thank you.\n\n+${fmt(DONE_REWARD)} BP for you (play money).`).catch(() => false);
+      extra = `\n${esc(r.author || 'The player')} got +${fmt(DONE_REWARD)} BP. For the update note: "Idea by ${esc(r.author || 'a player')}".`;
     }
     return `${tag ? TAGNAME[tag] : 'No tag'} on #${id}: ${esc(r.title)}${extra}`;
   }

@@ -107,7 +107,7 @@ test('ideas: /newpoll posts team polls (2 to 4 options or Yes/No), /idea tag don
   const r = await vote(env, 3, 1, 2); assert.deepEqual(r.open.find(o => o.id === 1).counts, [0, 0, 1]);
 
   await propose(env, 1, idea); await I.decide(env, 3, true, '', null, T0);
-  assert.match(await I.command(env, 'tag 3 done', {}, T0 + 1), /Ana got \+2,000 play \$CWORM/);
+  assert.match(await I.command(env, 'tag 3 done', {}, T0 + 1), /Ana got \+2,000 BP/);
   assert.match(await I.command(env, 'tag 3 done', {}, T0 + 2), /^✅ Done on #3/);
   assert.deepEqual(env.sql.prepare('SELECT amount, reason FROM rewards ORDER BY id').all().map(x => [x.amount, x.reason]), [[500, 'idea'], [2000, 'ideadone']]);
   assert.match(await I.command(env, 'tag 3 maybe', {}, T0), /planned, done, notnow or none/);

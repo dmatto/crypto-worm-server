@@ -91,7 +91,7 @@ export async function handle(path, env, me, body, now = Date.now()) {
   if (path === '/teams/war/new') {
     if (!t) return { error: 'join a team first', status: 400 };
     if (await played(env, me.id) < PLAYED_MIN) return { error: `finish ${PLAYED_MIN} matches first`, status: 403 };
-    const stake = Math.floor(Number(body.stake)); if (!(stake >= MIN && stake <= MAX)) return { error: `the pot is ${fmt(MIN)} to ${fmt(MAX)} $CWORM a side`, status: 400 };
+    const stake = Math.floor(Number(body.stake)); if (!(stake >= MIN && stake <= MAX)) return { error: `the pot is ${fmt(MIN)} to ${fmt(MAX)} BP a side`, status: 400 };
     const r = await team(env, Number(body.team)); if (!r || r.id === t.id) return { error: 'no such team', status: 404 };
     if (await botTeam(env, t.id) || await botTeam(env, r.id)) return { error: 'that team can\'t take part in team wars', status: 403 };
     if (await warOf(env, t.id)) return { error: 'your team already has a team war', status: 409 };
@@ -101,7 +101,7 @@ export async function handle(path, env, me, body, now = Date.now()) {
     const w = await q(env, `INSERT INTO team_wars (a, b, stake, state, by, created, fill_by) SELECT ?, ?, ?, 'filling', ?, ?, ?
         WHERE NOT EXISTS (SELECT 1 FROM team_wars WHERE (a IN (?, ?) OR b IN (?, ?)) AND state IN ${ACTIVE}) RETURNING *`, t.id, r.id, stake, me.id, now, now + FILL_MS, t.id, r.id, t.id, r.id).first();
     if (!w) return { error: 'one of the teams already has a team war', status: 409 };
-    await tell(env, r.owner, `⚔️ ${label(t)} challenged your team ${label(r)} to a team war: ${fmt(stake)} play $CWORM a side. Your members chip in from the team page; once both sides are full, the team with more points in 24 hours takes the pot. Fill your side within 24 hours or it's called off.`);
+    await tell(env, r.owner, `⚔️ ${label(t)} challenged your team ${label(r)} to a team war: ${fmt(stake)} BP a side. Your members chip in from the team page; once both sides are full, the team with more points in 24 hours takes the pot. Fill your side within 24 hours or it's called off.`);
     return { war: await view(env, w, me, now) };
   }
   const w = await q(env, 'SELECT * FROM team_wars WHERE id = ?', Number(body.id)).first();
@@ -112,7 +112,7 @@ export async function handle(path, env, me, body, now = Date.now()) {
     if (await played(env, me.id) < PLAYED_MIN) return { error: `finish ${PLAYED_MIN} matches first`, status: 403 };
     const [pa, pb] = await pledged(env, w), left = w.stake - (t.id === w.a ? pa : pb), amount = Math.floor(Number(body.amount));
     if (left <= 0) return { error: 'your side is full', status: 409 };
-    if (!(amount >= Math.min(CHIP, left) && amount <= left)) return { error: `chip in ${fmt(Math.min(CHIP, left))} to ${fmt(left)} $CWORM`, status: 400 };
+    if (!(amount >= Math.min(CHIP, left) && amount <= left)) return { error: `chip in ${fmt(Math.min(CHIP, left))} to ${fmt(left)} BP`, status: 400 };
     if (await q(env, 'SELECT 1 AS y FROM team_war_pledges WHERE war = ? AND player = ? AND team != ?', w.id, me.id, t.id).first()) return { error: 'you already chipped in for the other side', status: 409 };
     if (amount > await ceiling(env, me.id)) return { error: 'that is more than you have', status: 400 };
     const k = await q(env, `INSERT INTO team_war_pledges (war, team, player, amount, at) SELECT ?, ?, ?, ?, ?
@@ -122,7 +122,7 @@ export async function handle(path, env, me, body, now = Date.now()) {
     if (na >= w.stake && nb >= w.stake) {                                    // both sides full: the war is on
       const on = await q(env, "UPDATE team_wars SET state = 'live', started = ?, ends = ? WHERE id = ? AND state = 'filling' RETURNING *", now, now + WAR_MS, w.id).first();
       if (on) { const [ta, tb] = await Promise.all([team(env, w.a), team(env, w.b)]);
-        for (const [x, y] of [[ta, tb], [tb, ta]]) await tell(env, x.owner, `⚔️ Team war on! ${label(x)} vs ${label(y)}, ${fmt(2 * w.stake)} play $CWORM in the pot. For 24 hours every match your members play scores, and each worm of another team beaten online scores +${CLASH}. Rally your team!`) }
+        for (const [x, y] of [[ta, tb], [tb, ta]]) await tell(env, x.owner, `⚔️ Team war on! ${label(x)} vs ${label(y)}, ${fmt(2 * w.stake)} BP in the pot. For 24 hours every match your members play scores, and each worm of another team beaten online scores +${CLASH}. Rally your team!`) }
     }
     return { war: await view(env, await q(env, 'SELECT * FROM team_wars WHERE id = ?', w.id).first(), me, now), owe: await owed(env, me, now) };
   }
@@ -156,7 +156,7 @@ async function settle(env, w, now) {
   if (shares.length) shares[0] += pay - shares.reduce((a, b) => a + b, 0);  // the cents left over go to the biggest pledger
   const wt = win === w.a ? ta : tb, lt = win === w.a ? tb : ta;
   for (let i = 0; i < results.length; i++) if (shares[i] > 0) await reward(env, results[i].player, shares[i], 'teamwar', wt ? wt.name : '', now).run();
-  if (wt) await tell(env, wt.owner, `🏆 ${label(wt)} won the team war against ${label(lt)}, ${fmt(Math.max(sa, sb))} to ${fmt(Math.min(sa, sb))}! ${fmt(pay)} play $CWORM go to the members who chipped in (${fmt(burned)} burned).`);
+  if (wt) await tell(env, wt.owner, `🏆 ${label(wt)} won the team war against ${label(lt)}, ${fmt(Math.max(sa, sb))} to ${fmt(Math.min(sa, sb))}! ${fmt(pay)} BP go to the members who chipped in (${fmt(burned)} burned).`);
   if (lt) await tell(env, lt.owner, `⚔️ ${label(lt)} lost the team war against ${label(wt)}, ${fmt(Math.min(sa, sb))} to ${fmt(Math.max(sa, sb))}. Challenge them again from the team page!`);
 }
 // every minute (the bot's cron): sides that didn't fill in time, wars that are over

@@ -47,7 +47,7 @@ test('stars: donations can be given again and again, 150 Stars of them bring the
   assert.equal(r.url, 'https://t.me/$invoice');
   const inv = sent.find(x => x.method === 'createInvoiceLink');
   assert.equal(inv.prices[0].amount, 50); assert.match(inv.photo_url, /\/xtr\/supporter\.jpg$/);
-  assert.match(inv.description, /no play \$CWORM, points, prize entries or tokens/); assert.ok(inv.description.length <= 255);
+  assert.match(inv.description, /no BP, points, prize entries or tokens/); assert.ok(inv.description.length <= 255);
 
   let p = await pay(env, 1, 'tip50');
   assert.equal(p.ok, true); assert.match(p.text, /Thank you for supporting Crypto Worm Wars with 50 Stars/); assert.doesNotMatch(p.text, /badge now shows/);

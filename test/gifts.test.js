@@ -59,7 +59,7 @@ test('gift codes: an admin makes one in the bot; players redeem it once each unt
   assert.match(await tgMsg('/gift 1000 x5', 555), /Open the game, tap More/);           // not an admin: where to type a code
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM gift_codes').get().n, 0);
   const made = await tgMsg('/gift 1500 gold lucky x2 HALLOWEEN');
-  assert.match(made, /New gift code: \+1,500 \$CWORM \+ gold skin \+ lucky skin/);
+  assert.match(made, /New gift code: \+1,500 BP \+ gold skin \+ lucky skin/);
   assert.match(made, /Up to 2 players each · works until/);
   assert.match(made, /t\.me\/CryptoWormWarsBot\/play\?startapp=g_HALLOWEEN/); assert.match(made, /play\.cryptoworm\.io\/\?gift=HALLOWEEN/);
   assert.equal(codeOf(made), 'HALLOWEEN');
@@ -78,7 +78,7 @@ test('gift codes: an admin makes one in the bot; players redeem it once each unt
   assert.equal(env.sql.prepare("SELECT uses FROM gift_codes WHERE code = 'HALLOWEEN'").get().uses, 2);
   assert.equal(env.sql.prepare("SELECT COUNT(*) AS n FROM rewards WHERE reason = 'gift'").get().n, 2);
   assert.match(await tgMsg('/gift HALLOWEEN'), /2\/2 used[\s\S]*Used by/);
-  assert.match(await tgMsg('/gift list'), /HALLOWEEN: \+1,500 \$CWORM/);
+  assert.match(await tgMsg('/gift list'), /HALLOWEEN: \+1,500 BP/);
 
   // off, expired, wrong
   const one = codeOf(await tgMsg('/gift 100'));
@@ -95,7 +95,7 @@ test('gift codes: an admin makes one in the bot; players redeem it once each unt
 test('gift codes: a batch of codes with numbered source tags; a new player from the link gets the tag', async () => {
   const env = makeEnv();
   const text = await G.command(env, '1000 coral *3 s_fomo', 777);
-  assert.match(text, /3 new gift codes: \+1,000 \$CWORM \+ coral skin/);
+  assert.match(text, /3 new gift codes: \+1,000 BP \+ coral skin/);
   const rows = env.sql.prepare('SELECT code, src, max_uses FROM gift_codes ORDER BY src').all();
   assert.deepEqual(rows.map(r => [r.src, r.max_uses]), [['fomo1', 1], ['fomo2', 1], ['fomo3', 1]]);
   const fresh = await guest(env, 'gift'), old = await guest(env, 'x');
