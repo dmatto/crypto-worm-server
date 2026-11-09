@@ -171,7 +171,7 @@ test('growth: invite & earn: +1,000 when a friend plays 5 matches, friend-count 
   // an invite card for Telegram's share dialog
   calls.length = 0; await call(env, '/share/prepare', { kind: 'invite' }, host.token);
   const [, p] = calls.find(c => c[0] === 'savePreparedInlineMessage');
-  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg?v=1028'); assert.match(p.result.caption, /get \+500 BP in the game to start \(play money\)/);
+  assert.equal(p.result.photo_url, 'https://play.test/cards/invite.jpg?v=1110'); assert.match(p.result.caption, /get \+500 BP in the game to start \(play money\)/);
 });
 
 test('growth: challenge cards, inline mode and group duels carry Play links', async () => {

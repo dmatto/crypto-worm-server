@@ -217,7 +217,7 @@ export async function shareDone(env, me) {
 }
 
 // ---- share cards ----
-const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg?v=1028' };   // ?v=: Telegram keeps old pictures by URL (the invite card changed 2026-10-28)
+const CARDS = { duel: 'duel.jpg', win: 'win.jpg', story: 'story.jpg', invite: 'invite.jpg?v=1110' };   // ?v=: Telegram keeps old pictures by URL (the invite card changed 2026-10-28, and to "+500 BP" 2026-11-10)
 export const cardUrl = (env, k) => site(env) + '/cards/' + CARDS[k];
 export const INVITE_LINE = `🎁 Join with my link and get +${INVITE_REWARD} BP in the game to start (play money).`;
 export function challengeCaption(kind, hp) {
