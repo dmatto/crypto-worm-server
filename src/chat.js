@@ -16,12 +16,13 @@
 //   POST /chat/block {id, on}        -> {ok, blocked: [ids]}
 //   GET  /chat/blocks                -> {blocked: [{id, name}]}
 //   GET  /chat/unread                -> {tchat, dms, freq}   unread Team chat messages, private chats and friend requests, without reading them
-//   GET  /chat/player?id=            -> a player's card: {id, name, av?, cc?, team?, wins, losses, played, since, friend, fstate, blocked, invite, online?}
+//   GET  /chat/player?id=            -> a player's card: {id, name, av?, cc?, team?, wins, losses, played, since, friend, fstate, blocked, invite, online?, medals?}
 import { xai } from './worms.js';
 import { teamOf } from './teams.js';
 import { gameLink } from './growth.js';
 import { tg, adminTgIds } from './bot.js';
 import { friendState, requestCount } from './friends.js';
+import { forCard as medalsOf } from './medals.js';
 
 export const CHAT_PLAYED = 3, MAX_LEN = 160, MAX_LOAD = 50, GAP_MS = 5000, PER_10MIN = 15, PER_DAY = 150, HIDE_REPORTS = 2;
 export const KEEP_WORLD = 7 * 864e5, KEEP_TEAM = 30 * 864e5, TEAM_DM_GAP = 12 * 3600e3, TEAM_DM_MAX = 25;
@@ -219,13 +220,13 @@ async function card(env, me, id, opts) {
   const p = await q(env, `SELECT p.id, p.name, p.wins, p.losses, p.created, a.av, m.cc, m.played FROM players p LEFT JOIN player_avatar a ON a.player = p.id
       LEFT JOIN player_meta m ON m.player = p.id WHERE p.id = ?`, id).first();
   if (!p) return { error: 'no such player', status: 404 };
-  const [t, mine, fs, bl, sim] = await Promise.all([teamOf(env, id), teamOf(env, me.id), friendState(env, me.id, id),
-    q(env, 'SELECT 1 AS y FROM chat_blocks WHERE player = ? AND blocked = ?', me.id, id).first(), q(env, 'SELECT 1 AS y FROM sim_players WHERE player = ?', id).first().catch(() => null)]);
+  const [t, mine, fs, bl, sim, medals] = await Promise.all([teamOf(env, id), teamOf(env, me.id), friendState(env, me.id, id),
+    q(env, 'SELECT 1 AS y FROM chat_blocks WHERE player = ? AND blocked = ?', me.id, id).first(), q(env, 'SELECT 1 AS y FROM sim_players WHERE player = ?', id).first().catch(() => null), medalsOf(env, id).catch(() => [])]);
   let online = false;
   if (opts.lobby) try { online = ((await (await opts.lobby.fetch('https://lobby/online?ids=' + id)).json()).online || []).includes(id) } catch (e) { }
   return { id: p.id, name: p.name, wins: p.wins | 0, losses: p.losses | 0, played: p.played | 0, since: p.created, ...(p.av ? { av: p.av } : {}), ...(p.cc ? { cc: p.cc } : {}),
     ...(t ? { team: { id: t.id, name: t.name, tag: t.tag, emoji: t.emoji } } : {}), friend: fs === 'friend', fstate: fs, blocked: !!bl, me: id === me.id,
-    invite: !!mine && !t && !sim && id !== me.id, online };
+    invite: !!mine && !t && !sim && id !== me.id, online, ...(medals.length ? { medals } : {}) };
 }
 
 export async function handle(path, env, me, body, opts = {}, now = Date.now()) {

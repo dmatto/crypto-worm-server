@@ -23,6 +23,7 @@
 // take the numbers after the real players).
 import { teamClash } from './teams.js';
 import { clubWin } from './clubs.js';
+import { royaleWin } from './medals.js';
 
 const SEATS = 50, WAIT_MS = 120e3, MAX_MSG = 128 * 1024, HOST_QUIET_MS = 6000, IDLE_MS = 3 * 60e3, OPS_MAX = 20000, CHEERS = 6, CHEER_GAP_MS = 700, TICK_MS = 3000;
 export const ROYALE_WAIT_MS = WAIT_MS;
@@ -192,6 +193,7 @@ export class Royale {
     }
     await db.batch(q);
     if (fair && winner >= 0) for (const r of rows) if (r.place && r.s.id !== m.seats[winner].id) await teamClash(this.env, m.seats[winner].id, r.s.id, now).catch(() => { });   // rival teams' worms in the room
+    if (fair && winner >= 0) await royaleWin(this.env, m.seats[winner].id, now).catch(() => { });   // a Royale champion medal, one a week (medals.js)
     if (fair && winner >= 0) for (const r of rows) if (r.place && r.s.id !== m.seats[winner].id) await clubWin(this.env, m.seats[winner].id, r.s.id, now).catch(() => { });   // and other clubs' fans (clubs.js limits them a day)
   }
 }

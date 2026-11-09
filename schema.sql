@@ -709,3 +709,20 @@ CREATE TABLE IF NOT EXISTS carry (          -- a web player's on-phone progress,
 CREATE TABLE IF NOT EXISTS net_seen (player INTEGER NOT NULL, h TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (player, h, day));
 CREATE INDEX IF NOT EXISTS net_seen_h ON net_seen (h, day);
 CREATE INDEX IF NOT EXISTS net_seen_day ON net_seen (day);
+
+-- Medals (medals.js): one-off honours on the player card, each worth a value in Battle Points (play money) when sold.
+-- A sold medal keeps its row (sold = when) so it is never given again; seen = when the game showed the "New medal" toast.
+CREATE TABLE IF NOT EXISTS medals (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  kind    TEXT NOT NULL,               -- pioneer, milestone, recruiter, royale, weektop, teamwar, race, special
+  ref     TEXT NOT NULL DEFAULT '',    -- what it is for: a weapon id, '2000', a week, a war...
+  label   TEXT,
+  tier    TEXT NOT NULL,               -- common, rare, unique
+  value   INTEGER NOT NULL,            -- Battle Points it sells for
+  at      INTEGER NOT NULL,
+  seen    INTEGER,
+  sold    INTEGER,
+  UNIQUE (player, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS medals_kind ON medals (kind, ref);

@@ -25,6 +25,7 @@ import { moments } from './feed.js';
 import { teamTopText } from './teams.js';
 import { teamPrizePost } from './teamprize.js';
 import { clubTopText } from './clubs.js';
+import { recruiter, milestone, pioneer, weekTop as weekMedals, fresh as freshMedals } from './medals.js';
 
 // Invite & earn (Damian 2026-10-28: inviting new players is the fastest way to earn $CWORM in the game, and the game says so):
 // the inviter gets +1,000 when a friend who opened their link finishes a first match and +1,000 more when that friend has
@@ -113,9 +114,11 @@ async function payInvite(env, me, m) {
   await env.DB.batch([addReward(env, inviter.id, mine, 'invite', me.name, now), addReward(env, me.id, INVITE_REWARD, 'invited', inviter.name, now),
     env.DB.prepare('UPDATE player_meta SET invite_paid = ? WHERE player = ?').bind(now, me.id)]);
   const ms = await payMilestones(env, inviter.id);
+  const rec = await recruiter(env, inviter.id, me.name, now, false).catch(() => null);   // the Recruiter medal, for the first friend (medals.js), told in this DM
   await dm(env, inviter, `🎉 ${me.name} joined Crypto Worm Wars through your invite and finished a first match!\n\n` +
     `${promoOn(now) ? 'Invite week: ' : ''}+${fmt(mine)} BP for you, and +${fmt(INVITE_REWARD)} for ${me.name}. ` +
     `When ${me.name} has played ${LOYAL_MATCHES} matches, you get +${fmt(LOYAL_REWARD)} more.\n\n` + ms.paid.map(mileLine).map(l => l + '\n').join('') +
+    (rec ? `🤝 New medal: Recruiter, for your first friend! It shows on your player card.\n` : '') +
     `Friends so far: ${ms.n}. ${nextLine(ms.n)}\n\nIt all lands in your game wallet next time you open the game. (Play money, not real tokens.)`);
 }
 // A friend who came through an invite kept playing: +LOYAL_REWARD for the inviter, once per friend.
@@ -137,7 +140,7 @@ export async function started(env, me) {
 
 // The game finished a match. Counts it (at most one every 20 s), pays a pending invite reward on a first match, and
 // hands back any rewards waiting for this player.
-export async function played(env, me, mode, cc, feed) {
+export async function played(env, me, mode, cc, feed, weapons, won) {
   const now = Date.now(), day = Math.floor(now / DAY), daily = mode === 'daily' ? 1 : 0;
   await env.DB.prepare('INSERT OR IGNORE INTO player_meta (player, last_seen) VALUES (?, ?)').bind(me.id, now).run();
   const r = await env.DB.prepare(`UPDATE player_meta SET played = played + 1, last_played = ?, last_seen = ?, cc = COALESCE(?, cc),
@@ -148,7 +151,9 @@ export async function played(env, me, mode, cc, feed) {
   if (r && r.played === 1 && r.invited_by && r.invite_paid == null) await payInvite(env, me, r);
   if (r && r.played === LOYAL_MATCHES && r.invited_by) await payLoyal(env, me, r);
   if (r && feed) await moments(env, me, mode, feed, now).catch(() => 0);          // the match's best moments, for the live feed on Home
-  return { played: m ? m.played : 0, rewards: await claim(env, me.id) };
+  if (r && r.played === 1) await milestone(env, me, now).catch(() => { });         // the 2,000th player (and every 1,000 after) gets a medal
+  if (r && won === true) await pioneer(env, me, mode, weapons, true, now).catch(() => { });   // the first winners with a new weapon
+  return { played: m ? m.played : 0, rewards: await claim(env, me.id), medals: await freshMedals(env, me.id).catch(() => []) };
 }
 
 // W and L for every kind of match (Damian 2026-10-23: "I want that every type of match is counted"). Online 1-on-1 matches
@@ -320,7 +325,9 @@ export async function weekly(env, now = Date.now()) {
   const group = await kv.get(env, 'group'); if (!group) return;
   if (await kv.get(env, 'top_posted') === String(start)) return;
   await kv.set(env, 'top_posted', start);
-  const text = [topText(await weekTop(env, start - 7 * DAY), 'Top 10 of last week'), await teamTopText(env, start - 7 * DAY), await teamPrizePost(env, start - 7 * DAY).catch(() => ''), await clubTopText(env, start - 7 * DAY).catch(() => '')].filter(Boolean).join('\n\n');   // and last week's top 3 community teams and football clubs
+  const top = await weekTop(env, start - 7 * DAY);
+  await weekMedals(env, start - 7 * DAY, now).catch(() => { });                  // medals for the top 10 real players (no bots, no admins)
+  const text = [topText(top, 'Top 10 of last week'), await teamTopText(env, start - 7 * DAY), await teamPrizePost(env, start - 7 * DAY).catch(() => ''), await clubTopText(env, start - 7 * DAY).catch(() => '')].filter(Boolean).join('\n\n');   // and last week's top 3 community teams and football clubs
   if (text) await tg(env, 'sendMessage', { chat_id: Number(group), text: text + '\n\nA new week has started. Tap Play to climb the ranking! 🪱', parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
 }

@@ -12,6 +12,7 @@
 // Admins in the bot: /race (standings and the /pay lines), /race check <id> (that player's friends, with on-chain and timing flags),
 // /race skip <id> [why], /race unskip <id>, /race post (the standings, or the winners once it's over, to the community group).
 import { rpc } from './holders.js';
+import { raceWinners } from './medals.js';
 import { gameLink } from './growth.js';
 import { netShared, netMatch } from './net.js';
 
@@ -152,7 +153,8 @@ async function post(env, now, R, tg) {
     : `🏁 Invite Race standings\n\n${list.join('\n') || 'Nobody yet: be the first!'}\n\nBring new players with your invite link: each one who links a wallet and plays ${R.matches} matches counts. Ends ${ends(R)}.`;
   const r = await tg(env, 'sendMessage', { chat_id: /^-?\d+$/.test(chat) ? Number(chat) : chat, text, parse_mode: 'HTML', disable_web_page_preview: true,
     reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }, { text: '📜 Rules', url: RULES }]] } });
-  return r && r.ok ? 'Posted in the community group.' : 'The group post did not go out: is the bot set up in the group (/setgroup)?';
+  const given = st === 'over' ? await raceWinners(env, R.id, winners(rows, R), now).catch(() => []) : [];   // the winners' medals, once
+  return (r && r.ok ? 'Posted in the community group.' : 'The group post did not go out: is the bot set up in the group (/setgroup)?') + (given.length ? ` 🏁 Medals given to ${given.length} winner(s).` : '');
 }
 
 // /race [check <id> | skip <id> [why] | unskip <id> | post]

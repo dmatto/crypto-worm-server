@@ -45,6 +45,7 @@ import { chatAdmin, chatCleanup } from './chat.js';
 import { sweep as wagerSweep } from './wager.js';
 import { sweep as warSweep } from './teamwar.js';
 import { command as giftCommand } from './gifts.js';
+import { command as medalCommand } from './medals.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { command as payCommand, cron as payCron } from './payout.js';
 import { teamPrizeText } from './teamprize.js';
@@ -342,6 +343,7 @@ export async function webhook(req, env) {
   }
   else if ((cmd === '/chatdel' || cmd === '/chatmute') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await chatAdmin(env, cmd, arg) });   // chat.js
   else if (cmd === '/parody' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await parodyCommand(env, arg) });   // parody.js
+  else if ((cmd === '/medal' || cmd === '/medals') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await medalCommand(env, arg)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });   // medals (medals.js)
   else if (cmd === '/gift' || cmd === '/gifts' || cmd === '/redeem') {                // gift codes (gifts.js)
     if (env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await giftCommand(env, arg, m.from.id), disable_web_page_preview: true });
     else await tg(env, 'sendMessage', { chat_id, text: '🎁 Got a gift code? Open the game, tap More, then 🎁 Gift code, and type it in.', reply_markup: buttons(env) });

@@ -29,6 +29,9 @@
 //   GET  /royale/ping, POST /royale/ping {on}                   -> {on}  a bot message when the daily Royale hour starts
 //   GET  /stats                                                 -> {players}  everyone who has started a game (no sign-in)
 //   GET  /feed                                                  -> {feed, now}  the live feed on Home: wins, kills, great shots (no sign-in, see feed.js)
+//   GET  /medals                                                -> {medals, tiers, sold, pioneer}  this player's medals (see medals.js)
+//   POST /medals/sell        {id}                               -> {sold, rewards}  sell a medal for its Battle Points; it is gone for good
+//   POST /played             {mode, feed?, w?, win?}            the game finished a match; w = weapons fired, win = this player won (Pioneer medals)
 // Load tests (see sim/): /auth/guest with the header x-sim-key: SIM_KEY makes a simulated player (sim_players). They count and
 // rank like everyone else, but stay hidden in the lobby, out of Live now and the weekly prize, and only fight CPU or bot land.
 //   POST /me/name            {name}                             -> session   pick a nickname (3-16 letters, digits, spaces, _ - .)
@@ -81,6 +84,7 @@ import { handle as pollHandle, card as pollCard, mergePoll } from './poll.js';
 import { handle as ideasHandle, mergeIdeas } from './ideas.js';
 import { handle as raceHandle, check as raceCheck, mergeRace } from './race.js';
 import { netSeen } from './net.js';
+import { list as medalList, sell as medalSell, fresh as freshMedals } from './medals.js';
 import { handle as giftHandle, giftItems } from './gifts.js';
 import { handle as starsHandle, sessionStars, isSupporter, SUP_SQL } from './stars.js';
 import { handle as wagerHandle, room as wagerRoom } from './wager.js';
@@ -256,6 +260,7 @@ async function link(env, me, target) {
     q('INSERT INTO gift_credits (player, worm) SELECT ?, worm FROM gift_credits WHERE player = ? ON CONFLICT(player) DO UPDATE SET worm = worm + excluded.worm', b, a), q('DELETE FROM gift_credits WHERE player = ?', a),
     q('UPDATE players SET name = (SELECT nick FROM nicknames WHERE player = ?) WHERE id = ? AND id IN (SELECT player FROM nicknames)', b, b),
     q('UPDATE OR IGNORE net_seen SET player = ? WHERE player = ?', b, a), q('DELETE FROM net_seen WHERE player = ?', a),   // same-network hints follow the account
+    q('UPDATE OR IGNORE medals SET player = ? WHERE player = ?', b, a),          // medals follow the account (a double stays behind, so it still counts as given)
     q('DELETE FROM players WHERE id = ?', a),
   ]);
   return playerById(env, b);
@@ -444,11 +449,13 @@ const app = {
     // every match start and end also feeds the weekly prize's match check (not for simulated players, who never take part)
     if (path === '/started' && req.method === 'POST') { if (!req.headers.has('x-sim-key')) await runStart(env, me.id, body.mode); return json(await started(env, me), 200, cors) }
     if (path === '/played' && req.method === 'POST') { const sim = req.headers.has('x-sim-key'); if (!sim) await warRun(env, me.id, await runEnd(env, me.id)).catch(() => { });
-      const out = await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed); if (!sim) await raceCheck(env, me.id).catch(() => { });   // Invite Race: a friend's 3rd match
+      const out = await played(env, me, String(body.mode || '').slice(0, 12), geo, body.feed, Array.isArray(body.w) ? body.w.slice(0, 40) : null, body.win === true); if (!sim) await raceCheck(env, me.id).catch(() => { });   // Invite Race: a friend's 3rd match
       await netSeen(env, req, me.id).catch(() => { });                               // same-network hints for admins (net.js), never the IP itself
       return json(out, 200, cors) }
     if (path === '/race' && req.method === 'GET') return json(await raceHandle(path, env, me), 200, cors);   // the Invite Race (race.js)
-    if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id) }, 200, cors);
+    if (path === '/rewards' && req.method === 'POST') return json({ rewards: await claim(env, me.id), medals: await freshMedals(env, me.id).catch(() => []) }, 200, cors);
+    if (path === '/medals' && req.method === 'GET') return json(await medalList(env, me), 200, cors);        // medals (medals.js)
+    if (path === '/medals/sell' && req.method === 'POST') { const r = await medalSell(env, me, body.id); return json(r.error ? r : { ...r, rewards: await claim(env, me.id) }, r.status || 200, cors) }
     if (path === '/invites' && req.method === 'GET') return json(await invites(env, me), 200, cors);
     if (path === '/prize' || path.startsWith('/prize/')) {                                  // the weekly prize card (see prize.js)
       if (await isSim(env, me.id)) return json({ on: false }, 200, cors);                  // never for simulated players

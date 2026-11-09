@@ -20,6 +20,7 @@
 // player's team can challenge it.
 
 import { ceiling } from './wager.js';
+import { teamWar as warMedals } from './medals.js';
 import { gameLink } from './growth.js';
 import { tg } from './bot.js';
 
@@ -156,7 +157,8 @@ async function settle(env, w, now) {
   if (shares.length) shares[0] += pay - shares.reduce((a, b) => a + b, 0);  // the cents left over go to the biggest pledger
   const wt = win === w.a ? ta : tb, lt = win === w.a ? tb : ta;
   for (let i = 0; i < results.length; i++) if (shares[i] > 0) await reward(env, results[i].player, shares[i], 'teamwar', wt ? wt.name : '', now).run();
-  if (wt) await tell(env, wt.owner, `🏆 ${label(wt)} won the team war against ${label(lt)}, ${fmt(Math.max(sa, sb))} to ${fmt(Math.min(sa, sb))}! ${fmt(pay)} BP go to the members who chipped in (${fmt(burned)} burned).`);
+  const medals = await warMedals(env, w.id, win, wt ? wt.name : '', now, wt ? wt.owner : null).catch(() => []);   // a medal for every member who scored for the winners
+  if (wt) await tell(env, wt.owner, `🏆 ${label(wt)} won the team war against ${label(lt)}, ${fmt(Math.max(sa, sb))} to ${fmt(Math.min(sa, sb))}! ${fmt(pay)} BP go to the members who chipped in (${fmt(burned)} burned).${medals.length ? ` 🛡️ ${medals.length === 1 ? 'One member' : medals.length + ' members'} who scored got a Team war medal.` : ''}`);
   if (lt) await tell(env, lt.owner, `⚔️ ${label(lt)} lost the team war against ${label(wt)}, ${fmt(Math.min(sa, sb))} to ${fmt(Math.max(sa, sb))}. Challenge them again from the team page!`);
 }
 // every minute (the bot's cron): sides that didn't fill in time, wars that are over

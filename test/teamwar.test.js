@@ -103,6 +103,7 @@ test('team war: a member challenges, both sides chip in, 24 hours of points deci
     assert.equal(row.state, 'done'); assert.equal(row.winner, A); assert.equal(row.burned, 100); assert.equal(row.sa, 450); assert.equal(row.sb, 300);
     assert.deepEqual(rewards(env, 'teamwar'), [{ player: a1.id, amount: 1140, note: 'Frog Army' }, { player: a2.id, amount: 760, note: 'Frog Army' }].sort((x, y) => x.player - y.player));
     assert.match(dms(a1.tg)[0], /won the team war[^]*450 to 300[^]*1,900 BP go to the members who chipped in \(100 burned\)/);
+    assert.equal(dms(a1.tg).length, 1); assert.match(dms(a1.tg)[0], /🛡️ .* who scored got a Team war medal\./);   // the owner hears about the medals in the same DM
     assert.match(dms(b1.tg)[0], /lost the team war/);
     const last = await call(env, '/teams/war', undefined, a2); assert.equal(last.war, null); assert.equal(last.last.winner, A); assert.equal(last.last.why, 'won');
     assert.equal(await ceiling(env, a1.id), 4400 + 1140);
