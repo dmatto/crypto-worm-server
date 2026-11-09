@@ -71,12 +71,13 @@ export async function pioneer(env, me, mode, weapons, won, now = Date.now()) {
     const m = await award(env, me.id, 'pioneer', w, { label: PIONEER[w], cap: PIONEER_N, now }); if (m) out.push(m) }
   return out;
 }
-// A player finished a first match: are they the 2,000th (3,000th...) real player to do so?
+// A player finished a first match: are they the 2,000th (3,000th...) real player to do so? (or one of the next 4, when two
+// first matches land at the same moment and the count jumps)
 export async function milestone(env, me, now = Date.now()) {
   const r = await q(env, `SELECT COUNT(*) AS n FROM player_meta m WHERE m.played > 0 AND COALESCE(m.source, '') != 'loadtest'
       AND NOT EXISTS (SELECT 1 FROM sim_players s WHERE s.player = m.player)`).first();
   const n = r ? r.n : 0, k = Math.floor(n / MILESTONE_STEP) * MILESTONE_STEP;
-  if (k < MILESTONE_FROM) return null;
+  if (k < MILESTONE_FROM || n - k >= 5) return null;                         // long past it (a count from before medals existed): nobody gets it
   return award(env, me.id, 'milestone', k, { label: 'Player #' + fmt(k), cap: 1, now });
 }
 // The first friend who came with this player's invite finished a match.
@@ -134,7 +135,7 @@ export async function sell(env, me, id, now = Date.now()) {
   return { sold: shape(m) };
 }
 // The player card (GET /chat/player): someone's medals, newest first.
-export const forCard = (env, id) => q(env, 'SELECT * FROM medals WHERE player = ? AND sold IS NULL ORDER BY at DESC, id DESC LIMIT 24', id).all().then(r => (r.results || []).map(m => { const s = shape(m); return { kind: s.kind, label: s.label, tier: s.tier, emo: s.emo, name: s.name } }));
+export const forCard = (env, id) => q(env, 'SELECT * FROM medals WHERE player = ? AND sold IS NULL ORDER BY at DESC, id DESC LIMIT 24', id).all().then(r => (r.results || []).map(m => { const s = shape(m); return { kind: s.kind, ref: s.ref, label: s.label, tier: s.tier, emo: s.emo, name: s.name } }));
 
 // ---- admins: /medal ----
 const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);

@@ -85,6 +85,9 @@ test('medals: the player whose first match makes it 2,000 real players gets the 
   gap(env);
   assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, b.token)).medals, []);              // only on a first match
   assert.equal(env.sql.prepare("SELECT COUNT(*) AS n FROM medals WHERE kind = 'milestone'").get().n, 1);
+  for (let i = 0; i < 2010; i++) ins.run(30000 + i, 1, null);                                      // then 4,012 players: long past 4,000
+  const d = await call(env, '/auth/guest', {});
+  assert.deepEqual((await call(env, '/played', { mode: 'cpu' }, d.token)).medals, []);
 });
 
 test('medals: the inviter gets the Recruiter medal when the first friend finishes a match, and only then', async () => {
@@ -113,7 +116,7 @@ test('medals: selling pays the value in BP once, outside the ranking; a sold med
   assert.deepEqual(page.pioneer, { weapons: ['Laser Saber', 'Golazo'], n: 10 });
   assert.deepEqual((await call(env, '/rewards', {}, me.token)).medals, []);                        // opening the page counts as shown
   const card = await call(env, '/chat/player?id=' + me.player.id, undefined, other.token);
-  assert.deepEqual(card.medals.map(m => [m.emo, m.name, m.label, m.tier]), [['🤝', 'Recruiter', 'First friend: Kid', 'common'], ['🧪', 'Pioneer', 'Laser Saber', 'rare']]);
+  assert.deepEqual(card.medals.map(m => [m.emo, m.name, m.label, m.tier, m.ref]), [['🤝', 'Recruiter', 'First friend: Kid', 'common', ''], ['🧪', 'Pioneer', 'Laser Saber', 'rare', 'saber']]);
   const pid = page.medals[1].id;
   assert.equal((await call(env, '/medals/sell', { id: pid }, other.token)).status, 404);           // not theirs
   const sold = await call(env, '/medals/sell', { id: pid }, me.token);
