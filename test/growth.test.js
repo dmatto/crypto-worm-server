@@ -351,11 +351,16 @@ test('growth: "Continue in Telegram" carries the web progress once, joins the ac
   const tgDev = await call(env, '/auth/telegram', { initData: tgInit(91, 'Rio') });           // the same person, now in Telegram
   const joined = await call(env, '/auth/code/redeem', { code }, tgDev.token);
   assert.equal(joined.player.id, web.player.id); assert.equal(joined.player.tg, true);         // the web account keeps going, now with Telegram
+  assert.deepEqual((await call(env, '/rewards', {}, joined.token)).rewards, []);           // the bonus waits until the copy is taken
+  const take = await call(env, '/me/carry/take', {}, joined.token);
   const got = await call(env, '/rewards', {}, joined.token);
   assert.deepEqual(got.rewards.map(r => [r.amount, r.reason]), [[500, 'tglink']]);
-  const take = await call(env, '/me/carry/take', {}, joined.token);
   assert.deepEqual(take.data, { 'cww-bank': 900, 'cww-played': 4, 'cww-streak': { d: '2026-11-09', n: 2 } });   // only cww-* keys
   assert.equal((await call(env, '/me/carry/take', {}, joined.token)).data, null);              // taken once
+  // a web player linking with a code from Settings (no copy waiting) gets the bonus at once
+  const w3 = await call(env, '/auth/guest', { src: 'web' }), c3 = (await call(env, '/auth/code', {}, w3.token)).code;
+  const t3 = await call(env, '/auth/telegram', { initData: tgInit(93, 'Mo') }), j3 = await call(env, '/auth/code/redeem', { code: c3 }, t3.token);
+  assert.deepEqual((await call(env, '/rewards', {}, j3.token)).rewards.map(r => r.reason), ['tglink']);
   // a second web guest joined to the same Telegram account pays nothing more
   const web2 = await call(env, '/auth/guest', { src: 'web' }), c2 = (await call(env, '/auth/code', {}, web2.token)).code;
   const again = await call(env, '/auth/code/redeem', { code: c2 }, joined.token);

@@ -344,7 +344,9 @@ const app = {
       const p = row && row.expires > Date.now() && await playerById(env, row.player);
       if (!p) return json({ error: 'that code is wrong or has expired' }, 404, cors);
       const was = await signedIn(req, env), joined = await link(env, was, p);
-      if (tgJoin(was, p)) await tgLinkBonus(env, joined.id).catch(() => { });           // "Continue in Telegram": +500 play money once
+      // Telegram joined a web account: +500 play money once. With a progress copy waiting ("Continue in Telegram") it is paid when
+      // the Telegram side takes the copy, so the game can't claim it before the copy replaces that phone's coins.
+      if (tgJoin(was, p) && !await env.DB.prepare('SELECT 1 FROM carry WHERE player = ?').bind(joined.id).first()) await tgLinkBonus(env, joined.id).catch(() => { });
       return session(env, joined, cors);
     }
 

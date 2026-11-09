@@ -362,6 +362,7 @@ export async function carryPut(env, me, data) {
 }
 export async function carryTake(env, me) {
   const r = await env.DB.prepare('DELETE FROM carry WHERE player = ? RETURNING data, at').bind(me.id).first();
+  if (r && me.tg_id != null) await tgLinkBonus(env, me.id).catch(() => { });             // the Telegram link bonus waits for this (see /auth/code/redeem)
   if (!r || r.at < Date.now() - CARRY_MS) return { data: null };
   try { return { data: JSON.parse(r.data) } } catch (e) { return { data: null } }
 }
