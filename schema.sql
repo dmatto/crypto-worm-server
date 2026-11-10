@@ -698,6 +698,11 @@ CREATE TABLE IF NOT EXISTS player_ref (
   ref    TEXT NOT NULL,
   at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS saves (          -- each account's progress, the same on every device (save.js): {d: {key: value}, t: {key: time picked}}
+  player   INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS carry (          -- a web player's on-phone progress, uploaded before "Continue in Telegram" (growth.js carryPut), taken once there
   player   INTEGER PRIMARY KEY,
   data     TEXT NOT NULL,

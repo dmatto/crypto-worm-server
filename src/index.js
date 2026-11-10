@@ -11,6 +11,8 @@
 //   POST /auth/code/redeem   {code}                             -> session   signs this device into that account
 //   POST /me/carry           {data}                             -> {ok}   a copy of this phone's progress for "Continue in Telegram" (growth.js)
 //   POST /me/carry/take                                         -> {data}  takes that copy once (the Telegram side, after the login code)
+//   GET  /me/save                                               -> {data, t, at}  this account's progress, the same on every device (save.js)
+//   POST /me/save            {data, t}                          -> {data, t, at}  merges this device's copy in and answers with the merged copy
 //   GET  /me                                                    -> session without the token
 // A session is {token, player, friendCode}.
 //
@@ -69,6 +71,7 @@ import { Lobby } from './lobby.js';
 import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto, tellAdminsText } from './bot.js';
 import { handle as mapHandle } from './map.js';
+import { saveGet, savePut, mergeSaves } from './save.js';
 import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward, carryPut, carryTake, tgLinkBonus } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
@@ -217,6 +220,7 @@ async function link(env, me, target) {
   await mergePoll(env, a, b).catch(() => { });                                        // poll votes: the target's own vote wins
   await mergeIdeas(env, a, b).catch(() => { });                                       // Ideas & polls: ideas follow, the target's own votes win
   await mergeRace(env, a, b).catch(() => { });                                        // Invite Race: an inviter's counted friends follow
+  await mergeSaves(env, a, b).catch(() => { });                                       // progress (save.js): the most of both copies
   await env.DB.batch([
     q('UPDATE players SET tg_id = NULL, wallet = NULL WHERE id = ?', a),
     q('UPDATE players SET tg_id = COALESCE(tg_id, ?), wallet = COALESCE(wallet, ?), wins = wins + ?, losses = losses + ?, name = CASE WHEN tg_id IS NULL AND ? IS NOT NULL THEN ? ELSE name END, created = MIN(created, COALESCE((SELECT created FROM players WHERE id = ?), created)) WHERE id = ?',
@@ -493,6 +497,8 @@ const app = {
     if (path === '/me/remind' && req.method === 'POST') return json(await setRemind(env, me, !!body.on), 200, cors);
     if (path === '/me/carry' && req.method === 'POST') { const r = await carryPut(env, me, body.data); return json(r, r.error ? 400 : 200, cors) }
     if (path === '/me/carry/take' && req.method === 'POST') return json(await carryTake(env, me), 200, cors);
+    if (path === '/me/save' && req.method === 'GET') return json(await saveGet(env, me), 200, cors);   // one save for every device (save.js)
+    if (path === '/me/save' && req.method === 'POST') { const r = await savePut(env, me, body); const { status, ...out } = r; return json(out, status || 200, cors) }
     if (path === '/share/prepare' && req.method === 'POST') { const r = await prepareShare(env, me, body); return json(r.error ? { error: r.error } : r, r.status || 200, cors) }
     if (path === '/holder' || path.startsWith('/holder/')) {
       try { const r = await holderHandle(path, req, env, me, body); if (r) return json(r, r.error ? 400 : 200, cors) } catch (e) { return json({ error: e && e.message || 'try again later' }, 502, cors) }
