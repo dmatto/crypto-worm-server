@@ -362,6 +362,7 @@ export async function webhook(req, env) {
 // every minute: /sim rush 30 puts all of them online for 30 minutes, /sim life goes back to normal days (2 to 3 hours online a
 // day each), /sim off stops them. /sim taper 50 takes 50 bots away now and 50 more each UTC day until none are left (Damian
 // 2026-11-10: wind them down little by little); /sim taper off stops the countdown; /sim bots 300 sets how many play.
+// /sim active 90 keeps every bot but has each one online 90% of its usual time (Damian 2026-11-10: fewer online at once).
 // /sim alone shows the latest numbers.
 const SIM_MAX_RUSH = 180;
 export async function simCommand(env, arg, now = Date.now()) {
@@ -376,14 +377,17 @@ export async function simCommand(env, arg, now = Date.now()) {
     if (!(k > 0)) return '🤖 Use /sim taper 50 (50 fewer now and 50 fewer every day until none are left) or /sim taper off.';
     const step = Math.min(500, k); await order('taper', step);
     return `🤖 Winding down: within a minute ${step} simulated players stop, and ${step} more stop at every new UTC day until none are left (then the load test is off). Their accounts stay. /sim taper off stops the countdown.` }
+  if (what === 'active') { const k = Math.round(Number(n)); if (!(k >= 10 && k <= 100)) return '🤖 Use /sim active 90 (each simulated player online 90% of its usual 2 to 3 hours a day; 10 to 100).';
+    const h = x => (x * k / 100).toFixed(1).replace(/\.0$/, '');
+    await order('active', k); return `🤖 Within a minute each simulated player is online ${k}% of its usual time: about ${h(2)} to ${h(3)} hours a day instead of 2 to 3, so fewer are online at once. All of them stay. /sim active 100 brings it back.` }
   if (what === 'bots') { const k = Math.round(Number(n)); if (!(k > 0)) return '🤖 Use /sim bots 300 (how many simulated players play, up to 500), or /sim off for none.';
     await order('bots', Math.min(500, k)); return `🤖 Within a minute ${Math.min(500, k)} simulated players play (the highest-numbered stop first).` }
   const row = await env.DB.prepare('SELECT at, data FROM sim_stats ORDER BY at DESC LIMIT 1').first().catch(() => null);
   let d = null; try { d = row && JSON.parse(row.data) } catch (e) { }
   const head = d ? `🤖 Load test: ${d.mode === 'rush' ? 'rush' : d.mode === 'life' ? 'normal days' : 'off'}${d.brake ? ' (stopped by the safety brake: ' + d.brake + ')' : ''}, ${Math.round((now - row.at) / 60000)} min ago\n` +
-    `Simulated players: ${d.bots} (${d.online} online, ${d.inMatch} in online matches)${d.taper ? `, ${d.taper} fewer each UTC day` : ''}\nGame server: ${d.serverOnline ?? '?'} online, ${d.players ?? '?'} players in all\n` +
+    `Simulated players: ${d.bots} (${d.online} online, ${d.inMatch} in online matches)${d.taper ? `, ${d.taper} fewer each UTC day` : ''}${d.active && d.active !== 100 ? `, online ${d.active}% of the usual time` : ''}\nGame server: ${d.serverOnline ?? '?'} online, ${d.players ?? '?'} players in all\n` +
     `Requests: ${d.rpm}/min, answer time ${d.p50} ms typical, ${d.p95} ms slowest 5%, errors ${d.errPct}%\n` : '🤖 Load test: no numbers yet.\n';
-  return head + `\n/sim rush 30: everyone online for 30 minutes\n/sim life: normal days\n/sim taper 50: 50 fewer now and every day\n/sim bots 300: how many play\n/sim off: stop\n\nLive numbers: ${url}`;
+  return head + `\n/sim rush 30: everyone online for 30 minutes\n/sim life: normal days\n/sim active 90: online 90% of the usual time\n/sim taper 50: 50 fewer now and every day\n/sim bots 300: how many play\n/sim off: stop\n\nLive numbers: ${url}`;
 }
 
 // /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and

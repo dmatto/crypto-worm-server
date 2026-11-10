@@ -5,7 +5,7 @@
 // updates a second, then hands the turn over), and World Map battles for land (CPU land or other bots' land only).
 //
 // Two ways to run (set by the Control object, see control.js):
-//   life   every bot is online 2 to 3 hours each UTC day, in one or two goes at random times that change every day,
+//   life   every bot is online 2 to 3 hours each UTC day (times the Control's `active` percent), in one or two goes at random times that change every day,
 //          playing game after game (so far more than 3 games a day)
 //   rush   every bot comes online, spread over the ramp, and keeps playing until the rush ends; then back to life
 // A bot's day plan is kept with its account, so a fleet with nobody online sleeps until an alarm.
@@ -77,6 +77,7 @@ export class Fleet {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; this.cfg = null; this.bots = null; this.win = newWin(); this.queue = []; this.timer = null; this.open = 0; this.lag = 0 }
   speed() { return Math.max(1, Number(this.env.SIM_SPEED) || 1) }   // local tries run faster
   t(ms) { return ms / this.speed() }
+  share() { const a = this.cfg && Number(this.cfg.active); return a >= 10 && a <= 100 ? a / 100 : 1 }   // of the usual 2 to 3 hours a day
 
   async boot() {
     if (this.bots) return;
@@ -146,16 +147,18 @@ export class Fleet {
   slot(b, now) {
     const D = this.t(DAY), day = Math.floor(now / D);
     if (!b.plan || b.plan.day < day) b.plan = this.planDay(day);
+    const p = this.share();                                                        // the online share changed: today's goes get shorter (or longer)
+    if ((b.plan.p || 1) !== p) { const k = p / (b.plan.p || 1); b.plan.slots = b.plan.slots.map(([a, e]) => [a, Math.round(a + (e - a) * k)]); b.plan.p = p; this.dirty = true }
     let s = b.plan.slots.find(s => s[1] > now);
     if (!s) { b.plan = this.planDay(day + 1); s = b.plan.slots[0] }
     return s;
   }
   planDay(day) {
-    const D = this.t(DAY), H = this.t(HOUR), t0 = day * D, all = rnd(2, 3) * H; let s;
+    const D = this.t(DAY), H = this.t(HOUR), t0 = day * D, p = this.share(), all = rnd(2, 3) * H * p; let s;
     if (Math.random() < .5) { const a = rnd(0, D - all); s = [[a, a + all]] }
     else { const one = all * rnd(.35, .65), two = all - one, a = rnd(0, D - all - H), b = rnd(a + one + H, D - two); s = [[a, a + one], [b, b + two]] }
     this.dirty = true;
-    return { day, slots: s.map(([a, b]) => [Math.round(t0 + a), Math.round(t0 + b)]) };
+    return { day, p, slots: s.map(([a, b]) => [Math.round(t0 + a), Math.round(t0 + b)]) };
   }
   alarm2(at) { this.alarmAt = at; this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, at)).catch(() => { }) }
 

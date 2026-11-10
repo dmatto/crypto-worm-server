@@ -6,6 +6,8 @@
 // Winding down (Damian 2026-11-10: "bajar la actividad de los bots, para ir disminuyéndolos de a poco"): /sim taper N takes N
 // bots away at once and N more at each new UTC day, until none are left and the load test is off; /sim taper off stops the
 // countdown where it is. /sim bots N sets how many play. The highest-numbered bots stop first; their accounts stay.
+// Damian 2026-11-10 (same evening): keep all the bots, just fewer online at once: /sim active 90 has each bot online 90% of
+// its usual 2 to 3 hours a day (cfg.active, a percent; the fleets shorten their day plans, the ones already made for today too).
 //
 // Safety brake, to protect real players: during a rush, more than 5% errors or a slowest-5% answer time over 3 s for
 // 30 seconds sends the bots back to normal days; in normal days, more than 15% errors stops them.
@@ -87,6 +89,7 @@ export class Control {
     else if (cmd === 'life') { c.mode = 'life'; if (n > 0) c.bots = Math.min(TOTAL, n); else if (!c.bots) c.bots = TOTAL }   // after a countdown to none: all of them again
     else if (cmd === 'rush') { c.mode = 'rush'; c.rushFrom = now; c.rushUntil = now + Math.max(5, Math.min(180, n || 30)) * MIN }
     else if (cmd === 'bots') { if (n > 0) c.bots = Math.min(TOTAL, n) }
+    else if (cmd === 'active') { if (n > 0) c.active = Math.max(10, Math.min(100, n)) }
     else if (cmd === 'taper') { if (n > 0) { c.taper = { step: Math.min(TOTAL, n), day: Math.floor(now / DAY) }; this.fewer(c.taper.step) } else c.taper = null }
     else if (cmd === 'probe' || cmd === 'check') { this.probe = { cmd, n: n || 20 }; return }
     else if (cmd === 'time') { this.probe = { cmd, n: n || 0 }; return }
@@ -114,7 +117,7 @@ export class Control {
     const g = this.gauges(now), req = sum('req'), by = {};
     for (const k of GROUPS) { const n = last.reduce((s, p) => s + p.by[k][0], 0), ms = last.reduce((s, p) => s + p.by[k][0] * p.by[k][2], 0); if (n) by[k] = { n, err: last.reduce((s, p) => s + p.by[k][1], 0), ms: Math.round(ms / n) } }
     const max = k => last.reduce((m, p) => Math.max(m, p[k] || 0), 0), avg = k => last.length ? Math.round(sum(k) / last.length) : 0;
-    return { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper ? this.cfg.taper.step : 0, rushUntil: this.cfg.mode === 'rush' ? this.cfg.rushUntil : null, brake: this.cfg.brake && this.cfg.brake.why,
+    return { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper ? this.cfg.taper.step : 0, active: this.cfg.active || 100, rushUntil: this.cfg.mode === 'rush' ? this.cfg.rushUntil : null, brake: this.cfg.brake && this.cfg.brake.why,
       online: g.online, inMatch: g.inMatch, inBattle: g.inBattle, inGame: g.inGame, accounts: g.accounts, fleets: g.fleets, lag: g.lag,
       serverOnline: this.server.online ?? null, serverPlaying: this.server.playing ?? null, players: this.server.players ?? null,
       rpm: req, errPct: req ? Math.round(sum('err') / req * 1000) / 10 : 0, rej: sum('rej'), lim: sum('lim'), p50: avg('p50'), p95: max('p95'), wsP95: max('wsP95'), wsErr: sum('wsErr'),
@@ -124,7 +127,7 @@ export class Control {
         f: Object.entries(this.fleets).filter(([k, f]) => f.snap && f.snap.bots).slice(0, 5).map(([k, f]) => [k, f.snap.reports, f.snap.steps, f.snap.reportAt ? now - f.snap.reportAt : null, f.snap.colo, f.snap.age, (f.snap.slow || []).slice(-3)]) },
       fleetErrors: Object.entries(this.fleets).filter(([k, f]) => f.snap && (f.snap.reportErr || (f.snap.recent || []).length)).slice(0, 3).map(([k, f]) => ({ k, reports: f.snap.reports, reportErr: f.snap.reportErr, recent: (f.snap.recent || []).slice(-2) })) };
   }
-  state() { return { at: Date.now(), cfg: { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper || null, rushUntil: this.cfg.rushUntil, ramp: this.cfg.ramp, brake: this.cfg.brake, since: this.cfg.since }, now: this.summary(), hist: this.hist.slice(-360) } }
+  state() { return { at: Date.now(), cfg: { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper || null, active: this.cfg.active || 100, rushUntil: this.cfg.rushUntil, ramp: this.cfg.ramp, brake: this.cfg.brake, since: this.cfg.since }, now: this.summary(), hist: this.hist.slice(-360) } }
 
   // every minute, from the cron: new orders, wake the fleets, the game server's counts, a row in D1
   async tick() {

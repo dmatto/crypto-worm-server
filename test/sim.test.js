@@ -175,3 +175,23 @@ test('sim: /sim taper winds the bots down a step now and a step each UTC day, to
   c.order('life'); assert.equal(c.cfg.bots, 500);                                              // /sim life after none: all of them again
   c.order('taper', 100); c.order('taper', 0); assert.equal(c.cfg.bots, 400); assert.equal(c.taperDay(now + 9 * 864e5), false);   // stopped where it was
 });
+
+test('sim: /sim active 90 keeps every bot and shortens each one\'s time online, today\'s plan too', async () => {
+  const env = makeEnv(), now = Date.UTC(2026, 10, 10, 22, 40);
+  assert.match(await simCommand(env, 'active 90', now), /90% of its usual time: about 1\.8 to 2\.7 hours/);
+  assert.match(await simCommand(env, 'active 5', now), /Use \/sim active/);
+  assert.deepEqual(env.sql.prepare('SELECT cmd, arg FROM sim_cmd ORDER BY id').all().map(r => [r.cmd, r.arg]), [['active', 90]]);
+  env.sql.prepare('INSERT INTO sim_stats (at, data) VALUES (?, ?)').run(now - 60000, JSON.stringify({ mode: 'life', bots: 500, active: 90, online: 54, inMatch: 10 }));
+  assert.match(await simCommand(env, '', now), /500 \(54 online, 10 in online matches\), online 90% of the usual time/);
+  const { Control } = await import('../sim/control.js'), { Fleet } = await import('../sim/fleet.js'), store = new Map();
+  const c = new Control({ storage: { get: async k => store.get(k), put: async (k, v) => { store.set(k, v) } } }, {}); await c.load();
+  c.order('life'); c.order('active', 90); assert.equal(c.cfg.active, 90); assert.equal(c.cfg.bots, 500);
+  const f = new Fleet({ storage: { get: async () => null, put: async () => { }, setAlarm: async () => { } } }, {}); f.speed = () => 1;
+  f.cfg = { active: 100 }; const day = Math.floor(now / 864e5);
+  let total = 0; for (let i = 0; i < 400; i++) total += f.planDay(day).slots.reduce((s, [a, e]) => s + e - a, 0);
+  f.cfg = { active: 90 }; let less = 0; for (let i = 0; i < 400; i++) less += f.planDay(day).slots.reduce((s, [a, e]) => s + e - a, 0);
+  assert.ok(Math.abs(less / total - .9) < .03, 'about 10% less time online: ' + (less / total).toFixed(3));
+  f.cfg = { active: 100 }; const b = { plan: f.planDay(day) }, before = b.plan.slots.map(([a, e]) => e - a);
+  f.cfg = { active: 90 }; f.slot(b, day * 864e5); const after = b.plan.slots.map(([a, e]) => e - a);    // a plan made before the change gets 10% shorter
+  before.forEach((x, i) => assert.ok(Math.abs(after[i] - x * .9) <= 1));
+});
