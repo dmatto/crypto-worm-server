@@ -3,12 +3,17 @@
 // game server how many are online, and once a minute (from the cron) takes new orders from D1 (sim_cmd, written by the
 // bot's admin /sim) and writes a summary row to D1 (sim_stats) that the team and /sim can read.
 //
+// Winding down (Damian 2026-11-10: "bajar la actividad de los bots, para ir disminuyéndolos de a poco"): /sim taper N takes N
+// bots away at once and N more at each new UTC day, until none are left and the load test is off; /sim taper off stops the
+// countdown where it is. /sim bots N sets how many play. The highest-numbered bots stop first; their accounts stay.
+//
 // Safety brake, to protect real players: during a rush, more than 5% errors or a slowest-5% answer time over 3 s for
 // 30 seconds sends the bots back to normal days; in normal days, more than 15% errors stops them.
 import { newWin, addWin, pct, GROUPS } from './stats.js';
 
 export const TOTAL = 500, PER = 100, MIN = 6e4;
 const OLD_FLEETS = 10;                                                             // the first fleets (fleet-0 to 9, far from the database): told to stop
+const DAY = 864e5;
 const HIST = 1080, PART = 60, PARTS = 6, POINT = 10e3, RAMP = 5 * MIN, KEEP_ROWS = 3 * 864e5;
 
 export class Control {
@@ -78,15 +83,21 @@ export class Control {
   }
   order(cmd, arg, brake = null) {
     const c = this.cfg, now = Date.now(), n = Math.round(Number(arg));
-    if (cmd === 'off') c.mode = 'off';
-    else if (cmd === 'life') { c.mode = 'life'; if (n > 0) c.bots = Math.min(TOTAL, n) }
+    if (cmd === 'off') { c.mode = 'off'; c.taper = null }
+    else if (cmd === 'life') { c.mode = 'life'; if (n > 0) c.bots = Math.min(TOTAL, n); else if (!c.bots) c.bots = TOTAL }   // after a countdown to none: all of them again
     else if (cmd === 'rush') { c.mode = 'rush'; c.rushFrom = now; c.rushUntil = now + Math.max(5, Math.min(180, n || 30)) * MIN }
     else if (cmd === 'bots') { if (n > 0) c.bots = Math.min(TOTAL, n) }
+    else if (cmd === 'taper') { if (n > 0) { c.taper = { step: Math.min(TOTAL, n), day: Math.floor(now / DAY) }; this.fewer(c.taper.step) } else c.taper = null }
     else if (cmd === 'probe' || cmd === 'check') { this.probe = { cmd, n: n || 20 }; return }
     else if (cmd === 'time') { this.probe = { cmd, n: n || 0 }; return }
     else return;
     c.brake = brake ? { why: brake, at: now } : null; c.v++; c.since = now;
   }
+  // the countdown: n fewer bots now (and at each new UTC day); none left = off
+  fewer(n) { const c = this.cfg; if (c.mode === 'off' && !c.taper) return; c.bots = Math.max(0, Math.min(c.bots, TOTAL) - n);
+    if (!c.bots) { c.mode = 'off'; c.taper = null; c.bots = 0 } }
+  taperDay(now) { const t = this.cfg.taper; if (!t || Math.floor(now / DAY) <= t.day) return false;
+    t.day = Math.floor(now / DAY); this.fewer(t.step); this.cfg.v++; this.cfg.since = now; return true }
   async push() {
     const send = (name, cfg) => this.stub(name).fetch('https://fleet/cfg', { method: 'POST', body: JSON.stringify(cfg) }).then(r => r.json());
     const old = this.pushedV === this.cfg.v ? [] : [...Array(OLD_FLEETS)].map((_, k) => send('fleet-' + k, this.fleetCfg(-1)).catch(() => { }));
@@ -103,7 +114,7 @@ export class Control {
     const g = this.gauges(now), req = sum('req'), by = {};
     for (const k of GROUPS) { const n = last.reduce((s, p) => s + p.by[k][0], 0), ms = last.reduce((s, p) => s + p.by[k][0] * p.by[k][2], 0); if (n) by[k] = { n, err: last.reduce((s, p) => s + p.by[k][1], 0), ms: Math.round(ms / n) } }
     const max = k => last.reduce((m, p) => Math.max(m, p[k] || 0), 0), avg = k => last.length ? Math.round(sum(k) / last.length) : 0;
-    return { mode: this.cfg.mode, bots: this.cfg.bots, rushUntil: this.cfg.mode === 'rush' ? this.cfg.rushUntil : null, brake: this.cfg.brake && this.cfg.brake.why,
+    return { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper ? this.cfg.taper.step : 0, rushUntil: this.cfg.mode === 'rush' ? this.cfg.rushUntil : null, brake: this.cfg.brake && this.cfg.brake.why,
       online: g.online, inMatch: g.inMatch, inBattle: g.inBattle, inGame: g.inGame, accounts: g.accounts, fleets: g.fleets, lag: g.lag,
       serverOnline: this.server.online ?? null, serverPlaying: this.server.playing ?? null, players: this.server.players ?? null,
       rpm: req, errPct: req ? Math.round(sum('err') / req * 1000) / 10 : 0, rej: sum('rej'), lim: sum('lim'), p50: avg('p50'), p95: max('p95'), wsP95: max('wsP95'), wsErr: sum('wsErr'),
@@ -113,7 +124,7 @@ export class Control {
         f: Object.entries(this.fleets).filter(([k, f]) => f.snap && f.snap.bots).slice(0, 5).map(([k, f]) => [k, f.snap.reports, f.snap.steps, f.snap.reportAt ? now - f.snap.reportAt : null, f.snap.colo, f.snap.age, (f.snap.slow || []).slice(-3)]) },
       fleetErrors: Object.entries(this.fleets).filter(([k, f]) => f.snap && (f.snap.reportErr || (f.snap.recent || []).length)).slice(0, 3).map(([k, f]) => ({ k, reports: f.snap.reports, reportErr: f.snap.reportErr, recent: (f.snap.recent || []).slice(-2) })) };
   }
-  state() { return { at: Date.now(), cfg: { mode: this.cfg.mode, bots: this.cfg.bots, rushUntil: this.cfg.rushUntil, ramp: this.cfg.ramp, brake: this.cfg.brake, since: this.cfg.since }, now: this.summary(), hist: this.hist.slice(-360) } }
+  state() { return { at: Date.now(), cfg: { mode: this.cfg.mode, bots: this.cfg.bots, taper: this.cfg.taper || null, rushUntil: this.cfg.rushUntil, ramp: this.cfg.ramp, brake: this.cfg.brake, since: this.cfg.since }, now: this.summary(), hist: this.hist.slice(-360) } }
 
   // every minute, from the cron: new orders, wake the fleets, the game server's counts, a row in D1
   async tick() {
@@ -123,6 +134,7 @@ export class Control {
       for (const r of results) { this.order(r.cmd, r.arg); await env.DB.prepare('UPDATE sim_cmd SET done = ? WHERE id = ?').bind(now, r.id).run(); changed = true }
     } catch (e) { }
     if (this.cfg.mode === 'rush' && now >= this.cfg.rushUntil) { this.order('life', null, 'rush over'); changed = true }
+    if (this.taperDay(now)) changed = true;
     if (this.cfg.mode !== 'off' || changed || Object.values(this.fleets).some(f => now - f.at < 3 * POINT && (f.snap.online || f.snap.sockets))) await this.push();
     if (this.probe) { const p = this.probe; this.probe = null; const r = await this.stub('probe').fetch('https://fleet/probe', { method: 'POST', body: JSON.stringify(p.cmd === 'time' ? { time: p.n } : { n: p.n, check: p.cmd === 'check' }) }).then(r => r.json()).catch(e => ({ error: String(e) })); this.lastProbe = r;
       await env.DB.prepare('INSERT OR REPLACE INTO sim_stats (at, data) VALUES (?, ?)').bind(now - 1, JSON.stringify({ probe: r })).run().catch(() => { }) }

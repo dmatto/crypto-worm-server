@@ -156,3 +156,22 @@ test('sim: a simulated player may send its own country (for its flag), nobody el
   const cc = id => env.sql.prepare('SELECT cc FROM player_meta WHERE player = ?').get(id).cc;
   assert.equal(cc(bot.player.id), 'KE'); assert.equal(cc(guest.player.id), null);
 });
+
+test('sim: /sim taper winds the bots down a step now and a step each UTC day, to none and off', async () => {
+  const env = makeEnv(), now = Date.UTC(2026, 10, 10, 22, 40);
+  assert.match(await simCommand(env, 'taper 50', now), /50 simulated players stop/);
+  await simCommand(env, 'taper off', now); await simCommand(env, 'bots 300', now); assert.match(await simCommand(env, 'taper x', now), /Use \/sim taper/);
+  assert.deepEqual(env.sql.prepare('SELECT cmd, arg FROM sim_cmd ORDER BY id').all().map(r => [r.cmd, r.arg]), [['taper', 50], ['taper', 0], ['bots', 300]]);
+  env.sql.prepare('INSERT INTO sim_stats (at, data) VALUES (?, ?)').run(now - 60000, JSON.stringify({ mode: 'life', bots: 450, taper: 50, online: 40, inMatch: 10 }));
+  assert.match(await simCommand(env, '', now), /450 \(40 online, 10 in online matches\), 50 fewer each UTC day/);
+  const { Control } = await import('../sim/control.js'), store = new Map();
+  const c = new Control({ storage: { get: async k => store.get(k), put: async (k, v) => { store.set(k, v) } } }, {}); await c.load();
+  c.order('life'); assert.equal(c.cfg.bots, 500);
+  c.order('taper', 120); assert.equal(c.cfg.bots, 380);
+  assert.equal(c.taperDay(now + 3600e3), false); assert.equal(c.cfg.bots, 380);                // same UTC day: nothing more
+  assert.equal(c.taperDay(now + 864e5), true); assert.equal(c.cfg.bots, 260);                  // next day: one more step
+  c.taperDay(now + 2 * 864e5); c.taperDay(now + 3 * 864e5); c.taperDay(now + 4 * 864e5);
+  assert.equal(c.cfg.bots, 0); assert.equal(c.cfg.mode, 'off'); assert.equal(c.cfg.taper, null);
+  c.order('life'); assert.equal(c.cfg.bots, 500);                                              // /sim life after none: all of them again
+  c.order('taper', 100); c.order('taper', 0); assert.equal(c.cfg.bots, 400); assert.equal(c.taperDay(now + 9 * 864e5), false);   // stopped where it was
+});
