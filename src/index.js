@@ -50,7 +50,7 @@
 //                                                               session's player.gifts lists the looks the account got from codes
 //   GET  /stars, POST /stars/invoice {item}                    Telegram Stars: exclusive looks and the 💚 Supporter badge (see stars.js); the
 //                                                               session's player.xtr lists what the account bought, ranking rows carry sup
-//   POST /score              {amount} | {import: total}          -> {added, week, total}  play-money $CWORM a match banked
+//   POST /score              {amount} | {import: total}          -> {added, week, total, day, day_max}  play-money $CWORM a match banked
 //   POST /feedback           {text, rating?, wallet?, info?, kind?}  -> {ok, reward, rated, rewards}   beta feedback (kind 'bug': a bug report); the bot passes it on to the admins; stars + a comment pay +500 once
 //   GET  /map, POST /map/join, /map/buy, /map/attack, /map/result, /map/defend, /map/upgrade   the World Map (see map.js)
 //   POST /started, /played, /result, /rewards, /share/prepare, /share/done, /me/remind, GET /invites   matches, invite rewards and bonuses, share cards, reminders (see growth.js)
@@ -431,7 +431,7 @@ const app = {
       if (!(amount > 0) || amount > 1e9) return json({ error: 'bad amount' }, 400, cors);
       const r = await addScore(env, me, amount, imp);
       if (r.error) return json({ error: r.error }, r.status, cors);
-      return json({ added: r.added, week: r.s.week_start === weekStart() ? r.s.week : 0, total: r.s.total }, 200, cors);
+      return json({ added: r.added, week: r.s.week_start === weekStart() ? r.s.week : 0, total: r.s.total, day: r.s.day, day_max: SCORE_DAY }, 200, cors);   // day: counted today, for the game's "close to the daily limit" warning
     }
     if (path === '/ranking' && req.method === 'GET') { const pd = url.searchParams.get('period'); return json(await ranking(env, pd === 'week' || pd === 'month' ? pd : 'all', me, url.searchParams.get('holders') === '1'), 200, cors) }
     if (path === '/feedback' && req.method === 'POST') {
