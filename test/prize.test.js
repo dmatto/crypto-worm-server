@@ -279,3 +279,58 @@ test('prize vs scripts: points need matches the server saw, ties go to online wi
   assert.match(text, new RegExp(`Cat[^]*⚠️ same network as #${ann.id}`)); assert.match(text, new RegExp(`Ann[^]*⚠️ same network as #${cat.id}`));
   assert.match(calls.find(([x]) => x === 'sendDocument')[1].csv, new RegExp(`,same_network_as\r\n1,0\\.25,Ann,[^\r]*,${cat.id}\r\n`));
 });
+
+test('new players prize: accounts made this week with a holder wallet, by prize points; no waiting days; the admins\' list reads the wallets again', async () => {
+  const W = 21, RK = P.ROOKIE_FROM; assert.equal(RK, MON + W * DAY);                 // the week of Monday 9 November
+  clock = at(W, 8); calls.length = 0;
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
+  const mk = async (tgId, name, joined, amount = 150000) => { const w = amount == null ? undefined : H.b58(randomBytes(32)); if (w) { ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, amount) }
+    const p = await player(env, tgId, name, { wallet: w, bal: amount ?? 0 }); env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(joined, p.id); return { ...p, wallet: w } };
+  const old = await mk(400, 'Veteran', MON - 30 * DAY), budi = await mk(401, 'Budi', at(W, 9)), siti = await mk(402, 'Siti', at(W + 1, 9)), low = await mk(403, 'Low', at(W + 1, 9), 50000),
+    none = await mk(404, 'NoWallet', at(W + 2, 9), null), late = await mk(405, 'Late', at(W + 4, 9)), sold = await mk(406, 'Sold', at(W + 2, 9)), out = await mk(407, 'Scripted', at(W + 2, 9));
+  const go = async (p, d, amount) => { await play(env, p, at(W + d, 12) + p.id * 1e3); await score(env, p, amount, at(W + d, 13) + p.id * 1e3) };
+  await go(old, 0, 500); await go(old, 1, 500); await go(budi, 0, 300); await go(budi, 1, 200); await go(siti, 1, 300); await go(low, 1, 400); await go(none, 2, 400);
+  await go(late, 4, 500); await go(sold, 2, 100); await go(out, 2, 550);
+  await P.skip(env, out.id, true, null, at(W + 3));
+
+  // the chart: only this week's accounts with a holder's wallet; ties go to who got there first
+  clock = at(W + 5, 9);
+  const c = await P.rookieChart(env, RK, clock);
+  assert.deepEqual(c.map(r => [r.name, r.pts]), [['Budi', 500], ['Late', 500], ['Siti', 300], ['Sold', 100]]);
+  assert.deepEqual(await P.rookieChart(env, RK - 7 * DAY, clock), []);                // not before its first week
+  // the cards: a new holder is in with a place, the others see what is missing, older players only learn it exists
+  const card = async p => (await call(env, '/prize', undefined, p.token)).rookie;
+  assert.deepEqual(await card(budi), { on: true, prizes: [0.1, 0.1, 0.1], mine: true, linked: true, holder: true, low: false, checking: false, ticket: true, rank: 1, entrants: 4 });
+  assert.deepEqual(await card(late), { on: true, prizes: [0.1, 0.1, 0.1], mine: true, linked: true, holder: true, low: false, checking: false, ticket: true, rank: 2, entrants: 4 });
+  const cl = await card(low); assert.equal(cl.ticket, false); assert.equal(cl.low, true); assert.equal(cl.linked, true); assert.equal(cl.rank, null);
+  const cn = await card(none); assert.equal(cn.ticket, false); assert.equal(cn.linked, false); assert.equal(cn.mine, true);
+  assert.equal((await card(out)).ticket, false);                                      // taken out by an admin
+  assert.deepEqual(await card(old), { on: true, prizes: [0.1, 0.1, 0.1], mine: false });
+  const full = await call(env, '/prize', undefined, budi.token);                      // a new player isn't in the weekly prize by this alone
+  assert.equal(full.ticket, false); assert.equal(full.on, true);
+  // next week they are no longer new
+  clock = at(W + 7, 9); assert.deepEqual(await card(budi), { on: true, prizes: [0.1, 0.1, 0.1], mine: false });
+
+  // Monday: the admins' list, with the wallets read again (Sold dropped under 100K) and the networks shared with other accounts
+  bal.set(sold.wallet, 20000);
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  for (const p of [budi, old]) env.sql.prepare("INSERT INTO net_seen (player, h, day) VALUES (?, 'feed123feed123fe', ?)").run(p.id, Math.floor(at(W + 2) / DAY));
+  clock = at(W + 7, 10); calls.length = 0;
+  const say = async t => { calls.length = 0; await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: t } }); return calls.filter(([m]) => m === 'sendMessage').map(([, b]) => b.text) };
+  const [text, pay] = await say('/prize new last');
+  assert.match(text, /🆕 New players prize 2026-11-09 to 2026-11-15\n4 new players with a holder's wallet scored/); assert.doesNotMatch(text, /still running/);
+  assert.match(text, /3 prizes of 0\.1 SOL: \/pay rookies/);
+  assert.match(text, new RegExp(`1\\. Budi \\(id ${budi.id}\\) · 500 pts · 0\\.1 SOL\\n    joined 2026-11-09 · 2 checked matches[^]*⚠️ same network as #${old.id} Veteran[^]*holds 150,000`));
+  assert.match(text, /2\. Late \(id \d+\) · 500 pts · 0\.1 SOL\n    joined 2026-11-13/); assert.match(text, /3\. Siti \(id \d+\) · 300 pts · 0\.1 SOL/);
+  assert.match(text, /Dropped just now: Sold \(holds 20,000\)/); assert.doesNotMatch(text, /Veteran \(id|Low|NoWallet|Scripted/);
+  assert.equal(pay, `Payout lines (wallet,SOL):\n<code>${budi.wallet},0.1\n${late.wallet},0.1\n${siti.wallet},0.1</code>`);
+  const r = await P.rookieList(env, RK, clock); assert.equal(r.entrants, 4); assert.deepEqual(r.winners.map(x => [x.place, x.name, x.prize]), [[1, 'Budi', 0.1], [2, 'Late', 0.1], [3, 'Siti', 0.1]]);
+  // this week: nobody yet; rookies is the same command; before the first week it says when it starts
+  assert.match((await say('/prize rookies'))[0], /2026-11-16 to 2026-11-22 \(still running\)[^]*Nobody qualified yet/);
+  clock = at(W - 2, 10); assert.match((await say('/prize new'))[0], /starts with the week of 2026-11-09/);
+  assert.match((await say('/prize'))[0], /\/prize new shows the new players prize/);
+  // everyone else gets no list
+  clock = at(W + 7, 10); calls.length = 0;
+  await hook(env, { message: { chat: { id: 401, type: 'private' }, from: { id: 401, first_name: 'Budi' }, text: '/prize new' } });
+  assert.doesNotMatch(calls.find(([m]) => m === 'sendMessage')[1].text, /SOL|holds|wallet,/);
+});

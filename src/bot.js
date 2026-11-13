@@ -49,7 +49,7 @@ import { command as medalCommand } from './medals.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { command as payCommand, cron as payCron } from './payout.js';
 import { teamPrizeText } from './teamprize.js';
-import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
+import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK, rookieList, ROOKIE_FROM, ROOKIE_PRIZES } from './prize.js';
 import { joinsCron, joinsCommand } from './growth.js';
 import { funnelText } from './funnel.js';
 import { pushReminders } from './push.js';
@@ -330,13 +330,14 @@ export async function webhook(req, env) {
   }
   else if (cmd === '/pay' && env.DB && await isAdmin(env, m.from)) {                 // admins: prize payouts from the prize wallet (payout.js), private chat only
     if (m.chat.type !== 'private') await tg(env, 'sendMessage', { chat_id, text: 'Use /pay in a private chat with the bot.' });
-    else { const lastWeek = () => { const now = Date.now(); return adminList(env, weekOf(now) - 7 * 864e5, now) };
+    else { const lastWeek = kind => { const now = Date.now(), w = weekOf(now) - 7 * 864e5; return kind === 'rookies' ? rookieList(env, w, now) : adminList(env, w, now) };
       const text = await payCommand(env, m.text.trim().slice(head.length).replace(/^[ \t]+/, ''), m.from.id, lastWeek, chat_id).catch(e => '⚠️ ' + (e && e.message));
       await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), disable_web_page_preview: true }) } }
   else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
     const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
     if (/^teams?\b/i.test(arg.trim())) { const now = Date.now(), w = weekOf(now) - (/last/i.test(arg) ? 7 * 864e5 : 0);   // the Team Prize (teamprize.js)
       await tg(env, 'sendMessage', { chat_id, text: (await teamPrizeText(env, w, now)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true }) }
+    else if (/^(new|rookies?)\b/i.test(arg.trim())) await sendRookies(env, chat_id, /last/i.test(arg));                              // the new players prize (prize.js)
     else if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
     else { const p = await prizeSkip(env, Number(sk[2]), !sk[1], (await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null))?.id);
       await tg(env, 'sendMessage', { chat_id, text: !p ? `No player with id ${sk[2]}.` : sk[1] ? `✅ ${p.name} (id ${p.id}) can win the weekly prize again.`
@@ -396,6 +397,25 @@ export async function simCommand(env, arg, now = Date.now()) {
   return head + `\n/sim rush 30: everyone online for 30 minutes\n/sim life: normal days\n/sim active 90: online 90% of the usual time\n/sim taper 50: 50 fewer now and every day\n/sim bots 300: how many play\n/sim off: stop\n\nLive numbers: ${url}`;
 }
 
+// /prize new (admins): the new players prize of this week, or of last week with "last": accounts made that week with a holder's
+// wallet, by prize points. The wallets were read just now; the other accounts on a winner's networks are for the admin to judge.
+async function sendRookies(env, chat_id, last) {
+  const now = Date.now(), w = weekOf(now) - (last ? 7 * 864e5 : 0), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
+  if (w < ROOKIE_FROM) return tg(env, 'sendMessage', { chat_id, text: `The new players prize starts with the week of ${d(ROOKIE_FROM)}.` });
+  const r = await rookieList(env, w, now);
+  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.others.length ? `⚠️ same network as ${f.others.map(o => '#' + o.id + ' ' + esc(o.name)).join(', ')}${f.more ? ' and more' : ''}` : '',
+    f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : '', f.royaleOdd ? `⚠️ ${f.royaleOdd} Worm Royale place${f.royaleOdd > 1 ? 's' : ''} that did not match` : ''].filter(Boolean);
+  const line = (x, head) => `${head} ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts${x.prize ? ' · ' + x.prize + ' SOL' : ''}\n    joined ${d(x.created)} · ${x.fair.runs} checked ${x.fair.runs === 1 ? 'match' : 'matches'} · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => '\n    ' + t).join('')}\n` +
+    `    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`;
+  const text = `🆕 New players prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} new ${r.entrants === 1 ? 'player' : 'players'} with a holder's wallet scored.\n` +
+    `${ROOKIE_PRIZES.length} prizes of ${ROOKIE_PRIZES[0]} SOL: /pay rookies makes the batch once the week is over.\n\n` +
+    (r.winners.length ? r.winners.map(x => line(x, x.place + '.')).join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? '\n\nNext in line:\n' + r.reserves.map(x => line(x, '·')).join('\n') : '') +
+    (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + ' (holds ' + fmt(x.now) + ')').join(', ')}` : '') +
+    '\n\nRules: account made this week (UTC), linked wallet with 100K or more when we pay, no waiting days. An account on the same network as an older one may be a second account: /player &lt;id&gt; shows more, /prize skip &lt;id&gt; takes a player out.';
+  await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  if (r.winners.length) await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,SOL):\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+}
+
 // /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and
 // the wallet balances are for the admin to check by hand before sending the SOL (/pay prize).
 async function sendPrize(env, chat_id, last) {
@@ -410,7 +430,7 @@ async function sendPrize(env, chat_id, last) {
     (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
     (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + (x.why === 'group' ? ' (left the group)' : ' (holds ' + fmt(x.now) + ')')).join(', ')}` : '') +
     (r.skipped.length ? `\n\nTaken out by an admin: ${r.skipped.map(x => esc(x.name) + ' (id ' + x.id + ')').join(', ')}` : '') +
-    '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now. Ties go to online wins against real players.\n/prize skip &lt;id&gt; takes a player out (scripts, shared accounts).';
+    '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now. Ties go to online wins against real players.\n/prize skip &lt;id&gt; takes a player out (scripts, shared accounts).\n/prize new shows the new players prize.';
   await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
   if (!r.winners.length) return;
   await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');

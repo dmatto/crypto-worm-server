@@ -16,7 +16,7 @@
 
 import { tg } from './bot.js';
 import { balances } from './holders.js';
-import { netShared, netMatch } from './net.js';
+import { netShared, netMatch, netOthers } from './net.js';
 
 // Each place's prize in SOL (25%, 17%, 12%, 7%, then 6.5% each of the pool), paid in SOL
 export const PRIZES = [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065];   // 1 SOL
@@ -172,7 +172,8 @@ export async function card(env, me, now = Date.now()) {
   const pts = now >= w ? await points(env, w) : [], mine = pts.find(p => p.player === me.id);
   let rank = null, entrants = 0;
   if (done && s.age.ok && !r.skipped) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
-  return { on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
+  const rk = await rookieCard(env, me, r, w, now, pts).catch(() => null);
+  return { ...(rk ? { rookie: rk } : {}), on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
     rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, holdDays: HOLD_DAYS, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
 }
 export async function handle(path, env, me, body, now = Date.now()) {
@@ -191,6 +192,22 @@ export async function handle(path, env, me, body, now = Date.now()) {
 }
 
 // ---- Monday: the admins' list ----
+// How the points of players `ids` came in during week `w`, for the admins' fair-play look: Map id -> numbers, and the score log itself.
+async function fairness(env, ids, w) {
+  const logs = ids.length ? (await env.DB.prepare(`SELECT player, at, amount FROM score_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? ORDER BY player, at`)
+    .bind(...ids, w, w + WEEK).all()).results : [];
+  const runs = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM run_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
+    .bind(...ids, w, w + WEEK).all()).results.map(r => [r.player, r.n])) : new Map();
+  const odd = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM royale_log WHERE ok = 0 AND player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
+    .bind(...ids, w, w + WEEK).all().catch(() => ({ results: [] }))).results.map(r => [r.player, r.n])) : new Map();   // Worm Royale places that did not match (royale.js record)
+  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0, runs: runs.get(id) || 0, royaleOdd: odd.get(id) || 0, gaps: [], amounts: new Map() }])), hours = new Map(), prev = new Map();
+  for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++
+    if (prev.has(l.player) && l.at - prev.get(l.player) < 3600e3) f.gaps.push(l.at - prev.get(l.player)); prev.set(l.player, l.at); f.amounts.set(l.amount, (f.amounts.get(l.amount) || 0) + 1) }
+  for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
+    const m = f.gaps.reduce((a, b) => a + b, 0) / (f.gaps.length || 1), sd = Math.sqrt(f.gaps.reduce((a, g) => a + (g - m) ** 2, 0) / (f.gaps.length || 1));
+    f.even = f.gaps.length >= 20 && sd < m * 0.25; f.same = f.reports >= 20 && Math.max(0, ...f.amounts.values()) >= f.reports / 2; delete f.gaps; delete f.amounts }
+  return { fair, logs };
+}
 const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
 const toCsv = rs => '\ufeff' + rs.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 const iso = t => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
@@ -206,18 +223,7 @@ export async function adminList(env, w, now = Date.now()) {
     if (r.tg_id != null && env.BOT_TOKEN) { const ok = await inGroup(env, r.tg_id); if (ok === false) { r.steps.group.done = false; dropped.push({ ...r, why: 'group' }); continue } }
     top.push(r);
   }
-  const ids = top.map(r => r.id), logs = ids.length ? (await env.DB.prepare(`SELECT player, at, amount FROM score_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? ORDER BY player, at`)
-    .bind(...ids, w, w + WEEK).all()).results : [];
-  const runs = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM run_log WHERE player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
-    .bind(...ids, w, w + WEEK).all()).results.map(r => [r.player, r.n])) : new Map();
-  const odd = ids.length ? new Map((await env.DB.prepare(`SELECT player, COUNT(*) AS n FROM royale_log WHERE ok = 0 AND player IN (${ids.map(() => '?').join(',')}) AND at >= ? AND at < ? GROUP BY player`)
-    .bind(...ids, w, w + WEEK).all().catch(() => ({ results: [] }))).results.map(r => [r.player, r.n])) : new Map();   // Worm Royale places that did not match (royale.js record)
-  const fair = new Map(ids.map(id => [id, { reports: 0, maxHour: 0, night: 0, runs: runs.get(id) || 0, royaleOdd: odd.get(id) || 0, gaps: [], amounts: new Map() }])), hours = new Map(), prev = new Map();
-  for (const l of logs) { const f = fair.get(l.player); f.reports++; const h = l.player + ':' + Math.floor(l.at / 3600e3); hours.set(h, (hours.get(h) || 0) + l.amount); f.maxHour = Math.max(f.maxHour, hours.get(h)); if (new Date(l.at).getUTCHours() < 6) f.night++
-    if (prev.has(l.player) && l.at - prev.get(l.player) < 3600e3) f.gaps.push(l.at - prev.get(l.player)); prev.set(l.player, l.at); f.amounts.set(l.amount, (f.amounts.get(l.amount) || 0) + 1) }
-  for (const f of fair.values()) {          // what a script tends to look like: reports at even gaps, or the same amount again and again
-    const m = f.gaps.reduce((a, b) => a + b, 0) / (f.gaps.length || 1), sd = Math.sqrt(f.gaps.reduce((a, g) => a + (g - m) ** 2, 0) / (f.gaps.length || 1));
-    f.even = f.gaps.length >= 20 && sd < m * 0.25; f.same = f.reports >= 20 && Math.max(0, ...f.amounts.values()) >= f.reports / 2; delete f.gaps; delete f.amounts }
+  const ids = top.map(r => r.id), { fair, logs } = await fairness(env, ids, w);
   const nets = await netShared(env, ids, now).catch(() => new Map());                 // same-network hints among the top (net.js)
   const winners = top.slice(0, PRIZES.length).map((r, i) => ({ ...r, place: i + 1, prize: PRIZES[i], fair: { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok), net: netMatch(nets, r.id, ids) } }));
   const head = ['place', 'prize_sol', 'name', 'player', 'telegram_id', 'x_username', 'wallet', 'prize_points', 'week_points', 'play_days', 'hold_days', 'balance_now', 'balance_last_read', 'account_days', 'reports', 'max_per_hour', 'reports_00_06_utc',
@@ -228,4 +234,53 @@ export async function adminList(env, w, now = Date.now()) {
   const log = toCsv([['player', 'name', 'time_utc', 'amount'], ...logs.map(l => [l.player, (top.find(r => r.id === l.player) || {}).name, iso(l.at), l.amount])]);
   const out = (await env.DB.prepare('SELECT p.id, p.name FROM prize_skip k JOIN players p ON p.id = k.player ORDER BY k.at DESC LIMIT 20').all()).results;
   return { week: w, winners, reserves: top.slice(PRIZES.length), dropped, list, pay, log, entrants: c.length, skipped: out };
+}
+
+// ---- New players prize (Damian 2026-11-13: "The players that join in the current week run for 3 prizes of 0.1 SOL. Wallet must
+// be linked and must be holders no matter how long."; it took the place of the leagues idea) ----
+// Accounts made in prize week `w` (Monday to Sunday, UTC) with a linked wallet at the Holder tier (100K), by the same prize
+// points as the weekly prize, then online wins against real players, then who got there first. No group, X username, hold
+// days, play days or account age: a new player can win it in their first days, and the weekly prize as well.
+// The wallets are read again before paying (rookieList), like the weekly prize; /pay rookies makes the batch.
+export const ROOKIE_PRIZES = [0.1, 0.1, 0.1], ROOKIE_FROM = Date.UTC(2026, 10, 9);          // first week: Monday 9 November
+export const rookieOn = w => w >= ROOKIE_FROM;
+// For one player row (rows): did they join in week `w`, is a wallet linked, is it a holder's.
+export function rookie(r, w, lax = false) {
+  const wallet = !!(r.wallet && r.hw === r.wallet), read = wallet && r.checked > 0, holder = wallet && r.tier >= 1, pending = lax && !!r.wallet && !holder && !read;
+  return { mine: r.created >= w && r.created < w + WEEK, linked: !!r.wallet, holder: holder || pending, low: read && !holder, checking: !!r.wallet && !holder && !read && !pending };
+}
+export async function rookieChart(env, w, now = Date.now(), pts) {
+  if (!rookieOn(w)) return [];
+  const born = new Set((await env.DB.prepare('SELECT id FROM players WHERE created >= ? AND created < ? AND wallet IS NOT NULL AND id NOT IN (SELECT player FROM sim_players)').bind(w, w + WEEK).all()).results.map(r => r.id));
+  if (!born.size) return [];
+  const mine = (pts || await points(env, w)).filter(p => born.has(p.player)), info = await rows(env, mine.map(p => p.player), w), out = [];
+  for (const p of mine) { const r = info.get(p.player); if (!r || r.skipped) continue; const k = rookie(r, w, loose(env)); if (k.mine && k.holder) out.push({ ...r, pts: p.pts, raw: p.raw, ok: p.ok, last: p.last }) }
+  const won = await wins(env, out.map(r => r.id), w);
+  for (const r of out) { const x = won.get(r.id); r.wins = x ? x.n : 0; r.opps = x ? x.opps : 0 }
+  return out.sort((a, b) => b.pts - a.pts || b.wins - a.wins || a.last - b.last);
+}
+// The part of the player's card about it: everyone learns it exists (to invite friends); this week's new players get their own state.
+async function rookieCard(env, me, r, w, now, pts) {
+  if (!rookieOn(w) || now < w) return null;
+  const k = rookie(r, w, loose(env)), base = { on: true, prizes: ROOKIE_PRIZES, mine: k.mine };
+  if (!k.mine) return base;
+  const ticket = k.holder && !r.skipped; let rank = null, entrants = 0;
+  if (ticket) { const c = await rookieChart(env, w, now, pts); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
+  return { ...base, linked: k.linked, holder: k.holder, low: k.low, checking: k.checking, ticket, rank, entrants };
+}
+// The admins' list for week `w`: the wallets read now (under 100K drops out; no answer stays, to check by hand), the fair-play
+// numbers, and the other accounts seen on each winner's networks (an older player's second account would show there).
+export async function rookieList(env, w, now = Date.now()) {
+  const c = await rookieChart(env, w, now), top = [], dropped = [], N = ROOKIE_PRIZES.length;
+  const live = await balances(env, c.slice(0, N + 20).map(r => r.wallet)).catch(() => new Map());
+  for (const r of c) {
+    if (top.length >= N + 5) break;
+    r.now = live.has(r.wallet) ? live.get(r.wallet) : null;
+    if (r.now != null && r.now < HOLD_MIN) { dropped.push(r); continue }
+    top.push(r);
+  }
+  const ids = top.map(r => r.id), { fair } = await fairness(env, ids, w);
+  for (const r of top) { const o = await netOthers(env, r.id, now, 5).catch(() => ({ others: [] })); r.fair = { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok), others: o.others, more: !!o.more } }
+  const winners = top.slice(0, N).map((r, i) => ({ ...r, place: i + 1, prize: ROOKIE_PRIZES[i] }));
+  return { week: w, winners, reserves: top.slice(N), dropped, pay: winners.map(r => r.wallet + ',' + r.prize).join('\n'), entrants: c.length };
 }

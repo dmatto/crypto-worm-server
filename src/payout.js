@@ -5,6 +5,7 @@
 //   /pay new <label>             then one line per payment: <wallet> <amount> [SOL|CWORM] [note]   (or "wallet,amount" as /prize gives
 //                                them; no unit = CWORM). Saves a batch and shows it.
 //   /pay prize                   a batch from last week's weekly prize winners (adminList in prize.js, paid in SOL)
+//   /pay rookies                 a batch from last week's new players prize winners (rookieList in prize.js, paid in SOL)
 //   /pay show <id>               the batch, what it needs (amounts, fees, new token accounts), a dry run of every transfer on Solana
 //                                (simulateTransaction with signatures checked) and the code to send it
 //   /pay send <id> <code>        the OK: the minute cron sends every line not sent yet, one transaction each, and answers with the
@@ -233,7 +234,7 @@ export async function listText(env) {
   catch (e) { head = `💸 Prize wallet: not set up (${e.message}).` }
   const rows = (await env.DB.prepare('SELECT b.id, b.label, b.status, COUNT(l.n) AS n FROM pay_batch b LEFT JOIN pay_line l ON l.batch = b.id GROUP BY b.id ORDER BY b.id DESC LIMIT 6').all()).results;
   return head + '\n\n' + (rows.length ? rows.map(r => `#${r.id} ${r.label} · ${r.n} payment${r.n === 1 ? '' : 's'} · ${r.status}`).join('\n') : 'No batches yet.')
-    + '\n\n/pay new <label> (then one line each: wallet amount SOL|CWORM)\n/pay prize · /pay show <id> · /pay send <id> <code> · /pay cancel <id>';
+    + '\n\n/pay new <label> (then one line each: wallet amount SOL|CWORM)\n/pay prize · /pay rookies · /pay show <id> · /pay send <id> <code> · /pay cancel <id>';
 }
 export async function command(env, arg, byTg, prizeList, chat) {
   const [first, ...rest] = String(arg || '').split('\n'), [sub, ...words] = first.trim().split(/\s+/), id = Number(words[0]);
@@ -241,16 +242,18 @@ export async function command(env, arg, byTg, prizeList, chat) {
   if (/^show$/i.test(sub)) return showText(env, id);
   if (/^send$/i.test(sub)) return approve(env, id, words[1], chat);
   if (/^cancel$/i.test(sub)) { const r = await env.DB.prepare("UPDATE pay_batch SET status = 'cancelled' WHERE id = ? AND status IN ('ready', 'partial') RETURNING id").bind(id).first(); return r ? `Batch ${id} cancelled.` : `Batch ${id} can't be cancelled (not found, sending or done).` }
-  if (/^new$/i.test(sub) || /^prize$/i.test(sub)) {
+  if (/^new$/i.test(sub) || /^prize$/i.test(sub) || /^rookies?$/i.test(sub)) {
     let dec; try { dec = await decimals(env) } catch (e) { return `Solana can't be read right now (${e.message.slice(0, 120)}). Nothing saved; try again in a minute.` }   // amounts are saved in token units: never guess the decimals
     let label = words.join(' '), text = rest.join('\n');
     if (/^prize$/i.test(sub)) { const p = await prizeList(); if (!p.winners.length) return 'No weekly prize winners for last week.';
       label = 'Weekly prize, week of ' + new Date(p.week).toISOString().slice(0, 10); text = p.winners.map(r => `${r.wallet} ${r.prize} SOL #${r.place} ${r.name}`).join('\n') }
+    if (/^rookies?$/i.test(sub)) { const p = await prizeList('rookies'); if (!p.winners.length) return 'No new players prize winners for last week.';
+      label = 'New players prize, week of ' + new Date(p.week).toISOString().slice(0, 10); text = p.winners.map(r => `${r.wallet} ${r.prize} SOL #${r.place} ${r.name}`).join('\n') }
     const { lines, errors } = parseLines(text, dec);
     if (!lines.length) return 'No payments found. After "/pay new <label>", put one line per payment: <wallet> <amount> SOL (or CWORM).';
     if (errors.length) return `Not saved:\n- ${errors.join('\n- ')}`;
     const nid = await create(env, label, lines, byTg);
     return showText(env, nid);
   }
-  return 'Use /pay, /pay new <label>, /pay prize, /pay show <id>, /pay send <id> <code> or /pay cancel <id>.';
+  return 'Use /pay, /pay new <label>, /pay prize, /pay rookies, /pay show <id>, /pay send <id> <code> or /pay cancel <id>.';
 }

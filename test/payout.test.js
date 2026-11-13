@@ -197,6 +197,16 @@ test('payout: /pay prize makes a batch in SOL from last week\'s winners', async 
   assert.match(await P.command(env, 'prize', 77, async () => ({ week: 0, winners: [] }), 9), /No weekly prize winners/);
 });
 
+test('payout: /pay rookies makes a batch in SOL from last week\'s new players prize', async () => {
+  reset(); const env = makeEnv(), asked = [];
+  const list = async kind => { asked.push(kind); return { week: Date.UTC(2026, 10, 9), winners: kind === 'rookies' ? [{ wallet: A.addr, prize: 0.1, place: 1, name: 'Budi' }, { wallet: B.addr, prize: 0.1, place: 2, name: 'Siti' }] : [] } };
+  const t = await P.command(env, 'rookies', 77, list, 9);
+  assert.deepEqual(asked, ['rookies']);
+  assert.match(t, /New players prize, week of 2026-11-09/); assert.match(t, /0\.1 SOL  · #1 Budi/); assert.match(t, /0\.1 SOL  · #2 Siti/); assert.match(t, /To send: 2 transfers, 0\.2 SOL/);
+  assert.match(await P.command(env, 'rookies', 77, async () => ({ week: 0, winners: [] }), 9), /No new players prize winners/);
+  assert.match(await P.command(env, 'what', 77, null, 9), /\/pay rookies/);
+});
+
 test('payout: the bot answers /pay only for admins in a private chat, keeps the list lines, and the minute cron sends', async () => {
   reset(); const env = makeEnv({ BOT_TOKEN: '1:B', SESSION_SECRET: 's', ADMIN_PLAYERS: '1' });
   env.sql.prepare("INSERT INTO players (id, name, created, tg_id) VALUES (1, 'Damian', 0, 500), (2, 'Bo', 0, 600)").run();
