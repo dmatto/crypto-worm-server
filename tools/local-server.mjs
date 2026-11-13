@@ -57,7 +57,7 @@ function namespace(Cls, env) {
 }
 
 const { default: worker, Match, Lobby, Royale } = await import('../src/index.js');
-const env = { DB, ADMIN_PLAYERS: process.env.ADMIN_PLAYERS || '', SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '', SOLANA_RPC: process.env.SOLANA_RPC || '', PRIZE_PREVIEW: process.env.PRIZE_PREVIEW || '', SIM_KEY: process.env.SIM_KEY || '', XAI_API_KEY: process.env.XAI_API_KEY || '', ADMIN_PLAYERS: process.env.ADMIN_PLAYERS || '' };
+const env = { DB, ADMIN_PLAYERS: process.env.ADMIN_PLAYERS || '', PANEL_USER: process.env.PANEL_USER || '', PANEL_PASS: process.env.PANEL_PASS || '', SESSION_SECRET: 'local-dev-secret', BOT_TOKEN: process.env.BOT_TOKEN || '', SIGNIN_DOMAIN: 'localhost', ALLOWED_ORIGINS: '*', GAME_LINK: process.env.GAME_LINK || '', SOLANA_RPC: process.env.SOLANA_RPC || '', PRIZE_PREVIEW: process.env.PRIZE_PREVIEW || '', SIM_KEY: process.env.SIM_KEY || '', XAI_API_KEY: process.env.XAI_API_KEY || '', ADMIN_PLAYERS: process.env.ADMIN_PLAYERS || '' };
 env.MATCH = namespace(Match, env); env.LOBBY = namespace(Lobby, env); env.ROYALE = namespace(Royale, env);
 if (process.env.ROYALE_WAIT_MS) env.ROYALE_WAIT_MS = process.env.ROYALE_WAIT_MS;   // a shorter Worm Royale waiting room for tests
 

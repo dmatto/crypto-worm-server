@@ -757,3 +757,6 @@ CREATE TABLE IF NOT EXISTS push_subs (   -- browsers where a web player switched
   fails     INTEGER NOT NULL DEFAULT 0   -- sends in a row the push service refused
 );
 CREATE INDEX IF NOT EXISTS push_subs_player ON push_subs (player);
+-- Wrong tries at the control panel's password (panel.js): a hash of the network, kept a day, for the limit on guesses.
+CREATE TABLE IF NOT EXISTS panel_fails (ip TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS panel_fails_at ON panel_fails (at);

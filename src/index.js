@@ -367,6 +367,7 @@ const app = {
     }
 
     const me = await signedIn(req, env);
+    if (path.startsWith('/panel/')) { const r = await panelHandle(path, req, env, me, body); const { status, ...out } = r; return json(out, status || 200, cors) }   // the admin control panel (panel.js): its own password, or an admin's game sign-in
     if (path === '/me') return me ? session(env, me, cors, false) : json({ error: 'sign in first' }, 401, cors);
     if (!me) return json({ error: 'sign in first' }, 401, cors);
 
@@ -550,7 +551,6 @@ const app = {
       const out = (path === '/push/key' ? req.method === 'GET' : req.method === 'POST') ? await pushApi(env, me, path, body) : null;
       if (out) return json(out, out.error ? 400 : 200, cors);
     }
-    if (path === '/panel/data' || path === '/panel/act') { const r = await panelHandle(path, req, env, me, body); const { status, ...out } = r; return json(out, status || 200, cors) }   // the admin control panel (panel.js)
     if (path === '/royale/ping') {                                                     // the Royale hour message from the bot (see royaleHour in growth.js)
       // {on} switches the message on or off; {hour} is the Royale hour nearest the player's evening, from the phone's clock
       if (req.method === 'POST' && 'on' in body) await env.DB.prepare(body.on ? 'INSERT OR IGNORE INTO royale_ping (player, at) VALUES (?, ?)' : 'DELETE FROM royale_ping WHERE player = ? AND ? > 0').bind(me.id, Date.now()).run();

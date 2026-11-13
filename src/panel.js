@@ -172,9 +172,56 @@ export async function payReminder(env, admins, now = Date.now()) {
   return n;
 }
 
+// ---- sign-in with a user name and a password (Damian 2026-11-13: "Set a user and password system to enter the control panel") ----
+// The server keeps no password: PANEL_USER and PANEL_PASS are Worker secrets, PANEL_PASS being "pbkdf2$<rounds>$<salt>$<hash>"
+// (tools/panel_pass.py makes it). A right pair gets a panel token, good for a day; five wrong tries from one network in 15 minutes
+// (or thirty from anywhere in an hour) close the door until they age out.
+const enc = new TextEncoder(), b64 = u => btoa(String.fromCharCode(...new Uint8Array(u))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = t => Uint8Array.from(atob(String(t).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const same = (x, y) => { x = String(x); y = String(y); let d = x.length ^ y.length; for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i % (y.length || 1)); return d === 0 };
+export const TOKEN_S = 86400, FAILS_IP = 5, FAILS_ALL = 30, FAIL_MS = 15 * MIN;
+export async function passHash(pass, salt, rounds = 100000) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(String(pass)), 'PBKDF2', false, ['deriveBits']);
+  return b64(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unb64(salt), iterations: rounds }, key, 256));
+}
+export async function makePass(pass, rounds = 100000) { const salt = b64(crypto.getRandomValues(new Uint8Array(16))); return `pbkdf2$${rounds}$${salt}$${await passHash(pass, salt, rounds)}` }
+async function sign(env, text) {
+  const key = await crypto.subtle.importKey('raw', enc.encode('panel:' + env.SESSION_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64(await crypto.subtle.sign('HMAC', key, enc.encode(text)));
+}
+export async function panelToken(env, now = Date.now()) { const exp = Math.floor(now / 1000) + TOKEN_S; return `panel.${exp}.${await sign(env, 'panel.' + exp)}` }
+export async function readPanelToken(env, req, now = Date.now()) {
+  const auth = req.headers.get('Authorization') || '', [k, exp, sig] = (auth.startsWith('Bearer ') ? auth.slice(7) : '').split('.');
+  return k === 'panel' && !!sig && !!env.SESSION_SECRET && Number(exp) > now / 1000 && same(sig, await sign(env, 'panel.' + exp));
+}
+export async function login(env, req, body, now = Date.now()) {
+  if (!env.PANEL_USER || !env.PANEL_PASS) return { status: 503, error: 'The password sign-in is not set up yet.' };
+  const ip = b64(await crypto.subtle.digest('SHA-256', enc.encode('panel-ip:' + env.SESSION_SECRET + ':' + (req.headers.get('CF-Connecting-IP') || '')))).slice(0, 16);
+  const mine = (await one(env, 'SELECT COUNT(*) AS n FROM panel_fails WHERE ip = ? AND at > ?', ip, now - FAIL_MS) || {}).n || 0;
+  const everyone = (await one(env, 'SELECT COUNT(*) AS n FROM panel_fails WHERE at > ?', now - 4 * FAIL_MS) || {}).n || 0;
+  if (mine >= FAILS_IP || everyone >= FAILS_ALL) return { status: 429, error: 'Too many wrong tries. Wait 15 minutes and try again.' };
+  const [kind, rounds, salt, hash] = String(env.PANEL_PASS).split('$');
+  const got = kind === 'pbkdf2' && salt && hash ? await passHash(String(body && body.pass || '').slice(0, 200), salt, Number(rounds)) : '';
+  const okUser = same(String(body && body.user || '').trim().toLowerCase(), String(env.PANEL_USER).trim().toLowerCase()), okPass = !!got && same(got, hash);
+  if (!okUser || !okPass) {
+    await env.DB.batch([env.DB.prepare('INSERT INTO panel_fails (ip, at) VALUES (?, ?)').bind(ip, now), env.DB.prepare('DELETE FROM panel_fails WHERE at < ?').bind(now - DAY)]);
+    await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(now, 'panel: wrong sign-in').run().catch(() => { });
+    return { status: 401, error: 'Wrong user or password.' };
+  }
+  await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(now, 'panel: signed in with the password').run().catch(() => { });
+  return { token: await panelToken(env, now) };
+}
+
+// Who may use the panel: a panel token from the password sign-in, or a game session of an account in ADMIN_PLAYERS.
 export async function handle(path, req, env, me, body, now = Date.now()) {
-  if (!isAdmin(env, me)) return { status: 403, error: 'not an admin' };
+  if (path === '/panel/login' && req.method === 'POST') return login(env, req, body, now);
+  let who = isAdmin(env, me) ? me : null;
+  if (!who && await readPanelToken(env, req, now)) {                               // the password: act as the first admin account, when there is one
+    const id = String(env.ADMIN_PLAYERS || '').split(',').map(Number).find(n => n > 0);
+    who = (id && await one(env, 'SELECT * FROM players WHERE id = ?', id)) || { id: 0, name: 'panel' };
+  }
+  if (!who) return me ? { status: 403, error: 'not an admin' } : { status: 401, error: 'sign in first' };
   if (path === '/panel/data' && req.method === 'GET') return data(env, now);
-  if (path === '/panel/act' && req.method === 'POST') return act(env, me, body, now);
+  if (path === '/panel/act' && req.method === 'POST') return act(env, who, body, now);
   return { status: 404, error: 'not found' };
 }

@@ -109,3 +109,25 @@ test('panel: an update note is queued like /announce', async () => {
   assert.ok((await call(env, '/panel/act', { a: 'note', text: 'New worm jokes are in the game today.' }, a.token)).ok);
   assert.equal(env.sql.prepare('SELECT text FROM announcements').get().text, 'New worm jokes are in the game today.');
 });
+
+test('panel: the user and password open it without a game account; wrong tries are limited', async () => {
+  const env = makeEnv(), b = await guest(env);
+  assert.equal((await call(env, '/panel/login', { user: 'Boss', pass: 'x' })).status, 503);                       // not set up: nobody gets in
+  env.PANEL_USER = 'Boss'; env.PANEL_PASS = await P.makePass('correct horse battery', 1000);
+  assert.doesNotMatch(env.PANEL_PASS, /correct horse/);
+  assert.equal((await call(env, '/panel/login', { user: 'Boss', pass: 'wrong' })).status, 401);
+  assert.equal((await call(env, '/panel/login', { user: 'Other', pass: 'correct horse battery' })).status, 401);
+  const ok = await call(env, '/panel/login', { user: ' boss ', pass: 'correct horse battery' });
+  assert.equal(ok.status, 200); assert.match(ok.token, /^panel\.\d+\./);
+  const d = await call(env, '/panel/data', undefined, ok.token);
+  assert.equal(d.status, 200); assert.equal(d.totals.players, 1);
+  assert.ok((await call(env, '/panel/act', { a: 'gift', player: b.id, amount: 100 }, ok.token)).ok);              // actions work with no admin account at all
+  assert.equal((await call(env, '/me', undefined, ok.token)).status, 401);                                         // the panel token is no game sign-in
+  const [k, exp, sig] = ok.token.split('.');
+  assert.equal((await call(env, '/panel/data', undefined, `${k}.${Number(exp) + 999}.${sig}`)).status, 401);       // a changed token
+  assert.equal((await call(env, '/panel/data', undefined, await P.panelToken(env, Date.now() - 2 * 864e5))).status, 401);   // an old one
+  assert.equal((await call(env, '/panel/data', undefined, b.token)).status, 403);                                  // a player's own sign-in
+  for (let i = 0; i < 3; i++) await call(env, '/panel/login', { user: 'Boss', pass: 'guess' + i });
+  const shut = await call(env, '/panel/login', { user: 'Boss', pass: 'correct horse battery' });
+  assert.equal(shut.status, 429); assert.match(shut.error, /Too many/);                                            // five wrong tries: even the right one waits
+});
