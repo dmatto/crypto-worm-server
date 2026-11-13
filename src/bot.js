@@ -48,6 +48,7 @@ import { command as giftCommand } from './gifts.js';
 import { command as medalCommand } from './medals.js';
 import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
 import { command as payCommand, cron as payCron } from './payout.js';
+import { payReminder } from './panel.js';
 import { teamPrizeText } from './teamprize.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK, rookieList, ROOKIE_FROM, ROOKIE_PRIZES, drawList, DRAW_FROM, DRAW_PRIZES } from './prize.js';
 import { joinsCron, joinsCommand } from './growth.js';
@@ -501,6 +502,7 @@ export async function cron(env, now = Date.now()) {
   try { await joinsCron(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'joins error ' + (e && e.message)).run().catch(() => { }) }   // hourly welcome of new players in the group
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
   for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, pushReminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep, netCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  try { await payReminder(env, await adminTgIds(env), now) } catch (e) { await botLog(env, 'pay reminder error ' + (e && e.message)).catch(() => { }) }   // Monday noon: the payouts that are due, to the admins (panel.js)
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.

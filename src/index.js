@@ -65,6 +65,7 @@
 // Signing in with a wallet never asks for a transaction. Scores are for fun: the server never sends tokens or anything
 // of value.
 
+import { handle as panelHandle } from './panel.js';
 import { verifyTelegram, verifyTelegramLogin, makeNonce, signInMessage, verifySolana, makeToken, readToken, friendCode } from './auth.js';
 import { Match, newCode } from './match.js';
 import { Lobby } from './lobby.js';
@@ -549,6 +550,7 @@ const app = {
       const out = (path === '/push/key' ? req.method === 'GET' : req.method === 'POST') ? await pushApi(env, me, path, body) : null;
       if (out) return json(out, out.error ? 400 : 200, cors);
     }
+    if (path === '/panel/data' || path === '/panel/act') { const r = await panelHandle(path, req, env, me, body); const { status, ...out } = r; return json(out, status || 200, cors) }   // the admin control panel (panel.js)
     if (path === '/royale/ping') {                                                     // the Royale hour message from the bot (see royaleHour in growth.js)
       // {on} switches the message on or off; {hour} is the Royale hour nearest the player's evening, from the phone's clock
       if (req.method === 'POST' && 'on' in body) await env.DB.prepare(body.on ? 'INSERT OR IGNORE INTO royale_ping (player, at) VALUES (?, ?)' : 'DELETE FROM royale_ping WHERE player = ? AND ? > 0').bind(me.id, Date.now()).run();
