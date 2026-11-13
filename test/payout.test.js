@@ -226,3 +226,13 @@ test('payout: the bot answers /pay only for admins in a private chat, keeps the 
   assert.equal(sol.sent.length, 2); const receipt = tgSent.find(m => /all sent/.test(m.text || ''));
   assert.equal(receipt.chat_id, 500); assert.equal(receipt.text.match(/solscan\.io\/tx\//g).length, 2);
 });
+
+test('payout: /pay draw makes a batch in SOL from last week\'s weekly draw', async () => {
+  reset(); const env = makeEnv(), asked = [];
+  const list = async kind => { asked.push(kind); return { week: Date.UTC(2026, 10, 16), winners: kind === 'draw' ? [{ wallet: A.addr, prize: 0.05, place: 1, name: 'Ana' }, { wallet: B.addr, prize: 0.05, place: 2, name: 'Bo' }] : [] } };
+  const t = await P.command(env, 'draw', 77, list, 9);
+  assert.deepEqual(asked, ['draw']);
+  assert.match(t, /Weekly draw, week of 2026-11-16/); assert.match(t, /0\.05 SOL  · #1 Ana/); assert.match(t, /To send: 2 transfers, 0\.1 SOL/);
+  assert.match(await P.command(env, 'draw', 77, async () => ({ week: 0, winners: [] }), 9), /No weekly draw winners/);
+  assert.match(await P.command(env, 'what', 77, null, 9), /\/pay draw/);
+});

@@ -172,8 +172,9 @@ export async function card(env, me, now = Date.now()) {
   const pts = now >= w ? await points(env, w) : [], mine = pts.find(p => p.player === me.id);
   let rank = null, entrants = 0;
   if (done && s.age.ok && !r.skipped) { const c = await chart(env, w, now); entrants = c.length; const i = c.findIndex(x => x.id === me.id); rank = i >= 0 ? i + 1 : null }
-  const rk = await rookieCard(env, me, r, w, now, pts).catch(() => null);
-  return { ...(rk ? { rookie: rk } : {}), on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
+  const rk = await rookieCard(env, me, r, w, now, pts).catch(() => null), dr = await drawCard(env, me, r, w, now).catch(() => null);
+  const first = await holderFirst(env, me, r).catch(() => false);          // the one-time Holder reward waits in /rewards
+  return { ...(rk ? { rookie: rk } : {}), ...(dr ? { draw: dr } : {}), holderFirst: HOLDER_FIRST, ...(first ? { holderPaid: true } : {}), on: true, start: FIRST_WEEK, week: w, started: now >= w, ends: w + WEEK, steps: s, done, ticket: done && s.age.ok && !r.skipped, ...(r.skipped ? { skipped: true } : {}), ...(r.team ? { team: true } : {}), points: mine ? mine.pts : 0,
     rank, entrants, prizes: PRIZES, prizeUnit: 'SOL', dayCap: DAY_CAP, playDays: PLAY_DAYS, hold: HOLD_MIN, holdDays: HOLD_DAYS, minAge: MIN_AGE_DAYS, group: GROUP_LINK, xLink: X_LINK };
 }
 export async function handle(path, env, me, body, now = Date.now()) {
@@ -283,4 +284,70 @@ export async function rookieList(env, w, now = Date.now()) {
   for (const r of top) { const o = await netOthers(env, r.id, now, 5).catch(() => ({ others: [] })); r.fair = { ...fair.get(r.id), unchecked: Math.max(0, r.raw - r.ok), others: o.others, more: !!o.more } }
   const winners = top.slice(0, N).map((r, i) => ({ ...r, place: i + 1, prize: ROOKIE_PRIZES[i] }));
   return { week: w, winners, reserves: top.slice(N), dropped, pay: winners.map(r => r.wallet + ',' + r.prize).join('\n'), entrants: c.length };
+}
+
+// ---- Weekly draw (Damian 2026-11-13, after the prize review: last full week 315 real players played and 12 played on 3 days;
+// 465 had a wallet and 17 held 100K. He chose the draw, the Holder guide and the step counts) ----
+// Every holder (linked wallet at the Holder tier) gets one ticket for each UTC day they finished a match in week `w`, up to 7,
+// and extra tickets for holding longer: +1 from 7 days in a row, +2 from 30, +3 from 90 (the hold stars' days). No group,
+// X username or account age. After the week DRAW_PRIZES.length players are drawn, a ticket a chance, one prize a player.
+// The draw is fixed by the week and its entries: each entrant gets a number from a hash of both, weighted by tickets
+// (u^(1/tickets), highest first), so /prize draw and /pay draw always agree. The wallets are read again before paying:
+// one under 100K is passed over and the next in the order takes the prize.
+export const DRAW_PRIZES = [0.05, 0.05, 0.05, 0.05, 0.05], DRAW_FROM = Date.UTC(2026, 10, 16), DRAW_BONUS = [[90, 3], [30, 2], [7, 1]], DRAW_MAX_DAYS = 7;
+export const drawOn = w => w >= DRAW_FROM;
+// One player row's tickets for week `w` as of `now`.
+export function drawTickets(r, w, now = Date.now(), lax = false) {
+  const k = rookie(r, w, lax), days = Math.min(DRAW_MAX_DAYS, r.days || 0), end = Math.min(day(now), day(w) + 6);
+  const held = k.holder && r.streak_day != null ? Math.max(0, end - r.streak_day + 1) : 0, b = DRAW_BONUS.find(x => held >= x[0]);
+  const bonus = k.holder && days ? (b ? b[1] : 0) : 0;
+  return { linked: k.linked, holder: k.holder, low: k.low, checking: k.checking, days, held, bonus, tickets: k.holder ? days + bonus : 0 };
+}
+export async function drawEntrants(env, w, now = Date.now()) {
+  if (!drawOn(w)) return [];
+  const W = day(w), ids = (await env.DB.prepare(`SELECT DISTINCT d.player FROM play_days d JOIN players p ON p.id = d.player WHERE d.day >= ? AND d.day < ? AND p.wallet IS NOT NULL
+      AND p.id NOT IN (SELECT player FROM sim_players) AND p.id NOT IN (SELECT player FROM prize_skip)`).bind(W, W + 7).all()).results.map(r => r.player);
+  const info = await rows(env, ids, w), out = [];
+  for (const r of info.values()) { if (r.skipped) continue; const t = drawTickets(r, w, now, loose(env)); if (t.tickets > 0) out.push({ ...r, draw: t, tickets: t.tickets }) }
+  return out.sort((a, b) => a.id - b.id);
+}
+const sha = async s => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+// The draw order of the entrants: the same for the same week and entries.
+export async function drawOrder(w, entrants) {
+  const seed = 'cww-draw:' + w + ':' + entrants.map(r => r.id + 'x' + r.tickets).join(','), out = [];
+  for (const r of entrants) { const h = await sha(seed + ':' + r.id); let n = 0; for (let i = 0; i < 6; i++) n = n * 256 + h[i]; out.push({ ...r, key: Math.pow((n + 1) / (2 ** 48 + 1), 1 / r.tickets) }) }
+  return out.sort((a, b) => b.key - a.key || a.id - b.id);
+}
+// The part of the player's card about it. The week before it starts the card only says when.
+async function drawCard(env, me, r, w, now) {
+  if (!drawOn(w)) return now >= DRAW_FROM - WEEK ? { on: true, starts: DRAW_FROM, prizes: DRAW_PRIZES, bonus: DRAW_BONUS, maxDays: DRAW_MAX_DAYS } : null;
+  const t = drawTickets(r, w, now, loose(env)), base = { on: true, prizes: DRAW_PRIZES, bonusDays: DRAW_BONUS, maxDays: DRAW_MAX_DAYS, ...t, ...(r.skipped ? { tickets: 0, skipped: true } : {}) };
+  if (!base.tickets) return base;
+  const all = await drawEntrants(env, w, now);
+  return { ...base, entrants: all.length, total: all.reduce((a, x) => a + x.tickets, 0) };
+}
+// The admins' list for week `w`: the order, the wallets read now, the winners and who is next.
+export async function drawList(env, w, now = Date.now()) {
+  const all = await drawEntrants(env, w, now), order = await drawOrder(w, all), N = DRAW_PRIZES.length, top = [], dropped = [];
+  const live = await balances(env, order.slice(0, N + 20).map(r => r.wallet)).catch(() => new Map());
+  for (const r of order) {
+    if (top.length >= N + 5) break;
+    r.now = live.has(r.wallet) ? live.get(r.wallet) : null;
+    if (r.now != null && r.now < HOLD_MIN) { dropped.push(r); continue }
+    top.push(r);
+  }
+  for (const r of top) { const o = await netOthers(env, r.id, now, 5).catch(() => ({ others: [] })); r.fair = { others: o.others, more: !!o.more } }
+  const winners = top.slice(0, N).map((r, i) => ({ ...r, place: i + 1, prize: DRAW_PRIZES[i] }));
+  return { week: w, winners, reserves: top.slice(N), dropped, pay: winners.map(r => r.wallet + ',' + r.prize).join('\n'), entrants: all.length, total: all.reduce((a, x) => a + x.tickets, 0) };
+}
+
+// ---- First time a Holder (same review): a linked wallet that reaches the Holder tier pays HOLDER_FIRST play money once
+// (reward_once 'holder1'; the game shows the three steps and collects it like any reward). ----
+export const HOLDER_FIRST = 2000;
+async function holderFirst(env, me, r) {
+  if (!(r.wallet && r.hw === r.wallet && r.tier >= 1) || r.skipped) return false;
+  const x = await env.DB.prepare("INSERT OR IGNORE INTO reward_once (player, k, created) VALUES (?, 'holder1', ?)").bind(me.id, Date.now()).run();
+  if (!(x && (x.meta ? x.meta.changes : x.changes))) return false;
+  await env.DB.prepare('INSERT INTO rewards (player, amount, reason, note, created) VALUES (?, ?, ?, ?, ?)').bind(me.id, HOLDER_FIRST, 'holder1', null, Date.now()).run();
+  return true;
 }
