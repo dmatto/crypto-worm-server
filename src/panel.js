@@ -38,6 +38,10 @@ export async function todo(env, now = Date.now()) {
   return out;
 }
 
+// A new account counts as a player once it started a match or stayed 30 seconds. The game makes an account the moment the
+// page opens, so link previews, bots and people who close the page at once were a third of "new players" (2026-11-13 check).
+export const STAYED = 'COALESCE(m.started > 0 OR m.played > 0 OR m.last_seen - p.created >= 30000, 0)';
+
 export async function data(env, now = Date.now()) {
   const day0 = Math.floor(now / DAY) * DAY, w = weekStart(now), dn = Math.floor(now / DAY);
   const lobby = env.LOBBY ? env.LOBBY.get(env.LOBBY.idFromName('lobby')) : null;
@@ -46,17 +50,17 @@ export async function data(env, now = Date.now()) {
     lobby ? lj('/count') : null, lobby ? lj('/live') : null,
     one(env, `SELECT COUNT(*) AS players, SUM(tg_id IS NOT NULL) AS tg, SUM(wallet IS NOT NULL) AS wallets FROM players WHERE id ${REAL}`),
     one(env, `SELECT SUM(last_seen > ?) AS m5, SUM(last_seen > ?) AS h1, SUM(last_seen > ?) AS d1, SUM(last_seen > ?) AS d7 FROM player_meta WHERE player ${REAL}`, now - 5 * MIN, now - 60 * MIN, now - DAY, now - WEEK),
-    one(env, `SELECT SUM(created >= ?) AS today, SUM(created >= ? AND created < ?) AS yesterday, SUM(created >= ?) AS week FROM players WHERE created >= ? AND id ${REAL}`, day0, day0 - DAY, day0, now - WEEK, now - WEEK),
+    one(env, `SELECT SUM(p.created >= ? AND ${STAYED}) AS today, SUM(p.created >= ? AND p.created < ? AND ${STAYED}) AS yesterday, SUM(${STAYED}) AS week, SUM(NOT ${STAYED}) AS gone FROM players p LEFT JOIN player_meta m ON m.player = p.id WHERE p.created >= ? AND p.id ${REAL}`, day0, day0 - DAY, day0, now - WEEK),
     one(env, `SELECT SUM(at >= ?) AS today, SUM(at >= ?) AS hour, COUNT(DISTINCT CASE WHEN at >= ? THEN player END) AS players FROM run_log WHERE at >= ? AND player ${REAL}`, day0, now - 60 * MIN, day0, day0 - DAY),
     all(env, `SELECT p.id, p.name, p.created, p.tg_id IS NOT NULL AS tg, p.wallet IS NOT NULL AS wallet, m.source, m.cc, m.played, m.last_seen FROM players p LEFT JOIN player_meta m ON m.player = p.id
       WHERE p.id ${REAL} ORDER BY p.id DESC LIMIT 40`),
     all(env, `SELECT p.id, p.name, p.created, m.source, m.cc, m.played, m.last_seen FROM player_meta m JOIN players p ON p.id = m.player
       WHERE m.last_seen > ? AND m.player ${REAL} ORDER BY m.last_seen DESC LIMIT 40`, now - 30 * MIN),
-    all(env, `SELECT created / ${DAY} AS d, COUNT(*) AS n FROM players WHERE created >= ? AND id ${REAL} GROUP BY d`, day0 - 13 * DAY),
+    all(env, `SELECT p.created / ${DAY} AS d, SUM(${STAYED}) AS n FROM players p LEFT JOIN player_meta m ON m.player = p.id WHERE p.created >= ? AND p.id ${REAL} GROUP BY d`, day0 - 13 * DAY),
     all(env, `SELECT day AS d, COUNT(*) AS n FROM play_days WHERE day >= ? AND player ${REAL} GROUP BY day`, dn - 13),
-    all(env, `SELECT p.created / ${DAY} AS d, COUNT(*) AS n, SUM(m.played > 0) AS played, SUM(EXISTS (SELECT 1 FROM play_days x WHERE x.player = p.id AND x.day > p.created / ${DAY})) AS back
+    all(env, `SELECT p.created / ${DAY} AS d, SUM(${STAYED}) AS n, SUM(m.played > 0) AS played, SUM(EXISTS (SELECT 1 FROM play_days x WHERE x.player = p.id AND x.day > p.created / ${DAY})) AS back
       FROM players p LEFT JOIN player_meta m ON m.player = p.id WHERE p.created >= ? AND p.id ${REAL} GROUP BY d`, day0 - 13 * DAY),
-    all(env, `SELECT COALESCE(m.source, '?') AS source, COUNT(*) AS n, SUM(m.played > 0) AS played, SUM(m.played >= 3) AS three FROM players p JOIN player_meta m ON m.player = p.id
+    all(env, `SELECT COALESCE(m.source, '?') AS source, SUM(${STAYED}) AS n, SUM(NOT ${STAYED}) AS gone, SUM(m.played > 0) AS played, SUM(m.played >= 3) AS three FROM players p JOIN player_meta m ON m.player = p.id
       WHERE p.created >= ? AND p.id ${REAL} GROUP BY source ORDER BY n DESC LIMIT 12`, now - WEEK),
     all(env, 'SELECT plat, step, SUM(n) AS n FROM funnel WHERE day >= ? GROUP BY plat, step', iso(now - 6 * DAY)),
     one(env, `SELECT SUM(tier > 0) AS holders, COUNT(*) AS wallets FROM holders WHERE player ${REAL}`),
@@ -83,7 +87,7 @@ export async function data(env, now = Date.now()) {
     live: live && Array.isArray(live.live) ? live.live.length : 0,
     totals: { players: tot && tot.players || 0, tg: tot && tot.tg || 0, wallets: tot && tot.wallets || 0, holders: holders && holders.holders || 0 },
     active: { m5: act && act.m5 || 0, h1: act && act.h1 || 0, d1: act && act.d1 || 0, d7: act && act.d7 || 0 },
-    joined: { today: fresh && fresh.today || 0, yesterday: fresh && fresh.yesterday || 0, week: fresh && fresh.week || 0 },
+    joined: { today: fresh && fresh.today || 0, yesterday: fresh && fresh.yesterday || 0, week: fresh && fresh.week || 0, gone: fresh && fresh.gone || 0 },
     matches: { today: matches && matches.today || 0, hour: matches && matches.hour || 0, players: matches && matches.players || 0 },
     joins, here, days, sources, funnel: { steps: FUNNEL_STEPS, plats: fun },
     prize: { week: iso(w), three: three && three.n || 0, top },

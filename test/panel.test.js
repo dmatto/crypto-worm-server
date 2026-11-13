@@ -42,7 +42,7 @@ test('panel: only the accounts in ADMIN_PLAYERS get an answer', async () => {
   assert.equal((await call(env, '/panel/act', { a: 'gift', player: b.id, amount: 100 }, b.token)).status, 403);
   assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM rewards').get().n, 0);
   const d = await call(env, '/panel/data', undefined, a.token);
-  assert.equal(d.status, 200); assert.equal(d.totals.players, 2); assert.equal(d.joined.today, 2); assert.equal(d.days.length, 14);
+  assert.equal(d.status, 200); assert.equal(d.totals.players, 2); assert.equal(d.joined.today, 0); assert.equal(d.joined.gone, 2); assert.equal(d.days.length, 14);   // nobody stayed yet
 });
 
 test('panel: the numbers count real players, never the load-test bots', async () => {
@@ -54,7 +54,17 @@ test('panel: the numbers count real players, never the load-test bots', async ()
   const d = await call(env, '/panel/data', undefined, a.token);
   assert.equal(d.totals.players, 2); assert.equal(d.active.m5, d.here.length); assert.equal(d.matches.today, 1); assert.equal(d.days[13].active, 1);
   assert.ok(d.here.some(r => r.id === b.id)); assert.ok(!d.here.some(r => r.id === bot.id)); assert.ok(!d.joins.some(r => r.id === bot.id));
-  assert.equal(d.sources.reduce((n, s) => n + s.n, 0), 2);                                                   // the bot is in no source row
+  assert.equal(d.sources.reduce((n, s) => n + s.n + s.gone, 0), 2);                                          // the bot is in no source row
+  assert.equal(d.joined.today, 1); assert.equal(d.joined.gone, 1);                                            // b played; the admin's fresh account left at once
+});
+
+test('panel: a new account counts as a player once it started a match or stayed 30 seconds', async () => {
+  const env = makeEnv(), a = await admin(env), b = await guest(env), c = await guest(env), e = await guest(env), now = Date.now();
+  env.sql.prepare('UPDATE player_meta SET started = 1 WHERE player = ?').run(b.id);
+  env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player = ?').run(now + 31000, c.id);
+  env.sql.prepare('UPDATE player_meta SET last_seen = ? WHERE player = ?').run(now + 5000, e.id);
+  const d = await call(env, '/panel/data', undefined, a.token);
+  assert.equal(d.joined.today, 2); assert.equal(d.joined.gone, 2); assert.equal(d.days[13].joined, 2);
 });
 
 test('panel: a gift to a player waits in their game; limits and unknown players are refused', async () => {
