@@ -375,7 +375,7 @@ export async function carryTake(env, me) {
 }
 export const tgLinkBonus = (env, id) => once(env, id, 'tglink', TGLINK_REWARD, 'tglink', '');
 const DAY2_FROM = 20 * 3600e3, DAY2_TO = 44 * 3600e3, DAY2_AWAY = 12 * 3600e3;
-const DAY2 = {
+export const DAY2 = {
   en: ['🎁 Your daily reward is ready in Crypto Worm Wars! Claim it on Home: it grows every day you come back, for 7 days.', '🎮 Play now'],
   es: ['🎁 ¡Tu premio diario te espera en Crypto Worm Wars! Recógelo en Inicio: crece cada día que vuelves, durante 7 días.', '🎮 Jugar ahora'],
   pt: ['🎁 Sua recompensa diária está pronta no Crypto Worm Wars! Pegue na tela inicial: ela cresce a cada dia que você volta, por 7 dias.', '🎮 Jogar agora'],
@@ -384,6 +384,7 @@ const DAY2 = {
   ru: ['🎁 Твоя ежедневная награда ждёт в Crypto Worm Wars! Забери её на главном экране: она растёт каждый день, когда ты возвращаешься, 7 дней подряд.', '🎮 Играть'],
   tr: ['🎁 Günlük ödülün Crypto Worm Wars\'ta hazır! Ana ekranda al: her geri geldiğin gün büyüyor, 7 gün boyunca.', '🎮 Şimdi oyna'],
   zh: ['🎁 你的每日奖励已在 Crypto Worm Wars 准备好！在主页领取：连续回来 7 天，每天都会变多。', '🎮 开始游戏'],
+  id: ['🎁 Hadiah harianmu sudah siap di Crypto Worm Wars! Klaim di Beranda: makin besar tiap hari kamu kembali, selama 7 hari.', '🎮 Main sekarang'],
 };
 
 // ---- reminders: at most one bot message a day, only for players active in the last 7 days who allowed them ----
@@ -422,7 +423,7 @@ export async function reminders(env, now = Date.now()) {
   for (const r of fresh) {
     if (sent >= REMIND_MAX || done.has(r.id)) continue; done.add(r.id);
     await env.DB.prepare("INSERT OR IGNORE INTO reward_once (player, k, created) VALUES (?, 'day2dm', ?)").bind(r.id, now).run();
-    const t = DAY2[String(r.lang || '').slice(0, 2)] || DAY2.en;
+    const l2 = String(r.lang || '').slice(0, 2).toLowerCase(), t = DAY2[l2 === 'in' ? 'id' : l2] || DAY2.en;   // 'in' is the old code for Indonesian
     if (await send(env, r, t[0], gameLink(env), t[1])) sent++;
   }
   if (new Date(now).getUTCHours() === DAILY_HOUR) {
@@ -437,31 +438,41 @@ export async function reminders(env, now = Date.now()) {
 }
 export const botUsername = botName;
 
-// ---- the daily Worm Royale hour (Damian 2026-10-19): at 20:00 UTC, the busiest hour of the week before, one post in the
+// ---- the daily Worm Royale hours (Damian 2026-10-19): at 20:00 UTC, the busiest hour of the week before, one post in the
 // community group and a bot message to the players who asked for one (POST /royale/ping), so real players drop into the same
-// rooms. The cron calls this every minute of that hour; each run sends one batch and saves its place. ----
-export const ROYALE_HOUR = 20;
+// rooms. The cron calls this every minute of that hour; each run sends one batch and saves its place.
+// A second hour at 13:00 UTC (2026-11-13) is the evening in Jakarta, Manila and Delhi, where 20:00 UTC is the middle of the
+// night. The group still gets its one post a day, at 20:00. A player gets one bot message a day, at the hour nearest their
+// own evening: the game sends it from the phone's clock (royale_slot); without it, the Telegram language decides. ----
+export const ROYALE_HOUR = 20, ROYALE_HOURS = [13, ROYALE_HOUR];
+const ROYALE_EAST = "'id','in','ms','vi','th','zh','ja','ko','tl','km','my','lo','hi','bn'";   // Telegram languages of UTC+5:30 to UTC+9
 const ROYALE_POST = '🪂 Worm Royale hour! For the next hour real players drop onto the same island together: 50 worms, everyone fires at once, the last worm standing wins. Tap to drop in 👇';
 const ROYALE_DM = '🪂 Worm Royale hour has started: real players are dropping in right now. Join them!\n\nNo more of these: switch off "Royale hour message" in the Worm Royale waiting room.';
+const ROYALE_DM_ID = '🪂 Worm Royale hour sudah mulai: pemain asli sedang terjun sekarang. Ayo ikut!\n\nTidak mau pesan ini lagi: matikan "Royale hour message" di ruang tunggu Worm Royale.';
 export async function royaleHour(env, now = Date.now()) {
-  if (!env.BOT_TOKEN || !env.DB || new Date(now).getUTCHours() !== ROYALE_HOUR) return 0;
-  const day = utcDay(now), kb = { inline_keyboard: [[{ text: '🪂 Drop in', url: gameLink(env, 'royale') }]] };
-  if (await kv.get(env, 'royale_day') !== day) {
-    await kv.set(env, 'royale_day', day); await kv.set(env, 'royale_last', '0');
-    const group = await kv.get(env, 'group');
-    if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: ROYALE_POST, reply_markup: kb });
+  const hour = new Date(now).getUTCHours();
+  if (!env.BOT_TOKEN || !env.DB || !ROYALE_HOURS.includes(hour)) return 0;
+  const day = utcDay(now), k = hour === ROYALE_HOUR ? '' : '_' + hour;                     // each hour keeps its own place: royale_day, royale_day_13
+  if (await kv.get(env, 'royale_day' + k) !== day) {
+    await kv.set(env, 'royale_day' + k, day); await kv.set(env, 'royale_last' + k, '0');
+    const group = hour === ROYALE_HOUR && await kv.get(env, 'group');
+    if (group) await tg(env, 'sendMessage', { chat_id: Number(group), text: ROYALE_POST, reply_markup: { inline_keyboard: [[{ text: '🪂 Drop in', url: gameLink(env, 'royale') }]] } });
   }
-  const last = Number(await kv.get(env, 'royale_last')); if (!(last >= 0)) return 0;
-  const { results } = await env.DB.prepare(`SELECT p.id, p.tg_id FROM royale_ping r JOIN players p ON p.id = r.player LEFT JOIN player_meta m ON m.player = p.id
-      WHERE p.tg_id IS NOT NULL AND COALESCE(m.no_dm, 0) = 0 AND p.id > ? ORDER BY p.id LIMIT ?`).bind(last, ANNOUNCE_BATCH).all();
+  const last = Number(await kv.get(env, 'royale_last' + k)); if (!(last >= 0)) return 0;
+  const { results } = await env.DB.prepare(`SELECT id, tg_id, lang FROM (
+      SELECT p.id, p.tg_id, s.hour, substr(lower(COALESCE((SELECT lang FROM bot_starts b WHERE b.tg_id = p.tg_id), '')), 1, 2) AS lang
+      FROM royale_ping r JOIN players p ON p.id = r.player LEFT JOIN player_meta m ON m.player = p.id LEFT JOIN royale_slot s ON s.player = p.id
+      WHERE p.tg_id IS NOT NULL AND COALESCE(m.no_dm, 0) = 0 AND p.id > ?)
+    WHERE COALESCE(hour, CASE WHEN lang IN (${ROYALE_EAST}) THEN 13 ELSE ${ROYALE_HOUR} END) = ? ORDER BY id LIMIT ?`).bind(last, hour, ANNOUNCE_BATCH).all();
   let sent = 0;
   for (const r of results) {
-    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: ROYALE_DM, reply_markup: kb });
+    const id = r.lang === 'id' || r.lang === 'in';
+    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: id ? ROYALE_DM_ID : ROYALE_DM, reply_markup: { inline_keyboard: [[{ text: id ? '🪂 Terjun' : '🪂 Drop in', url: gameLink(env, 'royale') }]] } });
     if (res && res.ok) sent++;
     else if (res && res.error_code === 403) await env.DB.prepare('INSERT INTO player_meta (player, last_seen, no_dm) VALUES (?, 0, 1) ON CONFLICT(player) DO UPDATE SET no_dm = 1').bind(r.id).run();
-    await kv.set(env, 'royale_last', String(r.id));
+    await kv.set(env, 'royale_last' + k, String(r.id));
   }
-  if (results.length < ANNOUNCE_BATCH) await kv.set(env, 'royale_last', '-1');
+  if (results.length < ANNOUNCE_BATCH) await kv.set(env, 'royale_last' + k, '-1');
   return sent;
 }
 

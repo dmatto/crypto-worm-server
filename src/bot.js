@@ -51,6 +51,8 @@ import { command as payCommand, cron as payCron } from './payout.js';
 import { teamPrizeText } from './teamprize.js';
 import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK } from './prize.js';
 import { joinsCron, joinsCommand } from './growth.js';
+import { funnelText } from './funnel.js';
+import { pushReminders } from './push.js';
 import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
   INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
 const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
@@ -95,8 +97,11 @@ const WELCOME = {
   zh: { hi: '🪱 欢迎你，$1！', hi0: '🪱 欢迎来到 Crypto Worm Wars！', body: '公牛对熊：瞄准、开火，把熊队的虫子轰出小岛。免费，就在 Telegram 里玩。',
     go: '👇 点击“开始游戏”，几秒后就开始你的第一场战斗。', play: '🎮 开始游戏', invite: '👥 邀请好友：每位好友 +$1 BP', group: '💬 Telegram 群组', x: '𝕏 关注我们的 X',
     nudge: '🪱 你的第一场战斗在等你！很简单，只要几分钟。点击开始 👇' },
+  id: { hi: '🪱 Selamat datang, $1!', hi0: '🪱 Selamat datang di Crypto Worm Wars!', body: 'Bulls lawan Bears: bidik, tembak, dan lempar cacing Bears dari pulau. Gratis, langsung di Telegram.',
+    go: '👇 Ketuk Main sekarang. Pertempuran pertamamu mulai dalam hitungan detik.', play: '🎮 Main sekarang', invite: '👥 Undang teman: +$1 BP per teman', group: '💬 Grup Telegram', x: '𝕏 Ikuti di X',
+    nudge: '🪱 Pertempuran pertamamu sudah menunggu! Gampang dan cuma beberapa menit. Ketuk Main 👇' },
 };
-export const welcomeLang = code => { const l = String(code || '').slice(0, 2).toLowerCase(); return WELCOME[l] ? l : 'en' };
+export const welcomeLang = code => { let l = String(code || '').slice(0, 2).toLowerCase(); if (l === 'in') l = 'id'; return WELCOME[l] ? l : 'en' };   // 'in' is the old code for Indonesian
 export function welcomeText(name, lang) {
   const t = WELCOME[welcomeLang(lang)];
   return (name ? t.hi.replace('$1', name) : t.hi0) + '\n\n' + t.body + '\n\n' + t.go;
@@ -311,6 +316,7 @@ export async function webhook(req, env) {
   }
   else if (cmd === '/joins' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await joinsCommand(env, arg), parse_mode: 'HTML' });
   else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
+  else if (cmd === '/funnel' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await funnelText(env, arg), parse_mode: 'HTML' });   // where new players leave their first match
   else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
   else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
   else if ((cmd === '/ideas' || cmd === '/idea') && env.DB && await isAdmin(env, m.from)) {   // Ideas & polls (ideas.js)
@@ -457,7 +463,7 @@ export async function cron(env, now = Date.now()) {
   if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
   try { await joinsCron(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'joins error ' + (e && e.message)).run().catch(() => { }) }   // hourly welcome of new players in the group
   try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
-  for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep, netCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, pushReminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep, netCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
   try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
 }
 // The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.

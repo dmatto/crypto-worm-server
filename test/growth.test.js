@@ -385,3 +385,24 @@ test('growth: one day-two message, in their language, to a Telegram player who j
   calls.length = 0; await cron(env, now + 30 * 60e3);
   assert.equal(calls.filter(c => c[0] === 'sendMessage' && c[1].chat_id === 55).length, 0);   // never a second one
 });
+
+test('royale hour: two hours a day, one bot message each player, at the hour nearest their evening', async () => {
+  const { royaleHour } = await import('../src/growth.js');
+  const env = makeEnv(), at = h => Date.UTC(2026, 10, 14, h, 5);
+  const ins = (id, tg) => env.sql.prepare('INSERT INTO players (id, tg_id, name, created) VALUES (?, ?, ?, 0)').run(id, tg, 'P' + id);
+  ins(1, 101); ins(2, 102); ins(3, 103); ins(4, 104); ins(5, null);                  // 5 never linked Telegram
+  for (const p of [1, 2, 3, 4, 5]) env.sql.prepare('INSERT INTO royale_ping (player, at) VALUES (?, 0)').run(p);
+  env.sql.prepare("INSERT INTO bot_starts (tg_id, first, last, lang) VALUES (101, 0, 0, 'id'), (102, 0, 0, 'en'), (103, 0, 0, 'en'), (104, 0, 0, 'zh-hans')").run();
+  env.sql.prepare("INSERT INTO bot_kv (k, v) VALUES ('group', '-500')").run();
+  const tok = (await call(env, '/auth/telegram', { initData: tgInit(103, 'Cid') })).token;        // Cid plays in English from Jakarta: the phone says 13
+  assert.deepEqual(await call(env, '/royale/ping', { hour: 13 }, tok), { status: 200, on: true, tg: true });   // the hour alone never switches the message off
+  await call(env, '/royale/ping', { hour: 7 }, tok);                                                // not a Royale hour: ignored
+  assert.equal(env.sql.prepare('SELECT hour FROM royale_slot WHERE player = 3').get().hour, 13);
+  const sent = async h => { calls.length = 0; await royaleHour(env, at(h)); await royaleHour(env, at(h) + 60e3); return calls.filter(c => c[0] === 'sendMessage').map(c => c[1].chat_id).sort() };
+  assert.deepEqual(await sent(12), []);
+  assert.deepEqual(await sent(13), [101, 103, 104]);                                 // Indonesian, the Jakarta clock, Chinese; no group post
+  assert.match(calls.find(c => c[1].chat_id === 101)[1].text, /sudah mulai/); assert.match(calls.find(c => c[1].chat_id === 103)[1].text, /has started/);
+  assert.deepEqual(await sent(20), [-500, 102]);                                     // the group's one post, and everyone else
+  assert.deepEqual(await sent(20), []);                                              // once a day
+  assert.deepEqual((await call(env, '/royale/ping', { on: false, hour: 20 }, tok)).on, false);
+});

@@ -22,6 +22,7 @@ import { tg } from './bot.js';
 import { newCode } from './match.js';
 import { flag, gameLink } from './growth.js';
 import { landRow } from './feed.js';
+import { pushPlayer } from './push.js';
 
 export const ATTACKS_PER_DAY = 10, HOME_TILES = 7, SHIELD_MS = 3 * 864e5, TRUCE_MS = 20 * 60e3, MIN_BATTLE_MS = 40e3, TICKET_MS = 2 * 3600e3,
   INACTIVE_MS = 14 * 864e5, NOTIFY_GAP_MS = 30 * 60e3, BUYS_PER_DAY = 3, SEA_REACH = 8,
@@ -111,24 +112,32 @@ export async function pickHome(env, cc, now) {
   return plot;
 }
 
+// A web player has no bot: the same news goes to the browsers where they switched reminders on (push.js), under the same gaps.
+const SITE = env => (env.SITE_URL || 'https://play.cryptoworm.io').replace(/\/+$/, '') + '/';
 async function notify(env, ownerId, text, now) {
-  if (!env.BOT_TOKEN) return;
   const p = await q(env, `SELECT p.tg_id, d.notified, COALESCE(m.no_dm, 0) AS no_dm, COALESCE(m.remind, 1) AS remind FROM players p JOIN landlords d ON d.player = p.id
     LEFT JOIN player_meta m ON m.player = p.id WHERE p.id = ?`, ownerId).first();
-  if (!p || p.tg_id == null || p.no_dm || !p.remind || now - p.notified < NOTIFY_GAP_MS) return;
+  if (!p || now - p.notified < NOTIFY_GAP_MS) return;
+  const tgOk = !!env.BOT_TOKEN && p.tg_id != null && !p.no_dm && !!p.remind;
+  const pushed = await pushPlayer(env, ownerId, { title: 'Crypto Worm Wars', body: text, url: SITE(env) + '?src=push', tag: 'cww-land' }, now, true).catch(() => 0);
+  if (!tgOk && !pushed) return;
   await q(env, 'UPDATE landlords SET notified = ? WHERE player = ?', now, ownerId).run();
+  if (!tgOk) return;
   const r = await tg(env, 'sendMessage', { chat_id: p.tg_id, text, reply_markup: { inline_keyboard: [[{ text: '🌍 Defend your land', url: gameLink(env, 'map') }]] } });
   if (r && r.error_code === 403) await q(env, 'UPDATE player_meta SET no_dm = 1 WHERE player = ?', ownerId).run();
 }
 
 // "You are under attack": a bot message with a button straight into the defense (the in-game alert works without it)
 async function alertOwner(env, ownerId, attackId, name, tile, now) {
-  if (!env.BOT_TOKEN) return false;
   const p = await q(env, `SELECT p.tg_id, COALESCE(m.no_dm, 0) AS no_dm, COALESCE(m.remind, 1) AS remind, COALESCE(a.at, 0) AS at FROM players p
     LEFT JOIN player_meta m ON m.player = p.id LEFT JOIN map_alerts a ON a.player = p.id WHERE p.id = ?`, ownerId).first();
-  if (!p || p.tg_id == null || p.no_dm || !p.remind || now - p.at < ALERT_GAP_MS) return false;
+  if (!p || now - p.at < ALERT_GAP_MS) return false;
+  const cc = countryOf(tile), tgOk = !!env.BOT_TOKEN && p.tg_id != null && !p.no_dm && !!p.remind;
+  const pushed = await pushPlayer(env, ownerId, { title: `⚔️ ${name} is attacking your land!`, body: `${flag(cc)} ${countryName(cc)}: open the game within 30 seconds to defend it yourself, or your CPU worms fight for you.`,
+    url: SITE(env) + '?src=push', tag: 'cww-attack', ttl: 120 }, now, true).catch(() => 0);
+  if (!tgOk && !pushed) return false;
   await q(env, 'INSERT INTO map_alerts (player, at) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET at = excluded.at', ownerId, now).run();
-  const cc = countryOf(tile);
+  if (!tgOk) return true;
   const r = await tg(env, 'sendMessage', { chat_id: p.tg_id, text: `⚔️ ${name} is attacking your land in ${flag(cc)} ${countryName(cc)}!\n\nJump in within 30 seconds and defend it yourself, or your CPU worms will fight for you.`,
     reply_markup: { inline_keyboard: [[{ text: '🛡️ Defend it myself', url: gameLink(env, 'd_' + attackId) }]] } });
   if (r && r.error_code === 403) await q(env, 'UPDATE player_meta SET no_dm = 1 WHERE player = ?', ownerId).run();

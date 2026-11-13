@@ -72,7 +72,9 @@ import { Royale } from './royale.js';
 import { webhook, setup, cron, tellAdmins, tellAdminsPhoto, tellAdminsText } from './bot.js';
 import { handle as mapHandle } from './map.js';
 import { saveGet, savePut, mergeSaves } from './save.js';
-import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward, carryPut, carryTake, tgLinkBonus } from './growth.js';
+import { funnelHit } from './funnel.js';
+import { pushApi } from './push.js';
+import { weekStart, monthStart, newPlayer, seen, started, played, result, claim, prepareShare, setRemind, invites, shareDone, rateReward, carryPut, carryTake, tgLinkBonus, ROYALE_HOURS } from './growth.js';
 import { handle as holderHandle, get as holderGet, badge } from './holders.js';
 import { handle as prizeHandle, logScore, tickets, runStart, runEnd } from './prize.js';
 import { feedResponse } from './feed.js';
@@ -245,6 +247,7 @@ async function link(env, me, target) {
     q('UPDATE rewards SET player = ? WHERE player = ?', b, a),                          // unclaimed play money follows the account
     q('UPDATE OR IGNORE carry SET player = ? WHERE player = ?', b, a), q('DELETE FROM carry WHERE player = ?', a),   // a progress copy on its way to Telegram
     q('UPDATE purchases SET player = ? WHERE player = ?', b, a),                        // Telegram Stars looks and badge follow the account
+    q('UPDATE push_subs SET player = ? WHERE player = ?', b, a),                        // browser reminders follow the account
     q('UPDATE OR IGNORE reward_once SET player = ? WHERE player = ?', b, a), q('DELETE FROM reward_once WHERE player = ?', a),   // invite bonuses already paid
     q('UPDATE score_log SET player = ? WHERE player = ?', b, a),                        // weekly prize: points, play days, steps
     q('UPDATE run_log SET player = ? WHERE player = ?', b, a), q('UPDATE royale_log SET player = ? WHERE player = ?', b, a),   // and the matches the server saw, which let those points count
@@ -306,6 +309,7 @@ const app = {
     if (path === '/online' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/count')).json(), 200, cors);
     if (path === '/live' && req.method === 'GET') return json(await (await lobbyOf(env).fetch('https://lobby/live')).json(), 200, cors);
     if (path === '/stats' && req.method === 'GET') return json({ players: await playerCount(env) }, 200, cors);
+    if (path === '/funnel' && req.method === 'POST') return json({ ok: await funnelHit(env, await req.json().catch(() => ({}))).catch(() => false) }, 200, cors);   // anonymous first-match counters (funnel.js)
     if (path === '/feed' && req.method === 'GET') return feedResponse(env, ctx, cors);
     const pic = path.match(/^\/worm\/img\/([a-z0-9]{12,24})(?:\.jpg)?$/);
     if (pic && req.method === 'GET') return wormImage(env, pic[1]);              // a custom worm's portrait, for anyone
@@ -541,8 +545,14 @@ const app = {
       h.set('x-cw', (await wormMine(env, me.id, hb.tier)) || ''); h.set('x-av', (await avatarOf(env, me.id)) || ''); h.set('x-sim', (await isSim(env, me.id)) ? '1' : '0');
       return env.ROYALE.get(env.ROYALE.idFromName(rws[1])).fetch(new Request(req.url, { headers: h }));
     }
+    if (path.startsWith('/push/')) {                                                   // browser reminders for web players (push.js)
+      const out = (path === '/push/key' ? req.method === 'GET' : req.method === 'POST') ? await pushApi(env, me, path, body) : null;
+      if (out) return json(out, out.error ? 400 : 200, cors);
+    }
     if (path === '/royale/ping') {                                                     // the Royale hour message from the bot (see royaleHour in growth.js)
-      if (req.method === 'POST') await env.DB.prepare(body.on ? 'INSERT OR IGNORE INTO royale_ping (player, at) VALUES (?, ?)' : 'DELETE FROM royale_ping WHERE player = ? AND ? > 0').bind(me.id, Date.now()).run();
+      // {on} switches the message on or off; {hour} is the Royale hour nearest the player's evening, from the phone's clock
+      if (req.method === 'POST' && 'on' in body) await env.DB.prepare(body.on ? 'INSERT OR IGNORE INTO royale_ping (player, at) VALUES (?, ?)' : 'DELETE FROM royale_ping WHERE player = ? AND ? > 0').bind(me.id, Date.now()).run();
+      if (req.method === 'POST' && ROYALE_HOURS.includes(body.hour)) await env.DB.prepare('INSERT INTO royale_slot (player, hour) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET hour = excluded.hour').bind(me.id, body.hour).run();
       return json({ on: !!(await env.DB.prepare('SELECT 1 AS y FROM royale_ping WHERE player = ?').bind(me.id).first()), tg: me.tg_id != null }, 200, cors);
     }
     if (path === '/match/new' && req.method === 'POST') return json({ code: newCode() }, 200, cors);

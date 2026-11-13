@@ -304,6 +304,10 @@ CREATE TABLE IF NOT EXISTS royale_ping (   -- players who asked the bot for a me
   player INTEGER PRIMARY KEY,
   at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS royale_slot (   -- which of the two Royale hours (13 or 20 UTC) is nearest that player's evening, sent by the game
+  player INTEGER PRIMARY KEY,
+  hour   INTEGER NOT NULL
+);
 -- Community teams (src/teams.js, Damian 2026-10-20): a name, a short tag, an emoji, an invite code, maybe the community's
 -- Telegram group. Up to 50 members; the leader (role 'lead') can remove members. Team points: every play-money $CWORM a member
 -- banks scores for the team that week, plus CLASH points for online wins over a rival team's worm. Play money, no real prize.
@@ -731,3 +735,25 @@ CREATE TABLE IF NOT EXISTS medals (
   UNIQUE (player, kind, ref)
 );
 CREATE INDEX IF NOT EXISTS medals_kind ON medals (kind, ref);
+CREATE TABLE IF NOT EXISTS funnel (   -- anonymous counts of how far new devices get in their first match (funnel.js): no player, device or network
+  day  TEXT NOT NULL,                 -- the UTC day the device first opened the game
+  plat TEXT NOT NULL,                 -- tg, web or app
+  lang TEXT NOT NULL,                 -- the game language
+  step TEXT NOT NULL,                 -- open, ready, start, shot, end, start2
+  n    INTEGER NOT NULL DEFAULT 0,
+  ms   INTEGER NOT NULL DEFAULT 0,    -- total time since the page opened, for the average
+  PRIMARY KEY (day, plat, lang, step)
+);
+CREATE TABLE IF NOT EXISTS push_subs (   -- browsers where a web player switched reminders on (push.js)
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  player    INTEGER NOT NULL,
+  endpoint  TEXT NOT NULL UNIQUE,        -- the push service address the browser gave
+  p256dh    TEXT NOT NULL,               -- the browser's public key, to encrypt for it
+  auth      TEXT NOT NULL,
+  lang      TEXT NOT NULL DEFAULT 'en',  -- the game language when they switched it on
+  created   INTEGER NOT NULL,
+  last_sent INTEGER NOT NULL DEFAULT 0,  -- the last reminder
+  tested    INTEGER NOT NULL DEFAULT 0,  -- the last "this is what they look like" message
+  fails     INTEGER NOT NULL DEFAULT 0   -- sends in a row the push service refused
+);
+CREATE INDEX IF NOT EXISTS push_subs_player ON push_subs (player);
