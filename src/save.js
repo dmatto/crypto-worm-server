@@ -38,6 +38,7 @@ function rescue(a, b) { if (!obj(a)) return b; if (!obj(b)) return a; const st =
 // key (without "cww-") -> how two copies merge. 'lww' = the latest pick by its stamp.
 const RULES = {
   bank: max, spent: max, stars: max, played: max, inv: max, tut: max, coach: max,     // lifetime BP earned / spent, stars, matches...
+  road: max, 'road-got': max,                                                         // Worm Road: steps walked, last stop paid (both only grow)
   wins: maxMap, camp: maxMap, 'mini-best': maxMap,                                     // Bulls/Bears wins, campaign stars per level, mini game bests
   owned: union, seen: union,                                                           // store items; splashes and tips already seen
   starter: flag, 'tut-hide': flag,

@@ -77,3 +77,9 @@ test('save: phone, desktop and web on one account share one copy; joined account
   const big = await call(env, '/me/save', { data: { 'cww-owned': Array.from({ length: 1500 }, (_, i) => 'item-number-' + i + '-'.repeat(40)) } }, phone.token);
   assert.equal(big.status, 413); assert.equal((await call(env, '/me/save', undefined, phone.token)).data['cww-bank'], 1200);   // a copy too big is refused, the old one stays
 });
+
+test('save: Worm Road progress travels between devices and keeps the furthest', () => {
+  const m = mergeSave({ d: { 'cww-road': 14, 'cww-road-got': 4 } }, { d: { 'cww-road': 9, 'cww-road-got': 3 } }).d;
+  assert.equal(m['cww-road'], 14); assert.equal(m['cww-road-got'], 4);
+  assert.equal(mergeSave(null, { d: { 'cww-road': 7 } }).d['cww-road'], 7);
+});
