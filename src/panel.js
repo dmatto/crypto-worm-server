@@ -75,6 +75,7 @@ export async function data(env, now = Date.now()) {
     all(env, 'SELECT b.id, b.label, b.status, b.created, COUNT(l.n) AS n FROM pay_batch b LEFT JOIN pay_line l ON l.batch = b.id GROUP BY b.id ORDER BY b.id DESC LIMIT 5'),
     todo(env, now).catch(() => []),
   ]);
+  const pz = await pulse(env, now).catch(() => null);
   const days = [];
   for (let d = dn - 13; d <= dn; d++) {
     const c = cohorts.find(x => x.d === d) || {};
@@ -94,7 +95,47 @@ export async function data(env, now = Date.now()) {
     gifts: gifts.map(g => ({ code: g.code, what: giftDescribe(g), uses: g.uses, max: g.max_uses, expires: g.expires, src: g.src })),
     sales: sales || { n: 0, stars: 0 }, feedback, owed: owed || { players: 0, bp: 0 },
     note: note ? { text: String(note.text).slice(0, 300), created: note.created, sent: note.sent, done: note.done } : null, noteToday: !!noteDay && noteDay.v === utcDay(now),
-    batches, todo: due,
+    batches, todo: due, pulse: pz,
+  };
+}
+
+// The pulse (Damian 2026-11-14: "see the players' general activity live, and any data that helps improve the experience"):
+// the last 48 hours by the hour, where today's players play from, how deep they play, who came back, and how far they got.
+const ROAD_COST = k => k <= 5 ? 3 : k <= 12 ? 5 : k <= 22 ? 6 : k <= 32 ? 7 : k <= 40 ? 8 : k <= 50 ? 9 : 10;   // the game's ROAD.cost
+export function roadStop(steps) { let n = Math.max(0, Number(steps) || 0), k = 0; while (k < 60 && n >= ROAD_COST(k + 1)) { n -= ROAD_COST(k + 1); k++ } return k }
+export const ROAD_WORLDS = [['Not started', 0], ['Underground', 12], ['Island', 22], ['Sky', 32], ['Moon', 40], ['Mars', 50], ['Deep space', 60]];
+const HOUR = 3600e3;
+export async function pulse(env, now = Date.now()) {
+  const day0 = Math.floor(now / DAY) * DAY, h0 = Math.floor(now / HOUR) * HOUR - 47 * HOUR, dn = Math.floor(now / DAY);
+  const [runs, joins, plat, cc, depth, secs, online, back, risk, first, saves] = await Promise.all([
+    all(env, `SELECT at / ${HOUR} AS h, COUNT(*) AS n, COUNT(DISTINCT player) AS p FROM run_log WHERE at >= ? AND player ${REAL} GROUP BY h`, h0),
+    all(env, `SELECT p.created / ${HOUR} AS h, SUM(${STAYED}) AS n FROM players p LEFT JOIN player_meta m ON m.player = p.id WHERE p.created >= ? AND p.id ${REAL} GROUP BY h`, h0),
+    one(env, `SELECT SUM(p.tg_id IS NOT NULL) AS tg, SUM(p.tg_id IS NULL) AS web, SUM(p.wallet IS NOT NULL) AS wallet FROM player_meta m JOIN players p ON p.id = m.player WHERE m.last_seen >= ? AND m.player ${REAL}`, day0),
+    all(env, `SELECT COALESCE(cc, '?') AS cc, COUNT(*) AS n FROM player_meta WHERE last_seen >= ? AND player ${REAL} GROUP BY cc ORDER BY n DESC LIMIT 10`, now - DAY),
+    all(env, `SELECT CASE WHEN n = 1 THEN '1' WHEN n <= 4 THEN '2-4' WHEN n <= 9 THEN '5-9' ELSE '10+' END AS b, COUNT(*) AS p FROM (SELECT player, COUNT(*) AS n FROM run_log WHERE at >= ? AND player ${REAL} GROUP BY player) GROUP BY b`, day0),
+    one(env, `SELECT AVG(secs) AS avg, SUM(secs < 60) AS short, COUNT(*) AS n FROM run_log WHERE at >= ? AND secs > 0 AND player ${REAL}`, day0),
+    all(env, 'SELECT reason, COUNT(*) AS n FROM matches WHERE ended >= ? GROUP BY reason', day0),
+    one(env, `SELECT COUNT(*) AS y, SUM(EXISTS (SELECT 1 FROM play_days t WHERE t.player = d.player AND t.day = ?)) AS t FROM play_days d WHERE d.day = ? AND d.player ${REAL}`, dn, dn - 1),
+    one(env, `SELECT COUNT(*) AS n FROM player_meta WHERE played >= 5 AND last_seen < ? AND last_seen >= ? AND player ${REAL}`, now - 2 * DAY, now - 7 * DAY),
+    one(env, `SELECT COUNT(*) AS n, AVG(MIN(m.last_seen - p.created, 2 * ${HOUR})) AS ms, SUM(m.played > 0) AS played, SUM(m.played >= 3) AS three FROM players p JOIN player_meta m ON m.player = p.id WHERE p.created >= ? AND p.id ${REAL} AND ${STAYED}`, now - DAY),
+    all(env, `SELECT json_extract(data, '$.d."cww-road"') AS road, json_extract(data, '$.d."cww-streak".n') AS streak FROM saves WHERE at >= ? AND player ${REAL} LIMIT 20000`, now - 7 * DAY),
+  ]);
+  const hours = [];
+  for (let i = 0; i < 48; i++) { const h = h0 / HOUR + i, r = runs.find(x => x.h === h) || {}; hours.push({ t: h * HOUR, matches: r.n || 0, players: r.p || 0, joined: (joins.find(x => x.h === h) || {}).n || 0 }) }
+  const worlds = ROAD_WORLDS.map(([name]) => ({ name, n: 0 })), streak = { '0': 0, '1': 0, '2-3': 0, '4-6': 0, '7+': 0 };
+  for (const s of saves) {
+    const k = roadStop(s.road); worlds[k === 0 ? 0 : ROAD_WORLDS.findIndex(([, top], i) => i > 0 && k <= top)].n++;
+    const n = Number(s.streak) || 0; streak[n <= 0 ? '0' : n === 1 ? '1' : n <= 3 ? '2-3' : n <= 6 ? '4-6' : '7+']++;
+  }
+  const on = {}; for (const r of online) on[r.reason] = r.n;
+  return {
+    hours, plat: { tg: plat && plat.tg || 0, web: plat && plat.web || 0, wallet: plat && plat.wallet || 0 }, countries: cc,
+    depth: ['1', '2-4', '5-9', '10+'].map(b => ({ b, n: (depth.find(x => x.b === b) || {}).p || 0 })),
+    match: { avg: Math.round(secs && secs.avg || 0), short: secs && secs.short || 0, n: secs && secs.n || 0 },
+    online: { played: on.played || 0, left: on.left || 0, timeout: on.timeout || 0 },
+    back: { yesterday: back && back.y || 0, today: back && back.t || 0 }, risk: risk && risk.n || 0,
+    first: { n: first && first.n || 0, mins: Math.round((first && first.ms || 0) / MIN * 10) / 10, played: first && first.played || 0, three: first && first.three || 0 },
+    road: worlds, streak: Object.entries(streak).map(([b, n]) => ({ b, n })), saves: saves.length,
   };
 }
 

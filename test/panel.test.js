@@ -141,3 +141,19 @@ test('panel: the user and password open it without a game account; wrong tries a
   const shut = await call(env, '/panel/login', { user: 'Boss', pass: 'correct horse battery' });
   assert.equal(shut.status, 429); assert.match(shut.error, /Too many/);                                            // five wrong tries: even the right one waits
 });
+
+test('panel: the pulse has 48 hours, platforms, depth, comebacks and Worm Road progress', async () => {
+  const env = makeEnv(), a = await admin(env), b = await guest(env), c = await guest(env), now = Date.now(), dn = Math.floor(now / DAY);
+  for (const [p, ago, secs] of [[b.id, 5 * 60e3, 200], [b.id, 30 * 60e3, 40], [c.id, 26 * 3600e3, 300]]) env.sql.prepare('INSERT INTO run_log (player, at, secs, credit) VALUES (?, ?, ?, 10)').run(p, now - ago, secs);
+  env.sql.prepare('INSERT INTO play_days (player, day) VALUES (?, ?), (?, ?), (?, ?)').run(b.id, dn - 1, b.id, dn, c.id, dn - 1);
+  env.sql.prepare('INSERT INTO saves (player, data, at) VALUES (?, ?, ?), (?, ?, ?)').run(b.id, JSON.stringify({ d: { 'cww-road': 40, 'cww-streak': { d: 'x', n: 3 } } }), now, c.id, JSON.stringify({ d: {} }), now);
+  const d = await call(env, '/panel/data', undefined, a.token), z = d.pulse;
+  assert.equal(z.hours.length, 48);
+  assert.equal(z.hours.reduce((s, h) => s + h.matches, 0), 3);
+  assert.deepEqual(z.depth.find(x => x.b === '2-4'), { b: '2-4', n: 1 });
+  assert.equal(z.match.short, 1);
+  assert.deepEqual(z.back, { yesterday: 2, today: 1 });
+  assert.equal(P.roadStop(0), 0); assert.equal(P.roadStop(15), 5); assert.equal(P.roadStop(20), 6); assert.equal(P.roadStop(40), 10);
+  assert.equal(z.road.find(w => w.name === 'Underground').n, 1); assert.equal(z.road.find(w => w.name === 'Not started').n, 1);
+  assert.equal(z.streak.find(s => s.b === '2-3').n, 1);
+});
