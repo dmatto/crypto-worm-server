@@ -1,0 +1,381 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+
+// Stand-ins: node:sqlite for D1, a clock the test moves, and Telegram's Bot API recorded in `calls` (group members in `members`).
+const RealResponse = globalThis.Response, realNow = Date.now;
+globalThis.Response = class extends RealResponse { constructor(b, i = {}) { super(b, i.status === 101 ? { status: 200 } : i); this.ws = i.webSocket } static json(b, i) { return new globalThis.Response(JSON.stringify(b), { ...i, headers: { 'content-type': 'application/json' } }) } };
+const calls = [], members = new Map(), bal = new Map(), ataOf = new Map(), TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+globalThis.fetch = async (url, init) => {
+  if (String(url).startsWith('https://rpc.test')) {                                  // Solana: the $CWORM in each wallet (`bal`)
+    const body = JSON.parse(init.body), one = r => r.method === 'getAccountInfo' ? { id: r.id, result: { value: { owner: TOKEN } } }
+      : r.method === 'getMultipleAccounts' && r.params[1].encoding === 'jsonParsed' && r.params[0].every(a => ataOf.has(a)) ? { id: r.id, result: { value: r.params[0].map(a => { const n = bal.get(ataOf.get(a));
+          return n == null ? null : { owner: TOKEN, data: { parsed: { info: { tokenAmount: { uiAmountString: String(n) } } } } } }) } } : { id: r.id, error: { message: 'no' } };
+    return Response.json(Array.isArray(body) ? body.map(one) : one(body));
+  }
+  const method = String(url).split('/').pop();
+  if (init.body instanceof FormData) { const doc = init.body.get('document'), bytes = Buffer.from(await doc.arrayBuffer()); calls.push([method, { chat_id: init.body.get('chat_id'), file: doc.name, bytes, csv: bytes.toString('utf8') }]); return Response.json({ ok: true, result: {} }) }
+  const body = JSON.parse(init.body); calls.push([method, body]);
+  if (method === 'getChatMember') { const st = members.get(body.user_id); return Response.json(st ? { ok: true, result: { status: st } } : { ok: false, error_code: 400, description: 'Bad Request: user not found' }) }
+  return Response.json({ ok: true, result: {} });
+};
+const { default: worker } = await import('../src/index.js');
+const { webhook, cron } = await import('../src/bot.js');
+const P = await import('../src/prize.js');
+const H = await import('../src/holders.js');
+
+const DAY = 864e5, MON = P.FIRST_WEEK, at = (d, h = 10) => MON + d * DAY + h * 3600e3;   // d days after Monday 19 Oct, at h:00 UTC
+let clock = realNow(); Date.now = () => clock;
+test.after(() => { Date.now = realNow });
+
+function makeEnv(extra = {}) {
+  const sql = new DatabaseSync(':memory:'); sql.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  const stmt = (q, a = []) => ({ bind: (...b) => stmt(q, b), first: async () => sql.prepare(q).get(...a) ?? null, run: async () => sql.prepare(q).run(...a), all: async () => ({ results: sql.prepare(q).all(...a) }) });
+  const DB = { prepare: q => stmt(q), batch: async l => { sql.exec('BEGIN'); try { const r = []; for (const s of l) r.push(await s.run()); sql.exec('COMMIT'); return r } catch (e) { sql.exec('ROLLBACK'); throw e } } };
+  const LOBBY = { idFromName: n => n, get: () => ({ fetch: async u => Response.json(String(u).endsWith('/ids') ? { ids: [] } : { online: [] }) }) };
+  return { DB, sql, LOBBY, SESSION_SECRET: 'test-secret', BOT_TOKEN: '123:BOT', GAME_LINK: 'https://t.me/CryptoWormWarsBot/play', ADMIN_PLAYERS: '99', ...extra };
+}
+const call = async (env, path, body, token) => {
+  const r = await worker.fetch(new Request('https://api.test' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+  return { status: r.status, ...(await r.json()) };
+};
+function tgInit(id, name) {
+  const fields = { auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id, first_name: name }) };
+  const check = Object.keys(fields).sort().map(k => `${k}=${fields[k]}`).join('\n'), secret = createHmac('sha256', 'WebAppData').update('123:BOT').digest();
+  return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+}
+const secret = createHash('sha256').update('webhook:test-secret').digest('hex').slice(0, 48);
+const hook = (env, update) => webhook(new Request('https://w/telegram/webhook', { method: 'POST', headers: { 'X-Telegram-Bot-Api-Secret-Token': secret }, body: JSON.stringify(update) }), env);
+// A Telegram player made `age` days before Monday 19 Oct, with a wallet that holds `bal` since `since` (a UTC day number).
+async function player(env, tgId, name, { age = 30, wallet, bal = 150000, since } = {}) {
+  const s = await call(env, '/auth/telegram', { initData: tgInit(tgId, name) }), id = s.player.id;
+  env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(MON - age * DAY, id);
+  if (wallet) {
+    env.sql.prepare('UPDATE players SET wallet = ? WHERE id = ?').run(wallet, id);
+    env.sql.prepare('INSERT INTO holders (player, wallet, balance, tier, tier_day, streak_day, checked) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, wallet, bal, bal >= 1e5 ? 1 : 0, since ?? Math.floor(MON / DAY) - 3, bal >= 1e5 ? since ?? Math.floor(MON / DAY) - 3 : null, MON);
+  }
+  return { id, token: s.token };
+}
+const score = async (env, p, amount, t) => { clock = t; return call(env, '/score', { amount }, p.token) };
+// A match the server sees start `secs` seconds before `t` and finish at `t` (the prize's match check)
+const play = async (env, p, t, secs = 300, mode = 'cpu') => { clock = t - secs * 1e3; await call(env, '/started', { mode }, p.token); clock = t; return call(env, '/played', { mode: 'cpu' }, p.token) };
+
+test('prize: hidden before Sunday 18 Oct except for admins and the preview switch', async () => {
+  clock = Date.UTC(2026, 9, 15, 12);
+  const env = makeEnv(), a = await player(env, 42, 'Dami');
+  assert.deepEqual(await call(env, '/prize', undefined, a.token), { status: 200, on: false });
+  env.ADMIN_PLAYERS = String(a.id);
+  const c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.on, true); assert.equal(c.week, MON); assert.equal(c.started, false); assert.equal(c.points, 0);
+  assert.deepEqual(c.prizes, [0.25, 0.17, 0.12, 0.07, 0.065, 0.065, 0.065, 0.065, 0.065, 0.065]); assert.equal(c.prizeUnit, 'SOL');
+  assert.ok(Math.abs(P.PRIZES.reduce((s, n) => s + n, 0) - 1) < 1e-9);   // 1 SOL a week
+  env.ADMIN_PLAYERS = '99'; env.PRIZE_PREVIEW = '1';
+  assert.equal((await call(env, '/prize', undefined, a.token)).on, true);
+  clock = Date.UTC(2026, 9, 18, 0); delete env.PRIZE_PREVIEW;
+  assert.equal((await call(env, '/prize', undefined, a.token)).on, true);                 // Sunday: shown to everyone, for next week
+});
+
+test('prize: five steps, prize points capped at 1,500 a day, a ticket in the ranking, 3 days of holding, and a dip restarts the count', async () => {
+  clock = at(0, 9); calls.length = 0;
+  const env = makeEnv(), a = await player(env, 42, 'Dami', { wallet: 'WaLLetA111111111111111111111111111' });
+  let c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.on, true); assert.equal(c.started, true); assert.equal(c.done, false);
+  assert.deepEqual(Object.fromEntries(Object.entries(c.steps).map(([k, v]) => [k, v.done ?? v.ok])), { group: false, x: false, wallet: true, hold: false, days: false, age: true });
+  assert.equal(c.steps.group.tg, true); assert.equal(c.steps.hold.days, 1); assert.equal(c.steps.hold.need, 3);   // a holder since before Monday: day 1 of 3
+  // 1. the group: Telegram is asked; at most every 30 s when the player taps Check
+  members.set(42, 'member'); clock += 5e3;
+  assert.equal((await call(env, '/prize/check', {}, a.token)).steps.group.done, false);     // the first look said "not a member" a moment ago
+  clock += 31e3;
+  assert.equal((await call(env, '/prize/check', {}, a.token)).steps.group.done, true);
+  assert.equal(calls.filter(([m]) => m === 'getChatMember').length, 2);
+  // 2. the X username: checked and kept without the @ or the link
+  assert.equal((await call(env, '/prize/x', { handle: 'not a name!' }, a.token)).status, 400);
+  c = await call(env, '/prize/x', { handle: 'https://x.com/Dami_W?s=20' }, a.token);
+  assert.equal(c.steps.x.done, true); assert.equal(c.steps.x.handle, '@Dami_W');
+  assert.equal(P.cleanX('@CryptoWorm72'), 'CryptoWorm72'); assert.equal(P.cleanX('this_name_is_too_long'), null);
+  // 5. three play days, and prize points: Monday 3 x 600 counts 1,500, Tuesday 500, once the server saw the matches
+  for (const t of [at(0, 10), at(0, 10) + 9e3, at(0, 10) + 18e3]) assert.equal((await score(env, a, 600, t)).added, 600);
+  await score(env, a, 500, at(1));
+  clock = at(1, 12); assert.equal((await call(env, '/prize', undefined, a.token)).points, 300);   // no checked match yet: 150 a day
+  await play(env, a, at(0, 8));                                                     // a 5-minute match carries 400
+  clock = at(1, 12); assert.equal((await call(env, '/prize', undefined, a.token)).points, 700);
+  for (const h of [9, 11, 12]) await play(env, a, at(0, h)); await play(env, a, at(1));
+  clock = at(1, 12); c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.points, 2000); assert.equal(c.steps.days.n, 2); assert.equal(c.done, false); assert.equal(c.rank, null);
+  await play(env, a, at(2)); await play(env, a, at(2) + 25e3);
+  clock = at(2, 12); c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.steps.days.n, 3); assert.equal(c.steps.hold.days, 3);
+  assert.equal(c.done, true); assert.equal(c.ticket, true); assert.equal(c.rank, 1); assert.equal(c.entrants, 1);
+  const rk = await call(env, '/ranking?period=week', undefined, a.token);
+  assert.equal(rk.me.ticket, true); assert.equal(rk.top[0].ticket, true);
+  // a reading under 100K restarts the count the next day, even while the holder tier is kept for 3 days: Thursday's dip
+  // takes the ticket away, and holding Friday to Sunday earns it back
+  env.sql.prepare('INSERT INTO hold_dips (player, day) VALUES (?, ?)').run(a.id, Math.floor(at(3) / DAY));
+  clock = at(3, 12); c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.steps.wallet.done, true); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.days, 0); assert.equal(c.steps.hold.nextWeek, false); assert.equal(c.ticket, false);
+  assert.equal((await call(env, '/ranking?period=week', undefined, a.token)).me.ticket, undefined);
+  clock = at(5, 12); assert.equal((await call(env, '/prize', undefined, a.token)).steps.hold.days, 2);
+  clock = at(6, 12); c = await call(env, '/prize', undefined, a.token); assert.equal(c.steps.hold.done, true); assert.equal(c.ticket, true);
+  // a dip on Saturday leaves too few days: next week
+  env.sql.prepare('INSERT INTO hold_dips (player, day) VALUES (?, ?)').run(a.id, Math.floor(at(5) / DAY));
+  c = await call(env, '/prize', undefined, a.token); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.nextWeek, true);
+  // the next week starts clean: the dip was last week, the streak goes on and counts from Monday
+  clock = at(7, 12); c = await call(env, '/prize', undefined, a.token);
+  assert.equal(c.week, MON + 7 * DAY); assert.equal(c.steps.hold.done, false); assert.equal(c.steps.hold.days, 1); assert.equal(c.steps.days.n, 0); assert.equal(c.points, 0);
+  clock = at(9, 12); assert.equal((await call(env, '/prize', undefined, a.token)).steps.hold.done, true);
+});
+
+test('prize: who can\'t win yet: no wallet, a wallet under 100K, a holder from mid-week, a new account, someone who left the group', async () => {
+  clock = at(0, 8);
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
+  const none = await player(env, 50, 'NoWallet'), low = await player(env, 51, 'Low', { wallet: 'LowWa11et1111111111111111111111111', bal: 5000 });
+  const late = await player(env, 52, 'Late', { wallet: 'LateWa11et111111111111111111111111', since: Math.floor(at(2) / DAY) });
+  const sat = await player(env, 55, 'Saturday', { wallet: 'SatWa11et1111111111111111111111111', since: Math.floor(at(5) / DAY) });
+  const young = await player(env, 53, 'Young', { age: -4.5, wallet: 'YoungWa11et11111111111111111111111' });   // made Friday noon
+  clock = at(2, 12);
+  let s = (await call(env, '/prize', undefined, none.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.linked, false);
+  s = (await call(env, '/prize', undefined, low.token)).steps; assert.equal(s.wallet.done, false); assert.equal(s.wallet.low, true);
+  s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.hold.done, false); assert.equal(s.hold.days, 1); assert.equal(s.hold.nextWeek, false);
+  clock = at(4, 12); s = (await call(env, '/prize', undefined, late.token)).steps; assert.equal(s.hold.done, true);   // a holder from Wednesday: 3 days by Friday
+  clock = at(5, 12); s = (await call(env, '/prize', undefined, sat.token)).steps; assert.equal(s.hold.done, false); assert.equal(s.hold.nextWeek, true);   // from Saturday: too late
+  clock = at(2, 12);
+  clock = at(5, 12); s = (await call(env, '/prize', undefined, young.token)).steps; assert.equal(s.age.ok, false); assert.equal(s.age.days, 1); assert.equal(s.age.from, MON + 7 * DAY); clock = at(2, 12);
+  // without SOLANA_RPC the free hosts rarely answer: a linked wallet never read counts until Monday's live check, a holder
+  // from mid-week counts too, and a wallet read under 100K still doesn't
+  delete env.SOLANA_RPC;
+  const unread = await player(env, 54, 'Unread'); env.sql.prepare('UPDATE players SET wallet = ? WHERE id = ?').run('UnreadWa11et111111111111111111111', unread.id);
+  s = (await call(env, '/prize', undefined, unread.token)).steps; assert.equal(s.wallet.done, true); assert.equal(s.wallet.pending, true); assert.equal(s.hold.done, true); assert.equal(s.hold.days, 3);
+  assert.equal((await call(env, '/prize', undefined, late.token)).steps.hold.done, true);
+  assert.equal((await call(env, '/prize', undefined, low.token)).steps.wallet.done, false);
+  // accounts need 3 days by the payout: one made at noon on Thursday is 3.5 days old at Monday's payout, one made at noon on
+  // Friday is 2.5 (too young) and 9.5 at the next one
+  assert.equal(P.steps({ created: MON + 3.5 * DAY }, MON, MON).age.ok, true);
+  assert.equal(P.steps({ created: MON + 4.5 * DAY }, MON, MON).age.ok, false);
+  assert.equal(P.steps({ created: MON + 4.5 * DAY }, MON + 7 * DAY, MON + 7 * DAY).age.ok, true);
+  // Telegram's answers: member, admin, restricted but in the group count; left, kicked and "user not found" don't
+  for (const [st, ok] of [['member', true], ['administrator', true], ['creator', true], ['left', false], ['kicked', false], [null, false]]) {
+    if (st) members.set(77, st); else members.delete(77);
+    assert.equal(await P.inGroup(env, 77), ok, String(st));
+  }
+});
+
+test('prize: /prize gives admins the eligible top 10 with the group asked again, the CSVs and the payout lines; logs are kept 5 weeks', async () => {
+  clock = at(0, 8); calls.length = 0;
+  const env = makeEnv({ PRIZE_GROUP: '-1002191131055', SOLANA_RPC: 'https://rpc.test/' }), ps = [], wal = [];
+  for (let i = 0; i < 12; i++) {
+    const w = H.b58(randomBytes(32)); wal.push(w); ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, i === 9 ? 50000 : 150000);   // Worm9 sold
+    const p = await player(env, 100 + i, 'Worm' + i, { wallet: w });
+    members.set(100 + i, 'member'); env.sql.prepare('INSERT INTO prize_entry (player, x, group_ok, group_at) VALUES (?, ?, 1, ?)').run(p.id, 'worm' + i, clock);
+    for (const d of [0, 1, 2]) { await play(env, p, at(d, 10) + i * 1e3); await score(env, p, 100 + i * 10, at(d, 11) + i * 1e3) }
+    ps.push(p);
+  }
+  await score(env, ps[3], 50, at(4, 2));                                              // a night report
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  members.set(111, 'left');                                                         // the top player left the group: skipped
+  clock = at(8, 9); calls.length = 0;
+  await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
+  const text = calls.find(([m]) => m === 'sendMessage')[1].text;
+  assert.match(text, /Weekly prize 2026-10-19 to 2026-10-25/); assert.match(text, /12 players did all 5 steps/);
+  assert.match(text, /Prizes are paid in SOL/); assert.match(text, /1\. Worm10 \(id \d+\) · 600 pts · 0\.25 SOL\n/); assert.match(text, /holds 150,000/); assert.doesNotMatch(text, /Next in line|≈/);
+  assert.match(text, /Dropped just now: Worm11 \(left the group\), Worm9 \(holds 50,000\)/);
+  assert.match(text, /X @worm3 · 4 reports, max 130\/hour, 1 at night/);
+  const docs = calls.filter(([m]) => m === 'sendDocument').map(([, b]) => b);
+  assert.deepEqual(docs.map(d => d.file), ['weekly-prize-2026-10-19.csv', 'weekly-prize-2026-10-19-score-log.csv']);
+  for (const d of docs) { assert.equal(d.bytes.subarray(0, 3).toString('hex'), 'efbbbf'); assert.notEqual(d.bytes.subarray(3, 6).toString('hex'), 'efbbbf') }   // one BOM, so Excel reads the names
+  const rows = docs[0].csv.slice(1).trim().split('\r\n');
+  assert.ok(docs[0].csv.startsWith('\ufeffplace,prize_sol,name,'));
+  assert.equal(rows.length, 11); assert.match(rows[1], /^1,0\.25,Worm10,/); assert.match(rows[2], /^2,0\.17,Worm8,/); assert.match(rows[10], /^10,0\.065,Worm0,/);
+  assert.ok(rows[1].includes(',150000,150000,'));                                   // the balance now and the last daily reading
+  const pay = calls.filter(([m]) => m === 'sendMessage').pop()[1].text;
+  assert.match(pay, /wallet,SOL/); assert.ok(pay.includes(wal[10] + ',0.25\n' + wal[8] + ',0.17')); assert.equal((pay.match(/,0\.065/g) || []).length, 6); assert.equal((pay.match(/,0\.07\b/g) || []).length, 1);
+  // everyone else gets nothing from /prize
+  calls.length = 0;
+  await hook(env, { message: { chat: { id: 100, type: 'private' }, from: { id: 100, first_name: 'Worm0' }, text: '/prize' } });
+  assert.ok(!calls.some(([m]) => m === 'sendDocument'));
+  const tip = calls.find(([m]) => m === 'sendMessage')[1].text;                      // a pointer to the game, with no token name or amounts
+  assert.match(tip, /Weekly prizes/); assert.match(tip, /prize\.html/); assert.doesNotMatch(tip, /CWORM|000/);
+  // this week has nothing yet; before the first week, /prize last says so
+  clock = at(-3); calls.length = 0;
+  await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: '/prize last' } });
+  assert.match(calls.find(([m]) => m === 'sendMessage')[1].text, /No prize week has ended yet/);
+  // once a day the cron asks Telegram about the first admin, so a bot that can't see members shows up in bot_kv
+  members.set(7, 'administrator'); env.LOBBY = { idFromName: n => n, get: () => ({ fetch: async () => Response.json({}) }) };
+  const q = Math.floor(at(9) / 9e5) * 9e5; calls.length = 0; await cron(env, q); await cron(env, q + 9e5);
+  assert.equal(calls.filter(([m, b]) => m === 'getChatMember' && b.chat_id === -1002191131055 && b.user_id === 7).length, 1);
+  assert.deepEqual(JSON.parse(env.sql.prepare("SELECT v FROM bot_kv WHERE k = 'prize_probe'").get().v), { day: Math.floor(q / DAY), at: q, ok: true, status: 'administrator', error: null });
+  // cleanup keeps 35 days
+  env.sql.prepare('INSERT INTO score_log (player, at, amount) VALUES (?, ?, ?)').run(ps[0].id, at(39), 10);
+  await P.cleanup(env, at(40));
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM score_log').get().n, 1);
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM play_days').get().n, 0);
+});
+
+test('prize vs scripts: points need matches the server saw, ties go to online wins against real players, one X username each, and /prize skip', async () => {
+  clock = at(0, 8); calls.length = 0;
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' }), [a, b, c, d] = [];
+  const mk = async (tgId, name) => { const w = H.b58(randomBytes(32)); ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, 150000); members.set(tgId, 'member');
+    const p = await player(env, tgId, name, { wallet: w }); env.sql.prepare('INSERT INTO prize_entry (player, x, group_ok, group_at) VALUES (?, ?, 1, ?)').run(p.id, name.toLowerCase(), clock); return p };
+  const ann = await mk(300, 'Ann'), bob = await mk(301, 'Bob'), cat = await mk(302, 'Cat');
+  const pts = async p => { const r = (await P.points(env, MON)).find(x => x.player === p.id); return r ? r.pts : 0 };
+  // the match check: what each finished match carries, and what carries nothing
+  clock = at(0, 9); assert.equal(await P.runEnd(env, ann.id), 0);                  // /played with no /started
+  await P.runStart(env, ann.id, 'cpu', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 15e3), 0);     // under 20 s
+  await P.runStart(env, ann.id, 'tutorial', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 300e3), 0);
+  await P.runStart(env, ann.id, 'mini', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 300e3), 0);
+  await P.runStart(env, ann.id, 'online', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 100e3), 150);   // 1.5 a second
+  assert.equal(await P.runEnd(env, ann.id, at(0, 9) + 200e3), 0);                    // closed already
+  await P.runStart(env, ann.id, 'cpu', at(0, 9)); assert.equal(await P.runEnd(env, ann.id, at(0, 12)), 400);           // at most 400
+  // a script that only sends scores: 150 a day for mini games, the rest stays in the ranking but not in the prize
+  for (let i = 0; i < 3; i++) await score(env, bob, 600, at(1, 10) + i * 9e3);
+  assert.equal(await pts(bob), 150); assert.equal((await call(env, '/ranking?period=week', undefined, bob.token)).me.cworm, 1800);
+  // load-test bots don't open matches
+  const sim = await call(env, '/auth/guest', {}); clock = at(1, 11);
+  await worker.fetch(new Request('https://api.test/started', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + sim.token, 'x-sim-key': 'x' }, body: '{"mode":"cpu"}' }), env);
+  assert.equal(env.sql.prepare('SELECT COUNT(*) AS n FROM prize_run WHERE player = ?').get(sim.player.id).n, 0);
+  // Ann and Cat both reach 1,500 on three days; Cat beat two real players online, Ann beat a bot, a guest and herself
+  for (const p of [ann, cat]) for (const dd of [0, 1, 2]) { for (const h of [13, 14, 15, 16]) await play(env, p, at(dd, h) + p.id * 1e3); for (let i = 0; i < 3; i++) await score(env, p, 600, at(dd, 17) + p.id * 1e3 + i * 9e3) }
+  const guest = await call(env, '/auth/guest', {}), sp = env.sql.prepare("INSERT INTO players (name, created) VALUES ('SimBot', 0) RETURNING id").get().id;
+  env.sql.prepare('INSERT INTO sim_players (player, created) VALUES (?, 0)').run(sp);
+  const m = (w, l, t) => env.sql.prepare("INSERT INTO matches (p0, p1, winner, reason, ended) VALUES (?, ?, ?, 'played', ?)").run(l, w, w, t);
+  m(cat.id, bob.id, at(1, 18)); m(cat.id, bob.id, at(1, 19)); m(cat.id, ann.id, at(2, 18));       // Bob counts once that day
+  for (const l of [sp, guest.player.id, ann.id]) m(ann.id, l, at(1, 18) + l);   // a bot and a guest don't count, Cat's win over Ann does
+  m(ann.id, ann.id, at(1, 20));
+  assert.equal(await pts(ann), 4500); assert.equal(await pts(cat), 4500);
+  clock = at(3, 12); let ch = await P.chart(env, MON, clock);
+  assert.deepEqual(ch.map(r => [r.name, r.wins, r.opps]), [['Cat', 2, 2], ['Ann', 0, 0]]);
+  assert.equal((await call(env, '/prize', undefined, cat.token)).rank, 1);
+  // one X username per player, whatever the case
+  assert.equal((await call(env, '/prize/x', { handle: '@CAT' }, ann.token)).status, 409);
+  assert.equal((await call(env, '/prize/x', { handle: '@cat' }, cat.token)).steps.x.handle, '@cat');
+  // /prize skip takes Cat out; she still plays and ranks, her card says so; /prize unskip lets her back
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  const say = async text => { calls.length = 0; await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text } }); return calls.filter(([x]) => x === 'sendMessage').map(([, y]) => y.text) };
+  assert.match((await say('/prize skip ' + cat.id))[0], /Cat \(id \d+\) is out of the weekly prize/);
+  assert.match((await say('/prize skip 99999'))[0], /No player with id 99999/);
+  const card = await call(env, '/prize', undefined, cat.token); assert.equal(card.skipped, true); assert.equal(card.ticket, false); assert.equal(card.rank, null);
+  assert.deepEqual((await P.chart(env, MON, clock)).map(r => r.name), ['Ann']);
+  assert.equal((await call(env, '/ranking?period=week', undefined, cat.token)).me.ticket, undefined);
+  let text = (await say('/prize'))[0];
+  assert.match(text, /1\. Ann \(id \d+\) · 4,500 pts/); assert.match(text, /14 checked matches · 0 online wins vs 0 players · ⚠️ 100 pts without a checked match/); assert.match(text, /Taken out by an admin: Cat/);
+  assert.match((await say('/prize unskip ' + cat.id))[0], /Cat \(id \d+\) can win the weekly prize again/);
+  // a team wallet (HOLDER_EXCLUDE) never takes part: Cat's card says she's out and the chart leaves her out until it's off the list
+  const cw = env.sql.prepare('SELECT wallet FROM players WHERE id = ?').get(cat.id).wallet; env.HOLDER_EXCLUDE = 'TeamWallet1, ' + cw;
+  const tc = await call(env, '/prize', undefined, cat.token); assert.equal(tc.skipped, true); assert.equal(tc.team, true); assert.equal(tc.ticket, false); assert.equal(tc.rank, null);
+  assert.deepEqual((await P.chart(env, MON, clock)).map(r => r.name), ['Ann']); assert.equal((await call(env, '/prize', undefined, ann.token)).team, undefined);
+  delete env.HOLDER_EXCLUDE;
+  text = (await say('/prize'))[0]; assert.match(text, /1\. Cat/); assert.match(text, /2 online wins vs 2 players/);
+  // the red flags: points the checks didn't let through, and a script's even gaps and same amounts
+  for (let i = 0; i < 25; i++) await score(env, ann, 40, at(4, 1) + i * 9e3);
+  text = (await say('/prize'))[0];
+  assert.match(text, /Ann[^]*⚠️ 950 pts without a checked match \(not counted\) · ⚠️ reports at even gaps · ⚠️ same amount again and again/);
+  const csv = calls.find(([x]) => x === 'sendDocument')[1].csv;
+  assert.match(csv, /checked_matches,points_without_checked_match,online_wins,win_opponents,even_timing,same_amounts/);
+  // a network both played from (net.js): a hint next to each of them, in the message and the file
+  for (const p of [ann, cat]) env.sql.prepare("INSERT INTO net_seen (player, h, day) VALUES (?, 'abc123abc123abc1', ?)").run(p.id, Math.floor(Date.now() / 864e5));
+  calls.length = 0; text = (await say('/prize'))[0];
+  assert.match(text, new RegExp(`Cat[^]*⚠️ same network as #${ann.id}`)); assert.match(text, new RegExp(`Ann[^]*⚠️ same network as #${cat.id}`));
+  assert.match(calls.find(([x]) => x === 'sendDocument')[1].csv, new RegExp(`,same_network_as\r\n1,0\\.25,Ann,[^\r]*,${cat.id}\r\n`));
+});
+
+test('new players prize: accounts made this week with a holder wallet, by prize points; no waiting days; the admins\' list reads the wallets again', async () => {
+  const W = 21, RK = P.ROOKIE_FROM; assert.equal(RK, MON + W * DAY);                 // the week of Monday 9 November
+  clock = at(W, 8); calls.length = 0;
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
+  const mk = async (tgId, name, joined, amount = 150000) => { const w = amount == null ? undefined : H.b58(randomBytes(32)); if (w) { ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, amount) }
+    const p = await player(env, tgId, name, { wallet: w, bal: amount ?? 0 }); env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(joined, p.id); return { ...p, wallet: w } };
+  const old = await mk(400, 'Veteran', MON - 30 * DAY), budi = await mk(401, 'Budi', at(W, 9)), siti = await mk(402, 'Siti', at(W + 1, 9)), low = await mk(403, 'Low', at(W + 1, 9), 50000),
+    none = await mk(404, 'NoWallet', at(W + 2, 9), null), late = await mk(405, 'Late', at(W + 4, 9)), sold = await mk(406, 'Sold', at(W + 2, 9)), out = await mk(407, 'Scripted', at(W + 2, 9));
+  const go = async (p, d, amount) => { await play(env, p, at(W + d, 12) + p.id * 1e3); await score(env, p, amount, at(W + d, 13) + p.id * 1e3) };
+  await go(old, 0, 500); await go(old, 1, 500); await go(budi, 0, 300); await go(budi, 1, 200); await go(siti, 1, 300); await go(low, 1, 400); await go(none, 2, 400);
+  await go(late, 4, 500); await go(sold, 2, 100); await go(out, 2, 550);
+  await P.skip(env, out.id, true, null, at(W + 3));
+
+  // the chart: only this week's accounts with a holder's wallet; ties go to who got there first
+  clock = at(W + 5, 9);
+  const c = await P.rookieChart(env, RK, clock);
+  assert.deepEqual(c.map(r => [r.name, r.pts]), [['Budi', 500], ['Late', 500], ['Siti', 300], ['Sold', 100]]);
+  assert.deepEqual(await P.rookieChart(env, RK - 7 * DAY, clock), []);                // not before its first week
+  // the cards: a new holder is in with a place, the others see what is missing, older players only learn it exists
+  const card = async p => (await call(env, '/prize', undefined, p.token)).rookie;
+  assert.deepEqual(await card(budi), { on: true, prizes: [0.1, 0.1, 0.1], mine: true, linked: true, holder: true, low: false, checking: false, ticket: true, rank: 1, entrants: 4 });
+  assert.deepEqual(await card(late), { on: true, prizes: [0.1, 0.1, 0.1], mine: true, linked: true, holder: true, low: false, checking: false, ticket: true, rank: 2, entrants: 4 });
+  const cl = await card(low); assert.equal(cl.ticket, false); assert.equal(cl.low, true); assert.equal(cl.linked, true); assert.equal(cl.rank, null);
+  const cn = await card(none); assert.equal(cn.ticket, false); assert.equal(cn.linked, false); assert.equal(cn.mine, true);
+  assert.equal((await card(out)).ticket, false);                                      // taken out by an admin
+  assert.deepEqual(await card(old), { on: true, prizes: [0.1, 0.1, 0.1], mine: false });
+  const full = await call(env, '/prize', undefined, budi.token);                      // a new player isn't in the weekly prize by this alone
+  assert.equal(full.ticket, false); assert.equal(full.on, true);
+  // next week they are no longer new
+  clock = at(W + 7, 9); assert.deepEqual(await card(budi), { on: true, prizes: [0.1, 0.1, 0.1], mine: false });
+
+  // Monday: the admins' list, with the wallets read again (Sold dropped under 100K) and the networks shared with other accounts
+  bal.set(sold.wallet, 20000);
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  for (const p of [budi, old]) env.sql.prepare("INSERT INTO net_seen (player, h, day) VALUES (?, 'feed123feed123fe', ?)").run(p.id, Math.floor(at(W + 2) / DAY));
+  clock = at(W + 7, 10); calls.length = 0;
+  const say = async t => { calls.length = 0; await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: t } }); return calls.filter(([m]) => m === 'sendMessage').map(([, b]) => b.text) };
+  const [text, pay] = await say('/prize new last');
+  assert.match(text, /🆕 New players prize 2026-11-09 to 2026-11-15\n4 new players with a holder's wallet scored/); assert.doesNotMatch(text, /still running/);
+  assert.match(text, /3 prizes of 0\.1 SOL: \/pay rookies/);
+  assert.match(text, new RegExp(`1\\. Budi \\(id ${budi.id}\\) · 500 pts · 0\\.1 SOL\\n    joined 2026-11-09 · 2 checked matches[^]*⚠️ same network as #${old.id} Veteran[^]*holds 150,000`));
+  assert.match(text, /2\. Late \(id \d+\) · 500 pts · 0\.1 SOL\n    joined 2026-11-13/); assert.match(text, /3\. Siti \(id \d+\) · 300 pts · 0\.1 SOL/);
+  assert.match(text, /Dropped just now: Sold \(holds 20,000\)/); assert.doesNotMatch(text, /Veteran \(id|Low|NoWallet|Scripted/);
+  assert.equal(pay, `Payout lines (wallet,SOL):\n<code>${budi.wallet},0.1\n${late.wallet},0.1\n${siti.wallet},0.1</code>`);
+  const r = await P.rookieList(env, RK, clock); assert.equal(r.entrants, 4); assert.deepEqual(r.winners.map(x => [x.place, x.name, x.prize]), [[1, 'Budi', 0.1], [2, 'Late', 0.1], [3, 'Siti', 0.1]]);
+  // this week: nobody yet; rookies is the same command; before the first week it says when it starts
+  assert.match((await say('/prize rookies'))[0], /2026-11-16 to 2026-11-22 \(still running\)[^]*Nobody qualified yet/);
+  clock = at(W - 2, 10); assert.match((await say('/prize new'))[0], /starts with the week of 2026-11-09/);
+  assert.match((await say('/prize'))[0], /\/prize new shows the new players prize/);
+  // everyone else gets no list
+  clock = at(W + 7, 10); calls.length = 0;
+  await hook(env, { message: { chat: { id: 401, type: 'private' }, from: { id: 401, first_name: 'Budi' }, text: '/prize new' } });
+  assert.doesNotMatch(calls.find(([m]) => m === 'sendMessage')[1].text, /SOL|holds|wallet,/);
+});
+
+test('weekly draw: a ticket per day played for holders, extra for holding longer; the order is fixed by the week and its entries; first-time Holder reward once', async () => {
+  const W = 28, DR = P.DRAW_FROM; assert.equal(DR, MON + W * DAY);                     // the week of Monday 16 November
+  clock = at(W, 8); calls.length = 0;
+  const env = makeEnv({ SOLANA_RPC: 'https://rpc.test/' });
+  const mk = async (tgId, name, amount = 150000) => { const w = amount == null ? undefined : H.b58(randomBytes(32)); if (w) { ataOf.set(await H.ata(w, TOKEN), w); bal.set(w, amount) }
+    const p = await player(env, tgId, name, { wallet: w, bal: amount ?? 0 }); env.sql.prepare('UPDATE players SET created = ? WHERE id = ?').run(MON, p.id); return { ...p, wallet: w } };
+  const ana = await mk(501, 'Ana'), bo = await mk(502, 'Bo'), low = await mk(503, 'Low', 50000), none = await mk(504, 'NoWallet', null), idle = await mk(505, 'Idle'), out = await mk(506, 'Out'), sold = await mk(507, 'Sold');
+  env.sql.prepare('UPDATE holders SET streak_day = ? WHERE player = ?').run(Math.floor(at(W) / DAY) - 40, ana.id);   // Ana has held for 40 days
+  for (const p of [bo, sold]) env.sql.prepare('UPDATE holders SET streak_day = ? WHERE player = ?').run(Math.floor(at(W) / DAY), p.id);
+  for (const d of [0, 1, 2]) await play(env, ana, at(W + d, 12) + 1);
+  await play(env, bo, at(W + 1, 12) + 2); await play(env, low, at(W + 1, 12) + 3); await play(env, none, at(W + 1, 12) + 4); await play(env, out, at(W + 1, 12) + 6); await play(env, sold, at(W + 2, 12) + 7);
+  await P.skip(env, out.id, true, null, at(W + 2));
+  clock = at(W + 3, 9);
+  const card = async p => (await call(env, '/prize', undefined, p.token)).draw;
+  const ca = await card(ana); assert.equal(ca.days, 3); assert.equal(ca.bonus, 2); assert.equal(ca.tickets, 5); assert.equal(ca.entrants, 3); assert.equal(ca.total, 7); assert.deepEqual(ca.prizes, [0.05, 0.05, 0.05, 0.05, 0.05]);
+  const cb = await card(bo); assert.equal(cb.tickets, 1); assert.equal(cb.bonus, 0);
+  const cl = await card(low); assert.equal(cl.tickets, 0); assert.equal(cl.low, true);
+  assert.equal((await card(none)).linked, false); assert.equal((await card(idle)).tickets, 0); assert.equal((await card(out)).tickets, 0);
+  // the week before it starts the card only says when; earlier there is nothing
+  clock = at(W - 3, 9); assert.deepEqual(await card(ana), { on: true, starts: DR, prizes: P.DRAW_PRIZES, bonus: P.DRAW_BONUS, maxDays: 7 });
+  clock = at(W - 10, 9); assert.equal(await card(ana), undefined);
+  // the order is the same every time, and every entrant is in it once
+  clock = at(W + 7, 10);
+  const e = await P.drawEntrants(env, DR, clock); assert.deepEqual(e.map(r => [r.name, r.tickets]), [['Ana', 5], ['Bo', 2], ['Sold', 2]]);
+  const o1 = (await P.drawOrder(DR, e)).map(r => r.id), o2 = (await P.drawOrder(DR, e)).map(r => r.id); assert.deepEqual(o1, o2); assert.deepEqual([...o1].sort(), e.map(r => r.id).sort());
+  assert.notDeepEqual((await P.drawOrder(DR + 7 * DAY, e)).map(r => r.key), (await P.drawOrder(DR, e)).map(r => r.key));
+  // more tickets win more often (over many weeks' seeds)
+  let first = 0; for (let i = 0; i < 300; i++) if ((await P.drawOrder(DR + i, e))[0].id === ana.id) first++; assert.ok(first > 125 && first < 210, 'Ana first ' + first);
+  // Monday: a wallet under 100K is passed over; the list and the payout lines
+  bal.set(sold.wallet, 20000);
+  const r = await P.drawList(env, DR, clock); assert.equal(r.entrants, 3); assert.equal(r.total, 9); assert.deepEqual(r.winners.map(x => x.name).sort(), ['Ana', 'Bo']); assert.deepEqual(r.dropped.map(x => x.name), ['Sold']);
+  const admin = await player(env, 7, 'Damian'); env.ADMIN_PLAYERS = String(admin.id);
+  const say = async t => { calls.length = 0; await hook(env, { message: { chat: { id: 7, type: 'private' }, from: { id: 7, first_name: 'Damian' }, text: t } }); return calls.filter(([m]) => m === 'sendMessage').map(([, b]) => b.text) };
+  const [text, pay] = await say('/prize draw last');
+  assert.match(text, /🎟️ Weekly draw 2026-11-16 to 2026-11-22\n3 holders with 9 tickets\.\n5 prizes of 0\.05 SOL: \/pay draw/); assert.doesNotMatch(text, /still running|If it ended now/);
+  assert.match(text, /Ana \(id \d+\) · 5 tickets \(3 play days \+2 for holding 4\d days\) · 0\.05 SOL/); assert.match(text, /Bo \(id \d+\) · 2 tickets \(1 play day \+1 for holding 7 days\) · 0\.05 SOL/);
+  assert.match(text, /Passed over just now: Sold \(holds 20,000\)/); assert.match(pay, /^Payout lines \(wallet,SOL\):\n<code>[^,]+,0\.05\n[^,]+,0\.05<\/code>$/);
+  assert.match((await say('/prize draw'))[0], /still running[^]*Nobody has a ticket yet/);
+  clock = at(W - 2, 10); assert.match((await say('/prize draw'))[0], /starts with the week of 2026-11-16/);
+  // the first-time Holder reward: once for a holder, never for a wallet under 100K
+  const got = id => env.sql.prepare("SELECT amount FROM rewards WHERE player = ? AND reason = 'holder1'").all(id).map(x => x.amount);
+  assert.deepEqual(got(ana.id), [2000]); assert.deepEqual(got(low.id), []); assert.deepEqual(got(none.id), []);
+  clock = at(W + 3, 9); const full = await call(env, '/prize', undefined, ana.token); assert.equal(full.holderFirst, 2000); assert.equal(full.holderPaid, undefined); assert.deepEqual(got(ana.id), [2000]);
+});

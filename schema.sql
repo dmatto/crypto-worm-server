@@ -17,3 +17,746 @@ CREATE TABLE IF NOT EXISTS matches (
   ended   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS matches_ended ON matches (ended);
+CREATE TABLE IF NOT EXISTS friends (
+  player  INTEGER NOT NULL,        -- who added the friend
+  friend  INTEGER NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (player, friend)
+);
+CREATE INDEX IF NOT EXISTS friends_friend ON friends (friend);
+CREATE TABLE IF NOT EXISTS login_codes (   -- short codes that sign another device into the same account
+  code    TEXT PRIMARY KEY,
+  player  INTEGER NOT NULL,
+  expires INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bot_log (       -- what the scheduled bot setup saw and did
+  at      INTEGER NOT NULL,
+  note    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback (      -- what beta testers tell us from the game's Feedback page
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  player   INTEGER NOT NULL,
+  name     TEXT NOT NULL,                  -- the player's name when they sent it
+  tg_id    INTEGER,                        -- their Telegram id, when signed in through Telegram
+  wallet   TEXT,                           -- Solana address: the linked one, or one they typed
+  wallet_ok INTEGER NOT NULL DEFAULT 0,    -- 1 when that address is the wallet they signed in with
+  rating   INTEGER,                        -- 1-5 stars, NULL when skipped
+  text     TEXT NOT NULL,
+  info     TEXT,                           -- platform, language and level, for context
+  created  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_player ON feedback (player, created);
+CREATE TABLE IF NOT EXISTS nicknames (     -- names players picked themselves; Telegram sign-in then keeps them
+  player  INTEGER PRIMARY KEY,
+  nick    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  changed INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cworm_scores (  -- play-money $CWORM each player gained, for the ranking (the game reports it after each match)
+  player     INTEGER PRIMARY KEY,
+  total      INTEGER NOT NULL DEFAULT 0,   -- all time
+  week_start INTEGER NOT NULL DEFAULT 0,   -- Monday 00:00 UTC of the week `week` counts
+  week       INTEGER NOT NULL DEFAULT 0,
+  day_start  INTEGER NOT NULL DEFAULT 0,   -- for the daily cap
+  day        INTEGER NOT NULL DEFAULT 0,
+  last       INTEGER NOT NULL DEFAULT 0,   -- last report, for the minimum gap
+  imported   INTEGER NOT NULL DEFAULT 0    -- 1 once the wallet total from before the ranking was brought in
+);
+CREATE INDEX IF NOT EXISTS cworm_week ON cworm_scores (week_start, week);
+CREATE INDEX IF NOT EXISTS cworm_total ON cworm_scores (total);
+CREATE TABLE IF NOT EXISTS player_meta (   -- growth tracking: where a player came from, how much they play, invites and bot reminders
+  player     INTEGER PRIMARY KEY,
+  source     TEXT,                         -- first-touch source tag: s_<tag> links, 'friend', 'telegram', 'web', ...
+  invited_by INTEGER,                      -- the player whose friend link brought this brand-new account
+  invite_paid INTEGER,                     -- when the invite reward was paid (or 0 when the inviter's daily cap was hit)
+  played     INTEGER NOT NULL DEFAULT 0,   -- finished matches, any mode, as the game reports them
+  started    INTEGER NOT NULL DEFAULT 0,   -- when the game first reported a started match or mini game (the players count on Home)
+  last_played INTEGER NOT NULL DEFAULT 0,
+  last_seen  INTEGER NOT NULL DEFAULT 0,
+  daily      INTEGER NOT NULL DEFAULT 0,   -- 1 once they played a Daily island
+  daily_day  INTEGER NOT NULL DEFAULT 0,   -- the UTC day number of their last Daily island
+  cc         TEXT,                         -- country from Cloudflare, for the flag in the weekly top 10
+  remind     INTEGER NOT NULL DEFAULT 1,   -- bot reminders on (Settings, /stop)
+  no_dm      INTEGER NOT NULL DEFAULT 0,   -- 1 when Telegram refused a bot message (no write access); cleared by /start or the game
+  reminded   INTEGER NOT NULL DEFAULT 0    -- last reminder sent
+);
+CREATE INDEX IF NOT EXISTS meta_invited ON player_meta (invited_by, invite_paid);
+CREATE INDEX IF NOT EXISTS meta_source ON player_meta (source);
+CREATE TABLE IF NOT EXISTS rewards (       -- play-money $CWORM the server owes a player's game (invite rewards); the game claims them
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  amount  INTEGER NOT NULL,
+  reason  TEXT NOT NULL,
+  note    TEXT,
+  created INTEGER NOT NULL,
+  claimed INTEGER
+);
+CREATE INDEX IF NOT EXISTS rewards_player ON rewards (player, claimed);
+CREATE TABLE IF NOT EXISTS score_log (     -- every score report (play-money $CWORM a match banked), for the weekly prize chart and its fair-play review; kept 5 weeks
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  amount  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS score_log_at ON score_log (at);
+CREATE INDEX IF NOT EXISTS score_log_player ON score_log (player, at);
+CREATE TABLE IF NOT EXISTS play_days (     -- UTC days a player finished a match (the prize's "play on 3 days")
+  player  INTEGER NOT NULL,
+  day     INTEGER NOT NULL,                -- UTC day number
+  PRIMARY KEY (player, day)
+);
+CREATE TABLE IF NOT EXISTS hold_dips (     -- days a wallet reading found less than 100K $CWORM (the prize's "hold all week")
+  player  INTEGER NOT NULL,
+  day     INTEGER NOT NULL,
+  PRIMARY KEY (player, day)
+);
+CREATE TABLE IF NOT EXISTS prize_entry (   -- the weekly prize steps a player did: X username typed, Telegram group membership as Telegram last said
+  player   INTEGER PRIMARY KEY,
+  x        TEXT,                           -- X username without @
+  x_at     INTEGER NOT NULL DEFAULT 0,
+  group_ok INTEGER NOT NULL DEFAULT 0,
+  group_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS prize_run (     -- the match a player has open now: /started opens it, /played closes it (the prize's match check)
+  player INTEGER PRIMARY KEY,
+  mode   TEXT,
+  at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_log (       -- matches the server saw start and finish, and the prize points each can carry (kept 5 weeks)
+  player INTEGER NOT NULL,
+  at     INTEGER NOT NULL,                 -- when it finished
+  secs   INTEGER NOT NULL,
+  credit INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_log_player ON run_log (player, at);
+CREATE INDEX IF NOT EXISTS run_log_at ON run_log (at);
+CREATE TABLE IF NOT EXISTS prize_skip (    -- players an admin took out of the weekly prize (/prize skip): scripts, shared or bought accounts
+  player INTEGER PRIMARY KEY,
+  at     INTEGER NOT NULL,
+  by     INTEGER
+);
+CREATE INDEX IF NOT EXISTS prize_entry_x ON prize_entry (x COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS reward_once (   -- invite bonuses paid at most once: 'loyal:<friend id>', 'mile:<friends>', 'share:<UTC day>'
+  player  INTEGER NOT NULL,
+  k       TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (player, k)
+);
+CREATE TABLE IF NOT EXISTS week_scores (   -- last week's play-money $CWORM gained, kept when a player's week rolls over (for the Monday top 10)
+  week_start INTEGER NOT NULL,
+  player     INTEGER NOT NULL,
+  cworm      INTEGER NOT NULL,
+  PRIMARY KEY (week_start, player)
+);
+CREATE TABLE IF NOT EXISTS bot_kv (        -- small bot settings: the community group's chat id, the last week posted
+  k TEXT PRIMARY KEY,
+  v TEXT
+);
+CREATE TABLE IF NOT EXISTS announcements ( -- "what's new" notes the bot sends to the community group and to every Telegram player (not those who sent /stop)
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  text        TEXT NOT NULL,
+  created     INTEGER NOT NULL,
+  group_done  INTEGER NOT NULL DEFAULT 0,
+  last_player INTEGER NOT NULL DEFAULT 0,   -- players are messaged in id order, a batch per cron run
+  sent        INTEGER NOT NULL DEFAULT 0,
+  done        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS land (          -- World Map: tiles players own (src/world.js ids); tiles not here are held by CPU worms
+  tile    INTEGER PRIMARY KEY,
+  owner   INTEGER NOT NULL,
+  since   INTEGER NOT NULL,
+  def     TEXT NOT NULL DEFAULT '0000',    -- defense levels, one digit each: mines, bunker, arsenal, garrison
+  truce   INTEGER NOT NULL DEFAULT 0       -- just taken: nobody can attack it until then
+);
+CREATE INDEX IF NOT EXISTS land_owner ON land (owner);
+CREATE TABLE IF NOT EXISTS landlords (     -- World Map players: home country, worm upgrades, daily attacks and battle stats
+  player     INTEGER PRIMARY KEY,
+  cc         TEXT,                         -- the country they play for
+  home       INTEGER,                      -- first tile of their latest plot
+  joined     INTEGER NOT NULL DEFAULT 0,
+  shield     INTEGER NOT NULL DEFAULT 0,   -- new players can't be attacked until then (ends when they attack a player)
+  acc        INTEGER NOT NULL DEFAULT 0,   -- worm accuracy level, 0-5: their CPU defenders aim better
+  res        INTEGER NOT NULL DEFAULT 0,   -- worm resistance level, 0-5: +10 health per level on the map
+  day        INTEGER NOT NULL DEFAULT 0,   -- UTC day number `attacks` counts
+  attacks    INTEGER NOT NULL DEFAULT 0,
+  buys       INTEGER NOT NULL DEFAULT 0,   -- plots bought after losing all land (the price rises)
+  buy_day    INTEGER NOT NULL DEFAULT 0,
+  buys_today INTEGER NOT NULL DEFAULT 0,
+  won        INTEGER NOT NULL DEFAULT 0,   -- tiles taken
+  lost       INTEGER NOT NULL DEFAULT 0,   -- attacks that failed
+  held       INTEGER NOT NULL DEFAULT 0,   -- attacks their defenders beat
+  notified   INTEGER NOT NULL DEFAULT 0    -- last "your land was taken" bot message
+);
+CREATE TABLE IF NOT EXISTS attacks (       -- World Map battles: a ticket from /map/attack, closed by /map/result
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket   TEXT NOT NULL UNIQUE,
+  attacker INTEGER NOT NULL,
+  tile     INTEGER NOT NULL,
+  defender INTEGER,                        -- NULL: CPU land
+  started  INTEGER NOT NULL,
+  ended    INTEGER,
+  result   TEXT                            -- won | lost | dropped | late
+);
+CREATE INDEX IF NOT EXISTS attacks_attacker ON attacks (attacker, ended);
+CREATE INDEX IF NOT EXISTS attacks_defender ON attacks (defender, ended);
+CREATE TABLE IF NOT EXISTS live_fights (   -- World Map: an owner who answered the alert and plays the defense, or '' when the CPU took it
+  attack   INTEGER PRIMARY KEY,            -- attacks.id
+  code     TEXT NOT NULL,                  -- online match code both players join; '' = the CPU defends
+  at       INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS map_alerts (    -- last "you are under attack" bot message per owner
+  player   INTEGER PRIMARY KEY,
+  at       INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS holders (       -- $CWORM holder rewards: what each linked wallet held at the last reading (see holders.js)
+  player     INTEGER PRIMARY KEY,
+  wallet     TEXT NOT NULL,                -- the wallet read; a different one on the account starts over
+  balance    REAL,                         -- whole $CWORM tokens
+  tier       INTEGER NOT NULL DEFAULT 0,   -- 0 none, 1 Holder, 2 Dolphin, 3 Shark, 4 Whale, 5 Big Whale
+  tier_day   INTEGER,                      -- UTC day number the tier was reached
+  streak_day INTEGER,                      -- first day of the current hold streak (hold stars)
+  below_day  INTEGER,                      -- first day below the tier (grace), NULL when not below
+  checked    INTEGER NOT NULL DEFAULT 0,   -- last reading (ms)
+  snap_day   INTEGER NOT NULL DEFAULT 0,   -- last daily reading
+  toast      INTEGER,                      -- whales: announce when online (NULL = default: on for Big Whales)
+  chest_day  INTEGER NOT NULL DEFAULT 0    -- last daily chest
+);
+-- Simulated players for load tests (Damian 2026-10-15): accounts the load-test Worker (sim/) signs up with SIM_KEY. They play
+-- like everyone else and count as players, but never in the weekly prize, never attack real players' land, and their
+-- matches stay out of Live now. The list also tells the clean-up which accounts to delete (tools/sim_cleanup.py).
+CREATE TABLE IF NOT EXISTS sim_players (
+  player   INTEGER PRIMARY KEY,
+  created  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sim_cmd (       -- start / stop orders for the load test, from the bot's admin /sim (the load-test Worker reads them)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  cmd      TEXT NOT NULL,                  -- off | life | rush
+  arg      INTEGER,                        -- rush: minutes
+  at       INTEGER NOT NULL,
+  done     INTEGER                         -- when the load-test Worker took it
+);
+CREATE TABLE IF NOT EXISTS sim_stats (     -- the load test's numbers, one row a minute (kept 3 days)
+  at       INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL                   -- JSON
+);
+-- The live feed on Home (feed.js): online wins, land taken, and moments the game reports with /played. Kept 2 days.
+CREATE TABLE IF NOT EXISTS feed (
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  at   INTEGER NOT NULL,
+  k    TEXT NOT NULL,                      -- win | land | solo | lost | kill | died | oops | multi | big
+  p    INTEGER NOT NULL,                   -- the player
+  a    TEXT NOT NULL,                      -- their name and country at the time
+  ac   TEXT,
+  b    TEXT,                               -- the other side's name and country, when there is one
+  bc   TEXT,
+  w    TEXT,                               -- a worm's name
+  wp   TEXT,                               -- weapon id
+  n    INTEGER,                            -- damage, worms hit or campaign mission
+  how  TEXT,                               -- blast | drown | off | bird
+  m    TEXT                                -- mode, why an online match ended, or the land's country
+);
+CREATE INDEX IF NOT EXISTS feed_p ON feed (p, at);
+CREATE INDEX IF NOT EXISTS feed_at ON feed (at);
+-- Custom photo worms (worms.js, Damian 2026-10-17): portraits Grok draws from a holder's photo. The photo is never kept.
+CREATE TABLE IF NOT EXISTS custom_worms (
+  id       TEXT PRIMARY KEY,               -- random, in the picture's address
+  player   INTEGER NOT NULL,
+  job      TEXT NOT NULL,                  -- the make call it came from (its options share one)
+  kind     TEXT NOT NULL,                  -- person | pet
+  state    TEXT NOT NULL,                  -- offer (one of the options to pick from) | on (the one kept)
+  img      TEXT NOT NULL,                  -- the picture, base64
+  pay      TEXT,                           -- how it was paid: cworm (play money in the game); stars or token later
+  created  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS custom_worms_player ON custom_worms (player, state);
+CREATE TABLE IF NOT EXISTS worm_makes (    -- every make call, for the daily limits; ok 2 = not allowed to make more (an admin's /wormoff)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  ok       INTEGER NOT NULL,               -- 1 portraits made, 0 photo turned down or nothing drawn
+  why      TEXT
+);
+CREATE INDEX IF NOT EXISTS worm_makes_player ON worm_makes (player, at);
+CREATE INDEX IF NOT EXISTS worm_makes_at ON worm_makes (at);
+CREATE TABLE IF NOT EXISTS worm_reports (  -- players who reported someone's portrait (one report each)
+  worm     TEXT NOT NULL,
+  reporter INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (worm, reporter)
+);
+-- The avatar each player picked (Damian 2026-10-17): an id from the game's list (avatars/<id>.jpg on the site), shown in the
+-- ranking and in the battle's corners. A custom worm (custom_worms) shows instead while its owner holds.
+CREATE TABLE IF NOT EXISTS player_avatar (
+  player   INTEGER PRIMARY KEY,
+  av       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS royale_log (    -- Worm Royale online (royale.js): each real player's place in each room, kept 5 weeks. ok 0: the host's
+  code   TEXT NOT NULL,                    -- places and the player's own phone disagreed (on the host's row: some other row disagreed)
+  player INTEGER NOT NULL,
+  place  INTEGER,
+  kills  INTEGER NOT NULL DEFAULT 0,
+  host   INTEGER NOT NULL DEFAULT 0,       -- 1 = this player's phone ran the match
+  ok     INTEGER NOT NULL DEFAULT 1,
+  at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS royale_log_player ON royale_log (player, at);
+CREATE INDEX IF NOT EXISTS royale_log_at ON royale_log (at);
+CREATE TABLE IF NOT EXISTS royale_ping (   -- players who asked the bot for a message when the daily Royale hour starts
+  player INTEGER PRIMARY KEY,
+  at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS royale_slot (   -- which of the two Royale hours (13 or 20 UTC) is nearest that player's evening, sent by the game
+  player INTEGER PRIMARY KEY,
+  hour   INTEGER NOT NULL
+);
+-- Community teams (src/teams.js, Damian 2026-10-20): a name, a short tag, an emoji, an invite code, maybe the community's
+-- Telegram group. Up to 50 members; the leader (role 'lead') can remove members. Team points: every play-money $CWORM a member
+-- banks scores for the team that week, plus CLASH points for online wins over a rival team's worm. Play money, no real prize.
+CREATE TABLE IF NOT EXISTS teams (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  tag     TEXT NOT NULL UNIQUE,
+  emoji   TEXT NOT NULL,
+  tg      TEXT,                            -- https://t.me/... of the team's own Telegram group, or NULL
+  owner   INTEGER NOT NULL,
+  code    TEXT NOT NULL UNIQUE,            -- the invite link's code (startapp=t_<code>)
+  created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_members (
+  player  INTEGER PRIMARY KEY,             -- one team per player
+  team    INTEGER NOT NULL,
+  role    TEXT NOT NULL DEFAULT 'member',  -- 'lead' or 'member'
+  joined  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS team_members_team ON team_members (team, joined);
+CREATE TABLE IF NOT EXISTS team_invites (   -- a member invited a player from the game (teams.js invite)
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  team    INTEGER NOT NULL,
+  sender  INTEGER NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  state   INTEGER NOT NULL DEFAULT 0,       -- 0 waiting, 1 joined, 2 said no, 3 joined another team
+  dm      INTEGER NOT NULL DEFAULT 0        -- 1 when the bot told them on Telegram
+);
+CREATE INDEX IF NOT EXISTS team_invites_player ON team_invites (player, state);
+CREATE INDEX IF NOT EXISTS team_invites_sender ON team_invites (sender, at);
+CREATE TABLE IF NOT EXISTS team_points (   -- points each member earned for their team, by week
+  team       INTEGER NOT NULL,
+  week_start INTEGER NOT NULL,
+  player     INTEGER NOT NULL,
+  pts        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (team, week_start, player)
+);
+CREATE INDEX IF NOT EXISTS team_points_week ON team_points (week_start, team);
+CREATE TABLE IF NOT EXISTS team_clash (    -- online wins over a rival team's member that scored CLASH points (the daily caps), kept 5 weeks
+  at     INTEGER NOT NULL,
+  winner INTEGER NOT NULL,
+  loser  INTEGER NOT NULL,
+  wteam  INTEGER NOT NULL,
+  lteam  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS team_clash_winner ON team_clash (winner, at);
+CREATE TABLE IF NOT EXISTS team_leave (    -- when a player last left (or was removed from) a team: a short wait before joining another
+  player  INTEGER PRIMARY KEY,
+  left_at INTEGER NOT NULL
+);
+-- A team's own picture (Damian 2026-10-20: "the teams can upload their identification image"): the leader uploads it, Grok checks
+-- it first, and it shows instead of the team's emoji. Admins get each new one in the bot; /teams logooff <team id> removes it.
+CREATE TABLE IF NOT EXISTS team_logos (
+  team    INTEGER PRIMARY KEY,
+  id      TEXT NOT NULL UNIQUE,            -- random, in the picture's address (a new upload gets a new one, so no cache shows the old picture)
+  img     TEXT NOT NULL,                   -- the game sends a 256 px JPEG; base64
+  created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_logo_log ( -- every upload, for the daily limit (kept 30 days); ok 2 = an admin removed this team's picture: no more uploads
+  team    INTEGER NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  ok      INTEGER NOT NULL,
+  why     TEXT
+);
+CREATE INDEX IF NOT EXISTS team_logo_log_team ON team_logo_log (team, at);
+
+-- World and Team chat (chat.js)
+CREATE TABLE IF NOT EXISTS chat (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  room    TEXT NOT NULL,                    -- 'w' (World) or 't<team id>'
+  player  INTEGER NOT NULL,
+  text    TEXT NOT NULL,
+  at      INTEGER NOT NULL,
+  hidden  INTEGER NOT NULL DEFAULT 0        -- 1: taken down (reports, an admin or a mute)
+);
+CREATE INDEX IF NOT EXISTS chat_room ON chat (room, id);
+CREATE INDEX IF NOT EXISTS chat_player ON chat (player, at);
+CREATE TABLE IF NOT EXISTS chat_seen (     -- Team chat read so far (the dot on Friends) and the last bot note about it
+  player  INTEGER NOT NULL,
+  room    TEXT NOT NULL,
+  last    INTEGER NOT NULL DEFAULT 0,       -- the newest message id read
+  seen_at INTEGER NOT NULL DEFAULT 0,       -- when the room was last open
+  dm      INTEGER NOT NULL DEFAULT 0,       -- when the bot last told them about new messages
+  PRIMARY KEY (player, room)
+);
+CREATE TABLE IF NOT EXISTS chat_blocks (player INTEGER NOT NULL, blocked INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (player, blocked));
+CREATE TABLE IF NOT EXISTS chat_reports (msg INTEGER NOT NULL, player INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (msg, player));
+CREATE TABLE IF NOT EXISTS chat_mutes (player INTEGER PRIMARY KEY, until INTEGER NOT NULL, why TEXT);
+-- Private messages between friends (chat.js, Damian 2026-10-22): one row per pair of friends who wrote; the messages are in chat
+-- with room 'd<lower id>_<higher id>'.
+CREATE TABLE IF NOT EXISTS chat_dm (
+  room   TEXT PRIMARY KEY,
+  a      INTEGER NOT NULL,                 -- the lower player id
+  b      INTEGER NOT NULL,
+  last   INTEGER NOT NULL,                 -- the latest message id
+  lastp  INTEGER NOT NULL,                 -- who wrote it
+  at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_dm_a ON chat_dm (a, at);
+CREATE INDEX IF NOT EXISTS chat_dm_b ON chat_dm (b, at);
+-- Friend requests a player said no to (friends.js): the asker can't ask again for NO_DAYS.
+CREATE TABLE IF NOT EXISTS friend_no (
+  player INTEGER NOT NULL,                 -- who said no
+  other  INTEGER NOT NULL,                 -- who asked
+  at     INTEGER NOT NULL,
+  PRIMARY KEY (player, other)
+);
+-- Every START in the bot's chat (bot.js, Damian 2026-10-22): an account only exists once the game opens, so this shows who read
+-- the welcome and never played, and holds the one "your first battle is waiting" reminder.
+CREATE TABLE IF NOT EXISTS bot_starts (
+  tg_id  INTEGER PRIMARY KEY,
+  first  INTEGER NOT NULL,                 -- the first START
+  last   INTEGER NOT NULL,                 -- the latest START
+  n      INTEGER NOT NULL DEFAULT 1,       -- how many times they sent it
+  src    TEXT,                             -- the source tag of a /start s_<tag> link
+  lang   TEXT,                             -- the language the welcome went out in
+  nudged INTEGER NOT NULL DEFAULT 0        -- when the reminder went out (negative: it failed; -1: they sent /stop; 0: not yet)
+);
+CREATE INDEX IF NOT EXISTS bot_starts_first ON bot_starts (nudged, first);
+-- W and L for matches played on the phone (growth.js result, Damian 2026-10-23): when this player's last one was counted,
+-- so a match can only count once every 20 s.
+CREATE TABLE IF NOT EXISTS wl_last (
+  player INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL
+);
+
+-- The Community burn teaser on Home (burn.js, Damian 2026-10-23): who opened the "Coming soon" card and who tapped "I want this".
+-- Nothing is burned yet.
+CREATE TABLE IF NOT EXISTS burn_votes (
+  player INTEGER PRIMARY KEY,
+  opened INTEGER NOT NULL,                 -- when they first opened the card
+  want   INTEGER NOT NULL DEFAULT 0        -- when they tapped "I want this" (0: not yet)
+);
+
+-- Football clubs (src/clubs.js, Damian 2026-10-26): the club each player supports (one; changes once a week), the club war's
+-- weekly points (fans' banked play money plus online wins over other clubs' fans, more for a derby), derby days the admins call,
+-- and clubs players asked for that weren't in the list (src/clubs-data.js). Names and colors only, never crests. Play money, no prize.
+CREATE TABLE IF NOT EXISTS player_club (
+  player  INTEGER PRIMARY KEY,
+  club    TEXT NOT NULL,                   -- an id from clubs-data.js (cc-slug) or club_extra (x<cc>-slug)
+  at      INTEGER NOT NULL                 -- when it was picked: it can change again CHANGE_MS later
+);
+CREATE INDEX IF NOT EXISTS player_club_club ON player_club (club);
+CREATE TABLE IF NOT EXISTS club_points (
+  club       TEXT NOT NULL,
+  week_start INTEGER NOT NULL,             -- Monday 00:00 UTC
+  player     INTEGER NOT NULL,             -- the fan who earned them
+  pts        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (club, week_start, player)
+);
+CREATE INDEX IF NOT EXISTS club_points_week ON club_points (week_start, club);
+CREATE INDEX IF NOT EXISTS club_points_player ON club_points (player);
+CREATE TABLE IF NOT EXISTS club_wins (       -- online wins over another club's fan, for the daily limits (kept 35 days)
+  at      INTEGER NOT NULL,
+  winner  INTEGER NOT NULL,
+  loser   INTEGER NOT NULL,
+  wclub   TEXT,
+  lclub   TEXT,
+  derby   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS club_wins_winner ON club_wins (winner, at);
+CREATE TABLE IF NOT EXISTS derby_days (
+  day     INTEGER PRIMARY KEY,             -- UTC day number (ms / 86400000)
+  a       TEXT NOT NULL,
+  b       TEXT NOT NULL,
+  name    TEXT,                            -- the derby's name, when the two are known rivals
+  admin   INTEGER,                         -- the admin's player id
+  at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS club_extra (      -- clubs players added through "My club isn't here" (checked by Grok)
+  id      TEXT PRIMARY KEY,
+  name    TEXT NOT NULL,
+  cc      TEXT NOT NULL,
+  c       TEXT,                            -- 'rrggbb,rrggbb'
+  city    TEXT,
+  player  INTEGER,                         -- who asked for it
+  at      INTEGER NOT NULL,
+  state   TEXT NOT NULL DEFAULT 'on'       -- 'off': an admin took it off (/clubs off <id>)
+);
+CREATE TABLE IF NOT EXISTS club_suggest (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  name    TEXT NOT NULL,
+  country TEXT,
+  at      INTEGER NOT NULL,
+  result  TEXT                             -- added | same <id> | no | unchecked
+);
+CREATE INDEX IF NOT EXISTS club_suggest_player ON club_suggest (player, at);
+CREATE TABLE IF NOT EXISTS wagers (          -- Challenges: best of 3 online matches for a play-money $CWORM stake each (see wager.js)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  p0       INTEGER NOT NULL,               -- who posted it
+  p1       INTEGER,                        -- who took it
+  stake    INTEGER NOT NULL,               -- what each of them puts in; the winner gets both
+  state    TEXT NOT NULL,                  -- open | taken (game 1 not started yet) | playing | done | off (ended with nothing put in)
+  w0       INTEGER NOT NULL DEFAULT 0,     -- games won by p0 and by p1
+  w1       INTEGER NOT NULL DEFAULT 0,
+  games    INTEGER NOT NULL DEFAULT 0,     -- games finished, draws too
+  code     TEXT,                           -- the match code of the current game
+  here0    INTEGER,                        -- when p0 / p1 opened the current game's match
+  here1    INTEGER,
+  live     INTEGER,                        -- when the current game started (NULL: not started yet)
+  started  INTEGER,                        -- when game 1 started: the stakes are in
+  paid0    INTEGER,                        -- when each phone reported spending its stake
+  paid1    INTEGER,
+  winner   INTEGER,                        -- player id; NULL with state done: ended even, both stakes back
+  why      TEXT,                           -- won | even | forfeit | noshow | stuck | cancelled | expired
+  created  INTEGER NOT NULL,
+  taken    INTEGER,
+  deadline INTEGER NOT NULL,               -- open: expiry; taken / playing: the current game must start (or end) by then
+  ended    INTEGER
+);
+CREATE INDEX IF NOT EXISTS wagers_state ON wagers (state, deadline);
+CREATE INDEX IF NOT EXISTS wagers_code ON wagers (code);
+CREATE INDEX IF NOT EXISTS wagers_p0 ON wagers (p0, state);
+CREATE INDEX IF NOT EXISTS wagers_p1 ON wagers (p1, state);
+-- Gift codes (gifts.js, Damian 2026-10-31): codes admins make with the bot's /gift; a player types one in the game (or opens its
+-- link) and gets what it holds, once per account: play $CWORM, store looks, free Custom Worms. All play money and looks.
+CREATE TABLE IF NOT EXISTS gift_codes (
+  code     TEXT PRIMARY KEY,               -- capitals and digits, 4-20
+  cworm    INTEGER NOT NULL DEFAULT 0,     -- play $CWORM (a reward row the game claims, reason 'gift')
+  items    TEXT NOT NULL DEFAULT '',       -- store looks, comma separated ids (gifts.js ITEMS)
+  worm     INTEGER NOT NULL DEFAULT 0,     -- free Custom Worm sets (gift_credits)
+  uses     INTEGER NOT NULL DEFAULT 0,     -- players who used it
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  expires  INTEGER,                        -- NULL: no end date
+  src      TEXT,                           -- source tag for brand-new players who came with its link
+  by_tg    INTEGER,                        -- the admin who made it (Telegram id)
+  created  INTEGER NOT NULL,
+  off      INTEGER NOT NULL DEFAULT 0      -- 1: /gift off, nobody new can use it
+);
+CREATE TABLE IF NOT EXISTS gift_redeems (   -- who used which code (one use per account)
+  code     TEXT NOT NULL,
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (code, player)
+);
+CREATE INDEX IF NOT EXISTS gift_redeems_player ON gift_redeems (player);
+CREATE TABLE IF NOT EXISTS gift_fails (     -- wrong codes typed, for the hourly limit (kept a day)
+  player   INTEGER NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gift_fails_player ON gift_fails (player, at);
+CREATE TABLE IF NOT EXISTS gift_credits (   -- free Custom Worm sets from codes not used yet (worms.js)
+  player   INTEGER PRIMARY KEY,
+  worm     INTEGER NOT NULL DEFAULT 0
+);
+-- Telegram Stars purchases (stars.js): exclusive looks and the Supporter badge, never play $CWORM, points, prize entries or power.
+CREATE TABLE IF NOT EXISTS purchases (
+  charge   TEXT PRIMARY KEY,                -- Telegram's telegram_payment_charge_id (a refund needs it)
+  player   INTEGER NOT NULL,
+  item     TEXT NOT NULL,                   -- stars.js CATALOG id
+  stars    INTEGER NOT NULL,
+  tg_id    INTEGER,                         -- who paid: the Telegram user a refund goes back to
+  created  INTEGER NOT NULL,
+  refunded INTEGER                          -- when it was refunded (the item is gone), NULL otherwise
+);
+CREATE INDEX IF NOT EXISTS purchases_player ON purchases (player);
+-- In-game polls (poll.js, Damian 2026-11-02): one vote per real player and poll, which they can change until the poll ends.
+CREATE TABLE IF NOT EXISTS poll_votes (
+  poll     TEXT NOT NULL,                   -- poll.js POLLS id
+  player   INTEGER NOT NULL,
+  choice   INTEGER NOT NULL,                -- the option's index
+  at       INTEGER NOT NULL,                -- when they last voted
+  PRIMARY KEY (poll, player)
+);
+-- Monthly rankings (Damian 2026-11-03: "in every option, holders, teams, groups, you should have the historic, monthly and weekly
+-- options"): the same points as the weekly tables, by calendar month (UTC, from the 1st at 00:00). Kept, like the weeks.
+CREATE TABLE IF NOT EXISTS month_scores (   -- play-money $CWORM each player gained this month (the ranking; addScore in index.js)
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  cworm       INTEGER NOT NULL DEFAULT 0,
+  last        INTEGER NOT NULL DEFAULT 0,  -- last report, for ties
+  PRIMARY KEY (month_start, player)
+);
+CREATE INDEX IF NOT EXISTS month_scores_m ON month_scores (month_start, cworm);
+CREATE TABLE IF NOT EXISTS team_month (     -- points each member earned for their team, by month (teams.js)
+  team        INTEGER NOT NULL,
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  pts         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (team, month_start, player)
+);
+CREATE INDEX IF NOT EXISTS team_month_m ON team_month (month_start, team);
+CREATE TABLE IF NOT EXISTS club_month (     -- points each fan earned for their club, by month (clubs.js)
+  club        TEXT NOT NULL,
+  month_start INTEGER NOT NULL,
+  player      INTEGER NOT NULL,
+  pts         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (club, month_start, player)
+);
+CREATE INDEX IF NOT EXISTS club_month_m ON club_month (month_start, club);
+CREATE INDEX IF NOT EXISTS club_month_player ON club_month (player);
+
+-- Prize payouts sent by the server from the prize wallet (payout.js): a batch of lines, sent only after an admin's /pay send <id> <code>.
+-- Amounts are whole base units (lamports, token units). A line's signature is saved before it goes out (sig, lvbh = last valid block height).
+CREATE TABLE IF NOT EXISTS pay_batch (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, created INTEGER NOT NULL, by_tg INTEGER, code TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready', chat INTEGER, claimed INTEGER, done INTEGER);
+CREATE TABLE IF NOT EXISTS pay_line (batch INTEGER NOT NULL, n INTEGER NOT NULL, wallet TEXT NOT NULL, asset TEXT NOT NULL, amount TEXT NOT NULL, note TEXT,
+  sig TEXT, lvbh INTEGER, status TEXT NOT NULL DEFAULT 'todo', err TEXT, at INTEGER, PRIMARY KEY (batch, n));
+
+-- Team wars (teamwar.js): a team challenges another for a play-money pot; members of both teams chip in, then 24 hours of team points decide it.
+CREATE TABLE IF NOT EXISTS team_wars (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  a        INTEGER NOT NULL,               -- the challenging team
+  b        INTEGER NOT NULL,               -- the challenged team
+  stake    INTEGER NOT NULL,               -- play $CWORM each side puts in
+  state    TEXT NOT NULL,                  -- filling | live | done (won or even) | off (expired or called off, every pledge back)
+  by       INTEGER,                        -- the member who made it
+  created  INTEGER NOT NULL,
+  fill_by  INTEGER NOT NULL,               -- both sides must be full by then
+  started  INTEGER,
+  ends     INTEGER,
+  sa       INTEGER, sb INTEGER,            -- the final war points
+  winner   INTEGER,                        -- the winning team (NULL: even or off)
+  why      TEXT,                           -- won | even | expired | cancelled
+  burned   INTEGER,                        -- the share of the pot burned
+  ended    INTEGER
+);
+CREATE INDEX IF NOT EXISTS team_wars_a ON team_wars (a, state);
+CREATE INDEX IF NOT EXISTS team_wars_b ON team_wars (b, state);
+CREATE INDEX IF NOT EXISTS team_wars_due ON team_wars (state, fill_by, ends);
+CREATE TABLE IF NOT EXISTS team_war_pledges (  -- what each member chipped in (the phone spends it: paid = when it said so)
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  war      INTEGER NOT NULL,
+  team     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  amount   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  paid     INTEGER
+);
+CREATE INDEX IF NOT EXISTS team_war_pledges_war ON team_war_pledges (war, team);
+CREATE INDEX IF NOT EXISTS team_war_pledges_player ON team_war_pledges (player, paid);
+CREATE TABLE IF NOT EXISTS team_war_pts (  -- war points by member and UTC day: reported play money (capped by credit + free points), match credit, wins over other teams
+  war      INTEGER NOT NULL,
+  team     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  day      INTEGER NOT NULL,
+  reported INTEGER NOT NULL DEFAULT 0,
+  credit   INTEGER NOT NULL DEFAULT 0,
+  clash    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (war, team, player, day)
+);
+-- Ideas & polls (ideas.js, Damian 2026-11-05): players' ideas wait for an admin; approved ones and the team's own polls run 7 days.
+CREATE TABLE IF NOT EXISTS ideas (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  player   INTEGER,                         -- the author (the admin, for team polls)
+  team     INTEGER NOT NULL DEFAULT 0,      -- 1: a poll from the Crypto Worm team (/newpoll)
+  kind     TEXT NOT NULL,                   -- weapon | change | other | poll
+  title    TEXT NOT NULL,
+  text     TEXT,
+  options  TEXT,                            -- JSON list for team polls; NULL: Yes / No
+  state    TEXT NOT NULL,                   -- wait | open | no | gone
+  note     TEXT,                            -- why not, for the author
+  tag      TEXT,                            -- planned | done | notnow
+  created  INTEGER NOT NULL,
+  opened   INTEGER,                         -- when it became a poll
+  ends     INTEGER,                         -- votes close (exclusive)
+  msgs     TEXT,                            -- JSON [[chat, message]]: the admin messages with the buttons
+  paid     INTEGER NOT NULL DEFAULT 0,      -- bits: 1 the +500 for becoming a poll, 2 the +2,000 for Done
+  told     INTEGER NOT NULL DEFAULT 0       -- 1: admins got the results after the end
+);
+CREATE INDEX IF NOT EXISTS ideas_state ON ideas (state, ends);
+CREATE INDEX IF NOT EXISTS ideas_player ON ideas (player, created);
+CREATE TABLE IF NOT EXISTS idea_votes (    -- one vote per player and poll, changeable while it runs
+  idea     INTEGER NOT NULL,
+  player   INTEGER NOT NULL,
+  choice   INTEGER NOT NULL,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (idea, player)
+);
+CREATE TABLE IF NOT EXISTS race_friends (    -- Invite Race (race.js): a friend who counts for their inviter, and since when
+  race    TEXT NOT NULL,
+  friend  INTEGER NOT NULL,
+  inviter INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (race, friend)
+);
+CREATE INDEX IF NOT EXISTS race_friends_inviter ON race_friends (race, inviter);
+CREATE TABLE IF NOT EXISTS race_skip (       -- players an admin took out of the Invite Race (/race skip): they neither win nor count
+  race    TEXT NOT NULL,
+  player  INTEGER NOT NULL,
+  at      INTEGER NOT NULL,
+  why     TEXT,
+  PRIMARY KEY (race, player)
+);
+-- The website that sent a new web player (growth.js newPlayer, Damian 2026-11-08): just its name, like google.com or t.co,
+-- 'direct' when the browser gave none. First visit only; the bot's /sources splits "web" by it.
+CREATE TABLE IF NOT EXISTS player_ref (
+  player INTEGER PRIMARY KEY,
+  ref    TEXT NOT NULL,
+  at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saves (          -- each account's progress, the same on every device (save.js): {d: {key: value}, t: {key: time picked}}
+  player   INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS carry (          -- a web player's on-phone progress, uploaded before "Continue in Telegram" (growth.js carryPut), taken once there
+  player   INTEGER PRIMARY KEY,
+  data     TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
+
+-- Same-network hints (net.js): a scrambled code of the network a counted match came from, never the IP address itself.
+-- One row per player, code and UTC day; the cron deletes rows older than 30 days. Admins see them as flags only.
+CREATE TABLE IF NOT EXISTS net_seen (player INTEGER NOT NULL, h TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (player, h, day));
+CREATE INDEX IF NOT EXISTS net_seen_h ON net_seen (h, day);
+CREATE INDEX IF NOT EXISTS net_seen_day ON net_seen (day);
+
+-- Medals (medals.js): one-off honours on the player card, each worth a value in Battle Points (play money) when sold.
+-- A sold medal keeps its row (sold = when) so it is never given again; seen = when the game showed the "New medal" toast.
+CREATE TABLE IF NOT EXISTS medals (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player  INTEGER NOT NULL,
+  kind    TEXT NOT NULL,               -- pioneer, milestone, recruiter, royale, weektop, teamwar, race, special
+  ref     TEXT NOT NULL DEFAULT '',    -- what it is for: a weapon id, '2000', a week, a war...
+  label   TEXT,
+  tier    TEXT NOT NULL,               -- common, rare, unique
+  value   INTEGER NOT NULL,            -- Battle Points it sells for
+  at      INTEGER NOT NULL,
+  seen    INTEGER,
+  sold    INTEGER,
+  UNIQUE (player, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS medals_kind ON medals (kind, ref);
+CREATE TABLE IF NOT EXISTS funnel (   -- anonymous counts of how far new devices get in their first match (funnel.js): no player, device or network
+  day  TEXT NOT NULL,                 -- the UTC day the device first opened the game
+  plat TEXT NOT NULL,                 -- tg, web or app
+  lang TEXT NOT NULL,                 -- the game language
+  step TEXT NOT NULL,                 -- open, ready, start, shot, end, start2
+  n    INTEGER NOT NULL DEFAULT 0,
+  ms   INTEGER NOT NULL DEFAULT 0,    -- total time since the page opened, for the average
+  PRIMARY KEY (day, plat, lang, step)
+);
+CREATE TABLE IF NOT EXISTS push_subs (   -- browsers where a web player switched reminders on (push.js)
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  player    INTEGER NOT NULL,
+  endpoint  TEXT NOT NULL UNIQUE,        -- the push service address the browser gave
+  p256dh    TEXT NOT NULL,               -- the browser's public key, to encrypt for it
+  auth      TEXT NOT NULL,
+  lang      TEXT NOT NULL DEFAULT 'en',  -- the game language when they switched it on
+  created   INTEGER NOT NULL,
+  last_sent INTEGER NOT NULL DEFAULT 0,  -- the last reminder
+  tested    INTEGER NOT NULL DEFAULT 0,  -- the last "this is what they look like" message
+  fails     INTEGER NOT NULL DEFAULT 0   -- sends in a row the push service refused
+);
+CREATE INDEX IF NOT EXISTS push_subs_player ON push_subs (player);
+-- Wrong tries at the control panel's password (panel.js): a hash of the network, kept a day, for the limit on guesses.
+CREATE TABLE IF NOT EXISTS panel_fails (ip TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS panel_fails_at ON panel_fails (at);

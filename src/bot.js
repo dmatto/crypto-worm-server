@@ -1,0 +1,586 @@
+// The Telegram bot's own chat: a welcome message with a Play button when someone starts the bot (and one reminder an hour later
+// if they never open the game), plus /play, /invite
+// (your invite link and friends so far), /help, /top, /privacy and /stop (bot reminders off). In groups: /duel posts a duel card anyone can take, /top the weekly top 10, and
+// /setgroup (admins) picks the group for the Monday top 10 post, and /announce (admins) queues a "what's new" note. Inline mode (@CryptoWormWarsBot in any chat) offers a
+// "Duel me" card. Admins also get /feedback, /sources and /prize (the weekly prize list: /prize for this week, /prize last for
+// the week that ended, with the payout lines and the score logs as files; /prize skip <id> and /prize unskip <id> take a
+// player out of the prize or let them back in; /prize teams and /prize teams last: the Team Prize winner, see teamprize.js). /team shows a player's community team and its invite link, /teams the week's
+// top teams (also in groups); for admins /teams lists every team and /teams off <id> removes one (teams.js). /clubs: the
+// football club war this week (also in groups); admins also see clubs players added, /clubs off <id> takes one off; /derby (admins)
+// calls a derby day and posts it to the group (clubs.js). /parody (admins)
+// makes worm parodies of the day's viral X posts now, /parody off|on stops or restarts the daily batch (parody.js).
+// /chatdel <message id> and /chatmute <player id> <hours> look after World and Team chat (chat.js).
+// /pay (admins, private chat) sends prizes from the prize wallet after a typed OK (payout.js).
+// /id tells a player their player ID; /player <id or name> (admins) shows who a player ID is (players.js).
+// /race (admins): the Invite Race standings, /race check|skip|unskip <id>, /race post to the group (race.js).
+// /burnvotes (admins) shows how the Community burn teaser on Home is received (burn.js); /poll (admins) the in-game poll's votes (poll.js).
+// Ideas & polls (ideas.js): players' ideas reach admins with Approve/Reject buttons; /ideas lists them, /idea ok|no|edit|tag|end|del <id>
+// looks after one, /newpoll Question | option | option posts the team's own poll.
+// /gift (admins) makes gift codes for play $CWORM, looks and free Custom Worms, lists them and turns them off (gifts.js); for
+// everyone else it says where to type a code in the game.
+// Telegram posts updates to /telegram/webhook with a secret header. /telegram/setup (guarded by the SHA-256 of the bot
+// token, so only someone holding the token can call it) shows the bot's settings, and with POST points the webhook here
+// and sets the description, short description, commands and menu button.
+
+const enc = new TextEncoder();
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+async function sha256(s) { return hex(await crypto.subtle.digest('SHA-256', enc.encode(s))) }
+function same(a, b) { if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0 }
+import { friendCode } from './auth.js';
+import { cleanup as mapCleanup } from './map.js';
+import { cleanup as feedCleanup } from './feed.js';
+import { holderCron } from './holders.js';
+import { makePack } from './stickers.js';
+import { wormOff, wormOn, wormCleanup } from './worms.js';
+import { teamMessage, teamBoard, adminTeams } from './teams.js';
+import { clubBoard, adminClubs, derbyCommand, postDerby } from './clubs.js';
+import { votesText as burnVotes } from './burn.js';
+import { resultsText as pollResults } from './poll.js';
+import { callback as ideaCallback, command as ideaCommand, newPoll, cron as ideasCron } from './ideas.js';
+import { idMessage, lookup as playerLookup } from './players.js';
+import { netCleanup } from './net.js';
+import { command as raceCommand, sweep as raceSweep } from './race.js';
+import { parodyCron, parodyCommand } from './parody.js';
+import { chatAdmin, chatCleanup } from './chat.js';
+import { sweep as wagerSweep } from './wager.js';
+import { sweep as warSweep } from './teamwar.js';
+import { command as giftCommand } from './gifts.js';
+import { command as medalCommand } from './medals.js';
+import { preCheckout, paid, refundedByTelegram, refundCommand, salesText, paySupport, PAYSUPPORT, terms, shopCommand } from './stars.js';
+import { command as payCommand, cron as payCron } from './payout.js';
+import { payReminder } from './panel.js';
+import { teamPrizeText } from './teamprize.js';
+import { adminList, cleanup as prizeCleanup, member, weekOf, prizeWeek, skip as prizeSkip, FIRST_WEEK, rookieList, ROOKIE_FROM, ROOKIE_PRIZES, drawList, DRAW_FROM, DRAW_PRIZES } from './prize.js';
+import { joinsCron, joinsCommand } from './growth.js';
+import { funnelText } from './funnel.js';
+import { pushReminders } from './push.js';
+import { inlineQuery, duel, postTop, weekStart, setGroup, sourcesText, gameLink, botUsername, cleanSource, weekly, reminders, announce, addAnnouncement, kickAnnounce, utcDay, royaleHour,
+  INVITE_REWARD, LOYAL_REWARD, LOYAL_MATCHES, MILESTONES, invites, promoOn, inviterReward, perFriend } from './growth.js';
+const webhookSecret = env => sha256('webhook:' + env.SESSION_SECRET).then(h => h.slice(0, 48));
+const botLog = (env, note) => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
+
+export const DESCRIPTION = 'Crypto Worm Wars 🪱 Bulls vs Bears worm battles, free right here in Telegram. Aim, fire and blast the Bear worms off the island. ' +
+  'Play the CPU, people online, or 50 worms at once in Worm Royale. Tap Start, then Play!';
+export const SHORT_DESCRIPTION = 'Bulls vs Bears worm battles 🪱 Free to play right inside Telegram. Tap Play!';
+export const COMMANDS = [{ command: 'play', description: 'Open the game' }, { command: 'invite', description: 'Invite friends, earn Battle Points' }, { command: 'help', description: 'How to play' }, { command: 'top', description: 'This week\'s top 10' },
+  { command: 'id', description: 'Your player ID' }, { command: 'privacy', description: 'Privacy policy' }, { command: 'paysupport', description: 'Help with a purchase' }, { command: 'terms', description: 'Purchase terms' }, { command: 'stop', description: 'Turn off bot reminders' }, { command: 'start', description: 'Welcome message' }];
+export const GROUP_COMMANDS = [{ command: 'duel', description: 'Challenge the group to a duel' }, { command: 'top', description: 'This week\'s top 10' }, { command: 'play', description: 'Open the game' }];
+export const UPDATES = ['message', 'inline_query', 'pre_checkout_query', 'callback_query'];   // pre_checkout_query: Telegram Stars payments (stars.js); callback_query: the Approve/Reject buttons on ideas (ideas.js)
+export const privacyUrl = env => (env.SITE_URL || (env.MENU_URL || 'https://play.cryptoworm.io/')).replace(/\/+$/, '') + '/privacy.html';
+
+export const COMMUNITY = { group: 'https://t.me/CryptoWorm_Group', x: 'https://x.com/CryptoWorm72' };
+
+// The welcome message (Damian 2026-10-22, "make it more attractive at first glance"): three short lines in the player's Telegram
+// language, so the picture and the Play button fit on one phone screen. 'nudge' is the one reminder for people who started the
+// bot but never opened the game (startNudge).
+const WELCOME = {
+  en: { hi: '🪱 Welcome, $1!', hi0: '🪱 Welcome to Crypto Worm Wars!', body: 'Bulls vs Bears: aim, fire and blast the Bear worms off the island. Free to play, right here in Telegram.',
+    go: '👇 Tap Play now. Your first battle starts in seconds.', play: '🎮 Play now', invite: '👥 Invite friends: +$1 BP per friend', group: '💬 Telegram group', x: '𝕏 Follow on X',
+    nudge: '🪱 Your first battle is waiting! It\'s an easy one and only takes a few minutes. Tap Play 👇' },
+  es: { hi: '🪱 ¡Bienvenido, $1!', hi0: '🪱 ¡Bienvenido a Crypto Worm Wars!', body: 'Toros contra Osos: apunta, dispara y saca a los gusanos Osos de la isla. Gratis, aquí mismo en Telegram.',
+    go: '👇 Toca Jugar ahora. Tu primera batalla empieza en segundos.', play: '🎮 Jugar ahora', invite: '👥 Invita amigos: +$1 BP por amigo', group: '💬 Grupo de Telegram', x: '𝕏 Síguenos en X',
+    nudge: '🪱 ¡Tu primera batalla te espera! Es fácil y dura solo unos minutos. Toca Jugar 👇' },
+  pt: { hi: '🪱 Bem-vindo, $1!', hi0: '🪱 Bem-vindo ao Crypto Worm Wars!', body: 'Touros contra Ursos: mire, atire e tire as minhocas Ursos da ilha. Grátis, aqui mesmo no Telegram.',
+    go: '👇 Toque em Jogar agora. Sua primeira batalha começa em segundos.', play: '🎮 Jogar agora', invite: '👥 Convide amigos: +$1 BP por amigo', group: '💬 Grupo no Telegram', x: '𝕏 Siga no X',
+    nudge: '🪱 Sua primeira batalha está esperando! É fácil e leva só alguns minutos. Toque em Jogar 👇' },
+  fr: { hi: '🪱 Bienvenue, $1 !', hi0: '🪱 Bienvenue dans Crypto Worm Wars !', body: 'Taureaux contre Ours : vise, tire et éjecte les vers Ours de l\'île. Gratuit, directement dans Telegram.',
+    go: '👇 Touche Jouer. Ta première bataille commence dans quelques secondes.', play: '🎮 Jouer', invite: '👥 Invite des amis : +$1 BP par ami', group: '💬 Groupe Telegram', x: '𝕏 Suis-nous sur X',
+    nudge: '🪱 Ta première bataille t\'attend ! Elle est facile et ne dure que quelques minutes. Touche Jouer 👇' },
+  de: { hi: '🪱 Willkommen, $1!', hi0: '🪱 Willkommen bei Crypto Worm Wars!', body: 'Bullen gegen Bären: zielen, feuern und die Bären-Würmer von der Insel pusten. Kostenlos, direkt hier in Telegram.',
+    go: '👇 Tippe auf Jetzt spielen. Dein erster Kampf beginnt in Sekunden.', play: '🎮 Jetzt spielen', invite: '👥 Freunde einladen: +$1 BP pro Freund', group: '💬 Telegram-Gruppe', x: '𝕏 Folge uns auf X',
+    nudge: '🪱 Dein erster Kampf wartet! Er ist leicht und dauert nur ein paar Minuten. Tippe auf Spielen 👇' },
+  ru: { hi: '🪱 Добро пожаловать, $1!', hi0: '🪱 Добро пожаловать в Crypto Worm Wars!', body: 'Быки против Медведей: целься, стреляй и сбрасывай червей-медведей с острова. Бесплатно, прямо в Telegram.',
+    go: '👇 Нажми «Играть». Первый бой начнётся через пару секунд.', play: '🎮 Играть', invite: '👥 Пригласи друзей: +$1 BP за друга', group: '💬 Группа в Telegram', x: '𝕏 Мы в X',
+    nudge: '🪱 Твой первый бой ждёт! Он лёгкий и займёт всего пару минут. Жми «Играть» 👇' },
+  tr: { hi: '🪱 Hoş geldin, $1!', hi0: '🪱 Crypto Worm Wars\'a hoş geldin!', body: 'Boğalar Ayılara karşı: nişan al, ateş et ve Ayı solucanlarını adadan uçur. Ücretsiz, hemen burada Telegram\'da.',
+    go: '👇 Şimdi oyna\'ya dokun. İlk savaşın saniyeler içinde başlıyor.', play: '🎮 Şimdi oyna', invite: '👥 Arkadaş davet et: arkadaş başına +$1 BP', group: '💬 Telegram grubu', x: '𝕏 X\'te takip et',
+    nudge: '🪱 İlk savaşın seni bekliyor! Kolay ve sadece birkaç dakika sürüyor. Oyna\'ya dokun 👇' },
+  zh: { hi: '🪱 欢迎你，$1！', hi0: '🪱 欢迎来到 Crypto Worm Wars！', body: '公牛对熊：瞄准、开火，把熊队的虫子轰出小岛。免费，就在 Telegram 里玩。',
+    go: '👇 点击“开始游戏”，几秒后就开始你的第一场战斗。', play: '🎮 开始游戏', invite: '👥 邀请好友：每位好友 +$1 BP', group: '💬 Telegram 群组', x: '𝕏 关注我们的 X',
+    nudge: '🪱 你的第一场战斗在等你！很简单，只要几分钟。点击开始 👇' },
+  id: { hi: '🪱 Selamat datang, $1!', hi0: '🪱 Selamat datang di Crypto Worm Wars!', body: 'Bulls lawan Bears: bidik, tembak, dan lempar cacing Bears dari pulau. Gratis, langsung di Telegram.',
+    go: '👇 Ketuk Main sekarang. Pertempuran pertamamu mulai dalam hitungan detik.', play: '🎮 Main sekarang', invite: '👥 Undang teman: +$1 BP per teman', group: '💬 Grup Telegram', x: '𝕏 Ikuti di X',
+    nudge: '🪱 Pertempuran pertamamu sudah menunggu! Gampang dan cuma beberapa menit. Ketuk Main 👇' },
+};
+export const welcomeLang = code => { let l = String(code || '').slice(0, 2).toLowerCase(); if (l === 'in') l = 'id'; return WELCOME[l] ? l : 'en' };   // 'in' is the old code for Indonesian
+export function welcomeText(name, lang) {
+  const t = WELCOME[welcomeLang(lang)];
+  return (name ? t.hi.replace('$1', name) : t.hi0) + '\n\n' + t.body + '\n\n' + t.go;
+}
+export const HELP_TEXT = '🎮 How to play\n\n' +
+  '• Walk with the joystick, push it up to jump.\n' +
+  '• Tap the map to aim, then hold FIRE to power up and let go to shoot. A double tap on the map aims and fires.\n' +
+  '• Pick weapons from the bar at the bottom. Blast the coins in the dirt to buy bigger ones.\n' +
+  '• The market chart sets the wind: green blows right, red blows left.\n' +
+  '• Online: open Online in the menu to challenge players or add friends.\n\nLast team standing wins!\n\n' +
+  '🛡️ /team: your community team and its invite link. /teams: this week\'s top teams.\n\n' +
+  '🆔 /id: your player ID, to give the team when you ask for help or win a prize.\n\n' +
+  '🎁 /invite: the fastest way to earn Battle Points (BP). +2,000 for you for each friend who joins and plays, +500 for them (play money).\n\n' +   // perFriend() and INVITE_REWARD (growth.js loads after this file)
+  `💬 Telegram group: ${COMMUNITY.group}\n𝕏 Follow on X: ${COMMUNITY.x}`;
+
+// The Play button carries a source tag from the /start link (t.me/<bot>?start=s_<tag>), and the invite button the player's friend code.
+const shareUrl = (link, text) => 'https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text);
+export const SHARE_TEXT = 'Fight me in Crypto Worm Wars! 🪱 Join with my link and get +500 BP in the game to start (play money).';   // 500: INVITE_REWARD
+function buttons(env, src, invite, lang) {
+  const play = gameLink(env, src ? 's_' + src : null), share = invite || env.GAME_LINK || 'https://t.me/CryptoWormWarsBot/play', t = WELCOME[welcomeLang(lang)];
+  return { inline_keyboard: [[{ text: t.play, url: play }],
+    [{ text: t.invite.replace('$1', perFriend().toLocaleString('en-US')), url: shareUrl(share, invite ? SHARE_TEXT : 'Fight me in Crypto Worm Wars! 🪱') }],
+    [{ text: t.group, url: COMMUNITY.group }, { text: t.x, url: COMMUNITY.x }]] };
+}
+
+export async function tg(env, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return r.json().catch(() => ({ ok: false }));
+}
+
+// Admins are the players listed in ADMIN_PLAYERS (account ids, comma separated); the bot reaches them through their Telegram id.
+export async function adminTgIds(env) {
+  const ids = String(env.ADMIN_PLAYERS || '').split(',').map(Number).filter(n => n > 0);
+  if (!ids.length) return [];
+  const { results } = await env.DB.prepare(`SELECT tg_id FROM players WHERE tg_id IS NOT NULL AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+  return results.map(r => r.tg_id);
+}
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+const stars = r => r ? '★'.repeat(r) + '☆'.repeat(5 - r) : 'no rating';
+
+// A beta tester sent feedback from the game: pass it on to every admin right away.
+export async function tellAdmins(env, f) {
+  if (!env.BOT_TOKEN) return;
+  const who = f.tg_id != null ? `<a href="tg://user?id=${f.tg_id}">${esc(f.name)}</a>` : esc(f.name);
+  const bug = /^BUG · /.test(f.info || '');
+  const text = (bug ? `🐞 Bug report from ${who} (player ${f.player})\n` : `📝 Feedback from ${who} (player ${f.player})\n${stars(f.rating)}\n`) +
+    (f.wallet ? `Wallet: <code>${esc(f.wallet)}</code>${f.wallet_ok ? ' ✅ signed in' : ' (typed)'}\n` : 'No wallet\n') +
+    (f.info ? `<i>${esc(f.info)}</i>\n` : '') + '\n' + esc(f.text);
+  for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+}
+
+// A new or reported custom worm (worms.js): the picture, with what to do about it.
+export async function tellAdminsPhoto(env, photo, caption) {
+  if (!env.BOT_TOKEN) return;
+  for (const chat_id of await adminTgIds(env)) {
+    const r = await tg(env, 'sendPhoto', { chat_id, photo, caption: caption.slice(0, 1000) });
+    if (!r.ok) await tg(env, 'sendMessage', { chat_id, text: (caption + '\n' + photo).slice(0, 4000), disable_web_page_preview: true });
+  }
+}
+
+// A plain note for every admin (a club a player added, see clubs.js).
+export async function tellAdminsText(env, text) {
+  if (!env.BOT_TOKEN) return;
+  for (const chat_id of await adminTgIds(env)) await tg(env, 'sendMessage', { chat_id, text: String(text).slice(0, 4000), disable_web_page_preview: true });
+}
+
+// /feedback (admins only): every message so far as a spreadsheet, plus one line per tester with their wallet, for the airdrop.
+const csvCell = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+const toCsv = rows => '\ufeff' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+const when = t => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+// Every feedback message, plus one row per tester for the airdrop. A wallet linked after the feedback still counts.
+export async function feedbackCsv(env) {
+  const { results } = await env.DB.prepare('SELECT f.*, p.wallet AS wallet_now, p.tg_id AS tg_now FROM feedback f LEFT JOIN players p ON p.id = f.player ORDER BY f.created').all();
+  const head = ['date', 'player', 'name', 'telegram_id', 'wallet', 'wallet_signed_in', 'rating', 'feedback', 'platform_language_level'];
+  const rows = results.map(f => [when(f.created), f.player, f.name, f.tg_id, f.wallet_now || f.wallet, f.wallet_now || f.wallet_ok ? 'yes' : 'no', f.rating, f.text, f.info]);
+  const testers = new Map();
+  for (const f of results) {
+    const t = testers.get(f.player) || { player: f.player, n: 0, first: f.created, wallet: null, ok: false };
+    t.n++; t.last = f.created; t.name = f.name; t.tg_id = f.tg_now ?? f.tg_id ?? t.tg_id;
+    if (f.wallet_now) { t.wallet = f.wallet_now; t.ok = true } else if (f.wallet && !t.ok) { t.wallet = f.wallet; t.ok = !!f.wallet_ok }
+    testers.set(f.player, t);
+  }
+  const list = [...testers.values()];
+  const airdrop = [['player', 'name', 'telegram_id', 'wallet', 'wallet_signed_in', 'feedback_messages', 'first_feedback', 'last_feedback'],
+    ...list.map(t => [t.player, t.name, t.tg_id, t.wallet, t.wallet ? (t.ok ? 'yes' : 'no') : '', t.n, when(t.first), when(t.last)])];
+  return { csv: toCsv([head, ...rows]), airdropCsv: toCsv(airdrop), messages: results.length, testers: testers.size, withWallet: list.filter(t => t.wallet).length };
+}
+async function sendDoc(env, chat_id, csv, file, caption) {
+  const form = new FormData();
+  form.append('chat_id', String(chat_id));
+  if (caption) form.append('caption', caption);
+  form.append('document', new Blob([csv], { type: 'text/csv' }), file);
+  const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
+  return res.json().catch(() => ({ ok: false }));
+}
+async function sendCsv(env, chat_id) {
+  const r = await feedbackCsv(env), day = new Date().toISOString().slice(0, 10);
+  if (!r.messages) return tg(env, 'sendMessage', { chat_id, text: 'No feedback yet.' });
+  await sendDoc(env, chat_id, r.csv, `crypto-worm-feedback-${day}.csv`, `${r.messages} messages from ${r.testers} testers, ${r.withWallet} with a wallet.`);
+  return sendDoc(env, chat_id, r.airdropCsv, `crypto-worm-airdrop-testers-${day}.csv`, 'Airdrop list: one row per tester who sent feedback.');
+}
+
+const isAdmin = async (env, from) => !!from && (await adminTgIds(env)).includes(from.id);
+async function inviteLink(env, from) {
+  const p = from && env.DB && await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
+  return p ? gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)) : null;
+}
+// /invite: the player's invite link, what each friend pays and how many came so far.
+async function inviteMessage(env, from) {
+  const p = from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(from.id).first().catch(() => null);
+  const ladder = MILESTONES.map(x => `${x.n} friends: +${x.amount.toLocaleString('en-US')}${x.skin ? ' + ' + x.skin + ' skin' : ''}`).join('\n');
+  const f = n => n.toLocaleString('en-US');
+  const how = `🎁 Invite friends: the fastest way to earn BP\n\nEvery friend who opens your link and plays is worth +${f(perFriend())} BP to you (a match pays about 50):\n` +
+    `• +${f(inviterReward())} when they finish a first match${promoOn() ? ' (invite week)' : ''}\n• +${f(LOYAL_REWARD)} more when they have played ${LOYAL_MATCHES} matches\n• Your friend gets +${f(INVITE_REWARD)} to start\n\nBonuses:\n${ladder}\n\n`;
+  if (!p) return { text: how + 'Open the game once to get your own invite link, then send /invite again.\n\n(Play money in the game, not real tokens.)',
+    reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } };
+  const link = gameLink(env, 'f_' + await friendCode(p.id, env.SESSION_SECRET)), r = await invites(env, p);
+  const so = r.joined ? `Your friends so far: ${r.counted} played${r.joined > r.counted ? `, ${r.joined - r.counted} still to finish a first match` : ''}. You earned ${r.earned.toLocaleString('en-US')} BP from invites.` : 'No friends joined yet. Be the first to bring your crew!';
+  return { text: how + so + (r.next ? `\nNext bonus at ${r.next.n} friends.` : '') + `\n\nYour invite link:\n${link}\n\n(Play money in the game, not real tokens.)`,
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [[{ text: '📤 Share my invite link', url: shareUrl(link, SHARE_TEXT) }], [{ text: '🎮 Play', url: gameLink(env, 'invite') }]] } };
+}
+
+export async function webhook(req, env) {
+  if (!same(req.headers.get('X-Telegram-Bot-Api-Secret-Token') || '', await webhookSecret(env))) return new Response('forbidden', { status: 403 });
+  const u = await req.json().catch(() => null), m = u && u.message;
+  if (u && u.inline_query && u.inline_query.from && env.DB) { await inlineQuery(env, u.inline_query).catch(() => { }); return new Response('ok') }
+  if (u && u.pre_checkout_query && env.DB) {                                          // Telegram Stars (stars.js): yes or no within 10 seconds
+    await preCheckout(env, u.pre_checkout_query).catch(async e => { await botLog(env, 'pre_checkout error ' + (e && e.message));
+      await tg(env, 'answerPreCheckoutQuery', { pre_checkout_query_id: u.pre_checkout_query.id, ok: false, error_message: 'Something went wrong. Please try again.' }) });
+    return new Response('ok');
+  }
+  if (u && u.callback_query && u.callback_query.from && env.DB) {                      // a button under a bot message: Approve/Reject on an idea (ideas.js)
+    const cq = u.callback_query;
+    const handled = await ideaCallback(env, cq, await isAdmin(env, cq.from)).catch(async e => { await botLog(env, 'idea button error ' + (e && e.message)); return false });
+    if (!handled) await tg(env, 'answerCallbackQuery', { callback_query_id: cq.id }).catch(() => { });
+    return new Response('ok');
+  }
+  if (m && m.successful_payment && env.DB) { await paid(env, m).catch(e => botLog(env, 'payment error ' + (e && e.message) + ' ' + JSON.stringify(m.successful_payment).slice(0, 600))); return new Response('ok') }
+  if (m && m.refunded_payment && env.DB) { await refundedByTelegram(env, m).catch(e => botLog(env, 'refund error ' + (e && e.message))); return new Response('ok') }
+  if (!m || !m.chat || typeof m.text !== 'string') return new Response('ok');
+  const [head, ...rest] = m.text.trim().split(/\s+/), [c, at] = head.toLowerCase().split('@'), cmd = c, chat_id = m.chat.id, arg = rest.join(' ');
+  if (at && at !== botUsername(env).toLowerCase()) return new Response('ok');          // a command for another bot in the group
+  if (m.chat.type === 'group' || m.chat.type === 'supergroup') {
+    if (cmd === '/duel') await duel(env, m);
+    else if (cmd === '/top') await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
+    else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: { inline_keyboard: [[{ text: '🎮 Play', url: gameLink(env) }]] } });
+    else if ((cmd === '/teams' || cmd === '/team') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
+    else if ((cmd === '/clubs' || cmd === '/club') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await clubBoard(env) });
+    else if (cmd === '/setgroup' && await isAdmin(env, m.from)) {
+      await setGroup(env, chat_id);
+      await tg(env, 'sendMessage', { chat_id, text: '✅ Done. Every Monday the bot posts last week\'s top 10 here.' });
+    }
+    return new Response('ok');
+  }
+  if (m.chat.type !== 'private') return new Response('ok');
+  if (cmd === '/start') {
+    const src = arg.startsWith('s_') ? cleanSource(arg.slice(2)) : null;
+    if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET no_dm = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
+    const lang = welcomeLang(m.from && m.from.language_code), now = Date.now();
+    if (env.DB && m.from) await env.DB.prepare('INSERT INTO bot_starts (tg_id, first, last, src, lang) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tg_id) DO UPDATE SET last = excluded.last, n = n + 1')
+      .bind(m.from.id, now, now, src, lang).run().catch(() => { });                  // every START, to see who never opens the game (startNudge, /sources)
+    const caption = welcomeText(m.from && m.from.first_name ? String(m.from.first_name).slice(0, 40) : '', lang), kb = buttons(env, src, env.DB && await inviteLink(env, m.from), lang);
+    const sent = env.WELCOME_PHOTO ? await tg(env, 'sendPhoto', { chat_id, photo: env.WELCOME_PHOTO, caption, reply_markup: kb }) : { ok: false };
+    if (!sent.ok) await tg(env, 'sendMessage', { chat_id, text: caption, reply_markup: kb });
+  } else if (cmd === '/play') await tg(env, 'sendMessage', { chat_id, text: 'Tap to jump in! 🪱', reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from), m.from && m.from.language_code) });
+  else if (cmd === '/help') await tg(env, 'sendMessage', { chat_id, text: HELP_TEXT, reply_markup: buttons(env, null, env.DB && await inviteLink(env, m.from), m.from && m.from.language_code) });
+  else if ((cmd === '/invite' || cmd === '/ref') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await inviteMessage(env, m.from) });
+  else if (cmd === '/top' && env.DB) await postTop(env, chat_id, weekStart(), 'This week\'s top 10');
+  else if (cmd === '/team' && env.DB) {                                                // community teams (teams.js): your team and its invite link
+    const p = m.from && await env.DB.prepare('SELECT * FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    await tg(env, 'sendMessage', { chat_id, ...await teamMessage(env, p) });
+  }
+  else if (cmd === '/teams' && env.DB) {                                               // the week's top teams; admins get the full list, /teams off <id> removes one
+    if (await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await adminTeams(env, arg), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, ...await teamBoard(env) });
+  }
+  else if ((cmd === '/clubs' || cmd === '/club') && env.DB) {                         // football clubs (clubs.js): the club war; admins also see added clubs, /clubs off <id>
+    if (await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await adminClubs(env, arg), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, ...await clubBoard(env) });
+  }
+  else if (cmd === '/derby' && env.DB && await isAdmin(env, m.from)) {                // admins: a derby day, posted to the group
+    const p = await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    const r = await derbyCommand(env, arg, p && p.id);
+    const posted = r.post ? await postDerby(env, r.post) : null;
+    await tg(env, 'sendMessage', { chat_id, text: r.text + (r.post ? (posted ? '\n\n📣 Posted in the community group.' : '\n\nThe group post did not go out: is the bot set up in the group (/setgroup)?') : '') });
+  }
+  else if ((cmd === '/id' || cmd === '/myid') && env.DB) await tg(env, 'sendMessage', { chat_id, ...await idMessage(env, m.from) });   // players.js
+  else if (cmd === '/race' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await raceCommand(env, arg, { by: m.from.id, tg })).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  else if ((cmd === '/player' || cmd === '/who') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await playerLookup(env, arg)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  else if (cmd === '/privacy') await tg(env, 'sendMessage', { chat_id, text: '🔒 Our privacy policy: what the game stores, why, and how to have it deleted.\n' + privacyUrl(env) });
+  else if (cmd === '/paysupport' && env.DB) await tg(env, 'sendMessage', { chat_id, text: arg.trim() && m.from ? await paySupport(env, m.from, m.text.trim().slice(head.length).trim()) : PAYSUPPORT });   // Telegram Stars (stars.js)
+  else if (cmd === '/terms') await tg(env, 'sendMessage', { chat_id, text: terms(env), disable_web_page_preview: true });
+  else if (cmd === '/sales' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await salesText(env)).slice(0, 4000), parse_mode: 'HTML' });
+  else if (cmd === '/stars' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await shopCommand(env, arg) });
+  else if (cmd === '/refund' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await refundCommand(env, arg) });
+  else if (cmd === '/reply' && await isAdmin(env, m.from)) {                          // admins: answer a /paysupport
+    const [to] = rest, text = m.text.trim().slice(head.length).trim().slice(String(to || '').length).trim();
+    const r = /^\d+$/.test(to || '') && text ? await tg(env, 'sendMessage', { chat_id: Number(to), text: '⭐ Crypto Worm Wars support:\n\n' + text.slice(0, 3500) }) : null;
+    await tg(env, 'sendMessage', { chat_id, text: r && r.ok ? '✅ Sent.' : r ? 'Not sent: ' + (r.description || 'no answer') : 'Use /reply <telegram id> <your answer>.' });
+  }
+  else if (cmd === '/stop') {
+    if (env.DB && m.from) await env.DB.prepare('UPDATE player_meta SET remind = 0 WHERE player IN (SELECT id FROM players WHERE tg_id = ?)').bind(m.from.id).run().catch(() => { });
+    if (env.DB && m.from) await env.DB.prepare('UPDATE bot_starts SET nudged = -1 WHERE tg_id = ? AND nudged = 0').bind(m.from.id).run().catch(() => { });
+    await tg(env, 'sendMessage', { chat_id, text: '🔕 Reminders are off. You can turn them back on in the game\'s Settings.' });
+  }
+  else if (cmd === '/announce' && env.DB && await isAdmin(env, m.from)) {           // admins: a "what's new" note for the group and every player
+    if (!arg.trim()) await tg(env, 'sendMessage', { chat_id, text: 'Write the note after the command: /announce New update! ...' });
+    else { await addAnnouncement(env, m.text.trim().slice(head.length).trim()); await kickAnnounce(env);
+      const today = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'note_day'").first().then(r => r && r.v) === utcDay();
+      await tg(env, 'sendMessage', { chat_id, text: today ? '📣 Queued. A note already went out today, so this one goes to the group and every player tomorrow (one note a day).' : '📣 Sending now to the group and every Telegram player (except those who sent /stop).' }) }
+  }
+  else if (cmd === '/joins' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await joinsCommand(env, arg), parse_mode: 'HTML' });
+  else if (cmd === '/sources' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await sourcesText(env), parse_mode: 'HTML' });
+  else if (cmd === '/funnel' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await funnelText(env, arg), parse_mode: 'HTML' });   // where new players leave their first match
+  else if (cmd === '/burnvotes' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await burnVotes(env), parse_mode: 'HTML' });
+  else if (cmd === '/poll' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await pollResults(env), parse_mode: 'HTML' });
+  else if ((cmd === '/ideas' || cmd === '/idea') && env.DB && await isAdmin(env, m.from)) {   // Ideas & polls (ideas.js)
+    const by = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') || m.from.username || '';
+    const text = await ideaCommand(env, cmd === '/ideas' ? '' : m.text.trim().slice(head.length).trim(), { by, chat: chat_id });
+    if (text) await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  }
+  else if (cmd === '/newpoll' && env.DB && await isAdmin(env, m.from)) {
+    const p = await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null);
+    await tg(env, 'sendMessage', { chat_id, text: (await newPoll(env, m.text.trim().slice(head.length).trim(), p && p.id)).slice(0, 4000) });
+  }
+  else if (cmd === '/pay' && env.DB && await isAdmin(env, m.from)) {                 // admins: prize payouts from the prize wallet (payout.js), private chat only
+    if (m.chat.type !== 'private') await tg(env, 'sendMessage', { chat_id, text: 'Use /pay in a private chat with the bot.' });
+    else { const lastWeek = kind => { const now = Date.now(), w = weekOf(now) - 7 * 864e5; return kind === 'rookies' ? rookieList(env, w, now) : kind === 'draw' ? drawList(env, w, now) : adminList(env, w, now) };
+      const text = await payCommand(env, m.text.trim().slice(head.length).replace(/^[ \t]+/, ''), m.from.id, lastWeek, chat_id).catch(e => '⚠️ ' + (e && e.message));
+      await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), disable_web_page_preview: true }) } }
+  else if (cmd === '/prize' && env.DB && await isAdmin(env, m.from)) {
+    const sk = arg.trim().match(/^(un)?skip\s+(\d+)/i);
+    if (/^teams?\b/i.test(arg.trim())) { const now = Date.now(), w = weekOf(now) - (/last/i.test(arg) ? 7 * 864e5 : 0);   // the Team Prize (teamprize.js)
+      await tg(env, 'sendMessage', { chat_id, text: (await teamPrizeText(env, w, now)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true }) }
+    else if (/^(new|rookies?)\b/i.test(arg.trim())) await sendRookies(env, chat_id, /last/i.test(arg));                              // the new players prize (prize.js)
+    else if (/^draw\b/i.test(arg.trim())) await sendDraw(env, chat_id, /last/i.test(arg));                                          // the weekly draw (prize.js)
+    else if (!sk) await sendPrize(env, chat_id, /last/i.test(arg));
+    else { const p = await prizeSkip(env, Number(sk[2]), !sk[1], (await env.DB.prepare('SELECT id FROM players WHERE tg_id = ?').bind(m.from.id).first().catch(() => null))?.id);
+      await tg(env, 'sendMessage', { chat_id, text: !p ? `No player with id ${sk[2]}.` : sk[1] ? `✅ ${p.name} (id ${p.id}) can win the weekly prize again.`
+        : `🚫 ${p.name} (id ${p.id}) is out of the weekly prize from now on, this week too. They still play and stay in the ranking.\n\n/prize unskip ${p.id} brings them back.` }) } }
+  else if ((cmd === '/wormoff' || cmd === '/wormon') && env.DB && await isAdmin(env, m.from)) {   // custom worms (worms.js)
+    const a = arg.trim();
+    if (cmd === '/wormoff') { const p = a && await wormOff(env, a);
+      await tg(env, 'sendMessage', { chat_id, text: p ? `🚫 Removed ${p.name}'s custom worm (player ${p.id}). They can't make a new one now.\n/wormon ${p.id} lets them again.` : 'No custom worm with that id. Copy it from the message with the picture: /wormoff <id>' }) }
+    else await tg(env, 'sendMessage', { chat_id, text: a && await wormOn(env, a) ? `✅ Player ${a} can make custom worms again.` : 'Nothing to undo for that player. Use /wormon <player id>.' });
+  }
+  else if ((cmd === '/chatdel' || cmd === '/chatmute') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await chatAdmin(env, cmd, arg) });   // chat.js
+  else if (cmd === '/parody' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await parodyCommand(env, arg) });   // parody.js
+  else if ((cmd === '/medal' || cmd === '/medals') && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: (await medalCommand(env, arg)).slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });   // medals (medals.js)
+  else if (cmd === '/gift' || cmd === '/gifts' || cmd === '/redeem') {                // gift codes (gifts.js)
+    if (env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await giftCommand(env, arg, m.from.id), disable_web_page_preview: true });
+    else await tg(env, 'sendMessage', { chat_id, text: '🎁 Got a gift code? Open the game, tap More, then 🎁 Gift code, and type it in.', reply_markup: buttons(env) });
+  }
+  else if (cmd === '/sim' && env.DB && await isAdmin(env, m.from)) await tg(env, 'sendMessage', { chat_id, text: await simCommand(env, arg), disable_web_page_preview: true });
+  else if (cmd === '/prize' || cmd === '/prizes') await tg(env, 'sendMessage', { chat_id, reply_markup: buttons(env),   // Telegram: no token name, no amounts
+    text: '🏆 Weekly prizes: every week the Top 10 win prizes.\n\nOpen the game and tap 🏆 Weekly prizes on Home: do the 5 steps, then finish in the Top 10 of the weekly ranking.\n\nPrizes and full rules: ' + privacyUrl(env).replace(/privacy\.html$/, 'prize.html') });
+  else if (cmd === '/feedback') {
+    if (await isAdmin(env, m.from)) await sendCsv(env, chat_id);
+    else await tg(env, 'sendMessage', { chat_id, text: 'Open the game and tap Feedback in the menu to tell us what you think. Thank you! 🪱', reply_markup: buttons(env) });
+  }
+  return new Response('ok');
+}
+
+// /sim (admins): the load test's simulated players (see sim/). The order goes into sim_cmd, which the load-test Worker reads
+// every minute: /sim rush 30 puts all of them online for 30 minutes, /sim life goes back to normal days (2 to 3 hours online a
+// day each), /sim off stops them. /sim taper 50 takes 50 bots away now and 50 more each UTC day until none are left (Damian
+// 2026-11-10: wind them down little by little); /sim taper off stops the countdown; /sim bots 300 sets how many play.
+// /sim active 90 keeps every bot but has each one online 90% of its usual time (Damian 2026-11-10: fewer online at once).
+// /sim alone shows the latest numbers.
+const SIM_MAX_RUSH = 180;
+export async function simCommand(env, arg, now = Date.now()) {
+  const [what, n] = String(arg || '').trim().toLowerCase().split(/\s+/), url = env.SIM_URL || 'https://crypto-worm-sim.cryptoworm.workers.dev';
+  const order = (cmd, a) => env.DB.prepare('INSERT INTO sim_cmd (cmd, arg, at) VALUES (?, ?, ?)').bind(cmd, a, now).run();
+  if (what === 'rush') { const min = Math.max(5, Math.min(SIM_MAX_RUSH, Math.round(Number(n)) || 30)); await order('rush', min);
+    return `🤖 Rush: within a minute every simulated player comes online, a few more each second over 5 minutes, and they all stay for ${min} minutes. It stops by itself if the server slows down.\n\nLive numbers: ${url}` }
+  if (what === 'life' || what === 'on') { await order('life', null); return `🤖 Normal days: each simulated player is online 2 to 3 hours a day, at times that change every day, playing game after game.\n\nLive numbers: ${url}` }
+  if (what === 'off' || what === 'stop') { await order('off', null); return '🤖 Stopping: the simulated players log off within a minute.' }
+  if (what === 'taper') { const k = Math.round(Number(n));
+    if (n === 'off' || n === 'stop' || k === 0) { await order('taper', 0); return '🤖 Countdown stopped: the simulated players that are left keep playing.' }
+    if (!(k > 0)) return '🤖 Use /sim taper 50 (50 fewer now and 50 fewer every day until none are left) or /sim taper off.';
+    const step = Math.min(500, k); await order('taper', step);
+    return `🤖 Winding down: within a minute ${step} simulated players stop, and ${step} more stop at every new UTC day until none are left (then the load test is off). Their accounts stay. /sim taper off stops the countdown.` }
+  if (what === 'active') { const k = Math.round(Number(n)); if (!(k >= 10 && k <= 100)) return '🤖 Use /sim active 90 (each simulated player online 90% of its usual 2 to 3 hours a day; 10 to 100).';
+    const h = x => (x * k / 100).toFixed(1).replace(/\.0$/, '');
+    await order('active', k); return `🤖 Within a minute each simulated player is online ${k}% of its usual time: about ${h(2)} to ${h(3)} hours a day instead of 2 to 3, so fewer are online at once. All of them stay. /sim active 100 brings it back.` }
+  if (what === 'bots') { const k = Math.round(Number(n)); if (!(k > 0)) return '🤖 Use /sim bots 300 (how many simulated players play, up to 500), or /sim off for none.';
+    await order('bots', Math.min(500, k)); return `🤖 Within a minute ${Math.min(500, k)} simulated players play (the highest-numbered stop first).` }
+  const row = await env.DB.prepare('SELECT at, data FROM sim_stats ORDER BY at DESC LIMIT 1').first().catch(() => null);
+  let d = null; try { d = row && JSON.parse(row.data) } catch (e) { }
+  const head = d ? `🤖 Load test: ${d.mode === 'rush' ? 'rush' : d.mode === 'life' ? 'normal days' : 'off'}${d.brake ? ' (stopped by the safety brake: ' + d.brake + ')' : ''}, ${Math.round((now - row.at) / 60000)} min ago\n` +
+    `Simulated players: ${d.bots} (${d.online} online, ${d.inMatch} in online matches)${d.taper ? `, ${d.taper} fewer each UTC day` : ''}${d.active && d.active !== 100 ? `, online ${d.active}% of the usual time` : ''}\nGame server: ${d.serverOnline ?? '?'} online, ${d.players ?? '?'} players in all\n` +
+    `Requests: ${d.rpm}/min, answer time ${d.p50} ms typical, ${d.p95} ms slowest 5%, errors ${d.errPct}%\n` : '🤖 Load test: no numbers yet.\n';
+  return head + `\n/sim rush 30: everyone online for 30 minutes\n/sim life: normal days\n/sim active 90: online 90% of the usual time\n/sim taper 50: 50 fewer now and every day\n/sim bots 300: how many play\n/sim off: stop\n\nLive numbers: ${url}`;
+}
+
+// /prize draw (admins): the weekly draw of this week, or of last week with "last". While the week runs it shows the entries so
+// far; the winners are fixed once the week is over (the order comes from the week and its entries), and the wallets are read now.
+async function sendDraw(env, chat_id, last) {
+  const now = Date.now(), w = weekOf(now) - (last ? 7 * 864e5 : 0), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
+  if (w < DRAW_FROM) return tg(env, 'sendMessage', { chat_id, text: `The weekly draw starts with the week of ${d(DRAW_FROM)}.` });
+  const r = await drawList(env, w, now), over = now >= w + 7 * 864e5;
+  const line = (x, head) => `${head} ${esc(x.name)} (id ${x.id}) · ${x.tickets} ${x.tickets === 1 ? 'ticket' : 'tickets'} (${x.draw.days} play ${x.draw.days === 1 ? 'day' : 'days'}${x.draw.bonus ? ' +' + x.draw.bonus + ' for holding ' + x.draw.held + ' days' : ''})${x.prize && over ? ' · ' + x.prize + ' SOL' : ''}` +
+    `${x.fair && x.fair.others.length ? '\n    ⚠️ same network as ' + x.fair.others.map(o => '#' + o.id + ' ' + esc(o.name)).join(', ') + (x.fair.more ? ' and more' : '') : ''}\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`;
+  const text = `🎟️ Weekly draw ${d(w)} to ${d(w + 6 * 864e5)}${over ? '' : ' (still running: the order changes until Sunday 23:59 UTC)'}\n${r.entrants} ${r.entrants === 1 ? 'holder' : 'holders'} with ${r.total} ${r.total === 1 ? 'ticket' : 'tickets'}.\n` +
+    `${DRAW_PRIZES.length} prizes of ${DRAW_PRIZES[0]} SOL: /pay draw makes the batch once the week is over.\n\n` +
+    (r.winners.length ? (over ? '' : 'If it ended now:\n') + r.winners.map(x => line(x, x.place + '.')).join('\n\n') : 'Nobody has a ticket yet.') + (r.reserves.length ? '\n\nNext in line:\n' + r.reserves.map(x => line(x, '·')).join('\n') : '') +
+    (r.dropped.length ? `\n\nPassed over just now: ${r.dropped.map(x => esc(x.name) + ' (holds ' + fmt(x.now) + ')').join(', ')}` : '') +
+    '\n\nRules: one ticket per day played, up to 7, for a linked wallet with 100K or more when we pay; extra tickets for holding 7, 30 or 90 days. /prize skip &lt;id&gt; takes a player out.';
+  await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  if (over && r.winners.length) await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,SOL):\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+}
+// /prize new (admins): the new players prize of this week, or of last week with "last": accounts made that week with a holder's
+// wallet, by prize points. The wallets were read just now; the other accounts on a winner's networks are for the admin to judge.
+async function sendRookies(env, chat_id, last) {
+  const now = Date.now(), w = weekOf(now) - (last ? 7 * 864e5 : 0), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
+  if (w < ROOKIE_FROM) return tg(env, 'sendMessage', { chat_id, text: `The new players prize starts with the week of ${d(ROOKIE_FROM)}.` });
+  const r = await rookieList(env, w, now);
+  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.others.length ? `⚠️ same network as ${f.others.map(o => '#' + o.id + ' ' + esc(o.name)).join(', ')}${f.more ? ' and more' : ''}` : '',
+    f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : '', f.royaleOdd ? `⚠️ ${f.royaleOdd} Worm Royale place${f.royaleOdd > 1 ? 's' : ''} that did not match` : ''].filter(Boolean);
+  const line = (x, head) => `${head} ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts${x.prize ? ' · ' + x.prize + ' SOL' : ''}\n    joined ${d(x.created)} · ${x.fair.runs} checked ${x.fair.runs === 1 ? 'match' : 'matches'} · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => '\n    ' + t).join('')}\n` +
+    `    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`;
+  const text = `🆕 New players prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} new ${r.entrants === 1 ? 'player' : 'players'} with a holder's wallet scored.\n` +
+    `${ROOKIE_PRIZES.length} prizes of ${ROOKIE_PRIZES[0]} SOL: /pay rookies makes the batch once the week is over.\n\n` +
+    (r.winners.length ? r.winners.map(x => line(x, x.place + '.')).join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? '\n\nNext in line:\n' + r.reserves.map(x => line(x, '·')).join('\n') : '') +
+    (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + ' (holds ' + fmt(x.now) + ')').join(', ')}` : '') +
+    '\n\nRules: account made this week (UTC), linked wallet with 100K or more when we pay, no waiting days. An account on the same network as an older one may be a second account: /player &lt;id&gt; shows more, /prize skip &lt;id&gt; takes a player out.';
+  await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  if (r.winners.length) await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,SOL):\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+}
+
+// /prize (admins): the weekly prize's eligible top 10 by prize points, with the Telegram group asked again. The X follows and
+// the wallet balances are for the admin to check by hand before sending the SOL (/pay prize).
+async function sendPrize(env, chat_id, last) {
+  const now = Date.now(), w = last ? weekOf(now) - 7 * 864e5 : prizeWeek(now);
+  if (w < FIRST_WEEK) return tg(env, 'sendMessage', { chat_id, text: 'No prize week has ended yet. The first one runs Monday 19 to Sunday 25 October.' });
+  const r = await adminList(env, w, now), d = t => new Date(t).toISOString().slice(0, 10), fmt = n => Number(n).toLocaleString('en-US');
+  const flags = f => [f.unchecked > 0 ? `⚠️ ${fmt(f.unchecked)} pts without a checked match (not counted)` : '', f.net && f.net.length ? `⚠️ same network as ${f.net.map(i => '#' + i).join(', ')}` : '', f.even ? '⚠️ reports at even gaps' : '', f.same ? '⚠️ same amount again and again' : '', f.royaleOdd ? `⚠️ ${f.royaleOdd} Worm Royale place${f.royaleOdd > 1 ? 's' : ''} that did not match` : ''].filter(Boolean);
+  const lines = r.winners.map(x => `${x.place}. ${esc(x.name)} (id ${x.id}) · ${fmt(x.pts)} pts · ${x.prize} SOL\n    X ${x.x ? '@' + esc(x.x) : '?'} · ${x.fair.reports} reports, max ${fmt(x.fair.maxHour)}/hour, ${x.fair.night} at night · ${x.steps.age.days} days old\n` +
+    `    ${x.fair.runs} checked matches · ${x.wins} online wins vs ${x.opps} players${flags(x.fair).map(t => ' · ' + t).join('')}\n    <code>${esc(x.wallet)}</code> · ${x.now == null ? '⚠️ balance not read, check by hand' : 'holds ' + fmt(x.now)}`);
+  const text = `🏆 Weekly prize ${d(w)} to ${d(w + 6 * 864e5)}${now < w + 7 * 864e5 ? ' (still running)' : ''}\n${r.entrants} ${r.entrants === 1 ? 'player' : 'players'} did all 5 steps.\n` +
+    'Prizes are paid in SOL: /pay prize makes the batch once the week is over.\n\n' +
+    (lines.length ? lines.join('\n\n') : 'Nobody qualified yet.') + (r.reserves.length ? `\n\nNext in line: ${r.reserves.map(x => esc(x.name)).join(', ')}` : '') +
+    (r.dropped.length ? `\n\nDropped just now: ${r.dropped.map(x => esc(x.name) + (x.why === 'group' ? ' (left the group)' : ' (holds ' + fmt(x.now) + ')')).join(', ')}` : '') +
+    (r.skipped.length ? `\n\nTaken out by an admin: ${r.skipped.map(x => esc(x.name) + ' (id ' + x.id + ')').join(', ')}` : '') +
+    '\n\nBefore paying: check each X username follows @CryptoWorm72. The group and the wallets were checked just now. Ties go to online wins against real players.\n/prize skip &lt;id&gt; takes a player out (scripts, shared accounts).\n/prize new shows the new players prize, /prize draw the weekly draw.';
+  await tg(env, 'sendMessage', { chat_id, text: text.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true });
+  if (!r.winners.length) return;
+  await sendDoc(env, chat_id, r.list, `weekly-prize-${d(w)}.csv`, 'The top 10 with their steps and fair-play numbers.');
+  await sendDoc(env, chat_id, r.log, `weekly-prize-${d(w)}-score-log.csv`, 'Every score report of these players this week.');
+  await tg(env, 'sendMessage', { chat_id, text: 'Payout lines (wallet,SOL) for a multi-send tool:\n<code>' + esc(r.pay) + '</code>', parse_mode: 'HTML' });
+}
+
+// Once a day the bot asks Telegram about the first admin's place in the group, the same question the weekly prize's group
+// step asks for every player, and keeps the answer in bot_kv 'prize_probe': a bot that can't see members shows up there.
+async function prizeProbe(env, now) {
+  const day = Math.floor(now / 864e5), last = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'prize_probe'").first().catch(() => null);
+  if (last && JSON.parse(last.v).day === day) return;
+  const [id] = await adminTgIds(env); if (id == null) return;
+  const r = await member(env, id) || {};
+  await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('prize_probe', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+    .bind(JSON.stringify({ day, at: now, ok: !!r.ok, status: r.result ? r.result.status : null, error: r.ok ? null : r.description || 'no answer' })).run();
+}
+
+export async function setup(req, env, origin) {
+  if (!env.BOT_TOKEN || !same(req.headers.get('x-admin') || '', await sha256(env.BOT_TOKEN))) return Response.json({ error: 'forbidden' }, { status: 403 });
+  const look = async () => ({ me: (await tg(env, 'getMe')).result, webhook: (await tg(env, 'getWebhookInfo')).result, description: (await tg(env, 'getMyDescription')).result,
+    short: (await tg(env, 'getMyShortDescription')).result, commands: (await tg(env, 'getMyCommands')).result, menu: (await tg(env, 'getChatMenuButton')).result });
+  if (req.method !== 'POST') return Response.json(await look());
+  const opts = await req.json().catch(() => ({})), done = {};
+  done.webhook = await tg(env, 'setWebhook', { url: origin + '/telegram/webhook', secret_token: await webhookSecret(env), allowed_updates: UPDATES, drop_pending_updates: false });
+  done.description = await tg(env, 'setMyDescription', { description: DESCRIPTION });
+  done.short = await tg(env, 'setMyShortDescription', { short_description: SHORT_DESCRIPTION });
+  done.commands = await tg(env, 'setMyCommands', { commands: COMMANDS });
+  done.groupCommands = await tg(env, 'setMyCommands', { commands: GROUP_COMMANDS, scope: { type: 'all_group_chats' } });
+  if (opts.menuUrl) done.menu = await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Play', web_app: { url: opts.menuUrl } } });
+  return Response.json({ done, now: await look() });
+}
+
+// Cron: this sandbox can't call the Worker's URL, so the Worker sets the bot up itself on a schedule. It writes what it
+// saw and did to the bot_log table. It never replaces a webhook that points somewhere else, and it only applies the
+// settings when BOT_AUTOSETUP is "1".
+// The cron also runs the Monday top 10 post and the bot reminders (every 15 minutes), and sends update notes (every minute).
+export async function cron(env, now = Date.now()) {
+  const quarter = new Date(now).getUTCMinutes() % 15 === 0;                       // the cron runs every minute: update notes then, the rest every 15 minutes
+  if (quarter && env.BOT_AUTOSETUP === '1') await sync(env);
+  if (env.DB) await holderCron(env, now);                                         // $CWORM holder rewards: the daily wallet reading
+  if (env.DB) try { await wagerSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'wager sweep error ' + (e && e.message)).run().catch(() => { }) }   // Challenges past their deadline
+  if (env.DB) try { await warSweep(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'team war sweep error ' + (e && e.message)).run().catch(() => { }) }   // team wars that didn't fill or are over (teamwar.js)
+  if (!env.BOT_TOKEN || !env.DB) return;
+  try { await payCron(env, (chat, text) => tg(env, 'sendMessage', { chat_id: chat, text: text.slice(0, 4000), disable_web_page_preview: true })) }   // approved prize payouts (payout.js)
+  catch (e) { await botLog(env, 'payout error ' + (e && e.message)).catch(() => { }) }
+  if (env.LOBBY && await env.DB.prepare('SELECT 1 FROM announcements WHERE done = 0 AND created <= ? LIMIT 1').bind(now).first()) await kickAnnounce(env);   // the lobby sends notes back to back
+  if (await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'sticker_pack' RETURNING v").first()) await stickerPack(env);   // one-off: build the Telegram sticker pack
+  const dms = await env.DB.prepare("DELETE FROM bot_kv WHERE k = 'dm_once' RETURNING v").first().catch(() => null);
+  if (dms) await dmOnce(env, dms.v);                                              // one-off: messages to a few players, e.g. prize winners
+  try { await joinsCron(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'joins error ' + (e && e.message)).run().catch(() => { }) }   // hourly welcome of new players in the group
+  try { await royaleHour(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'royaleHour error ' + (e && e.message)).run().catch(() => { }) }   // 20:00 UTC: Worm Royale hour
+  for (const job of quarter ? [updatesCheck, commandsCheck, weekly, reminders, pushReminders, startNudge, mapCleanup, prizeCleanup, prizeProbe, feedCleanup, wormCleanup, chatCleanup, ideasCron, raceSweep, netCleanup] : []) try { await job(env, now) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), job.name + ' error ' + (e && e.message)).run().catch(() => { }) }
+  try { await payReminder(env, await adminTgIds(env), now) } catch (e) { await botLog(env, 'pay reminder error ' + (e && e.message)).catch(() => { }) }   // Monday noon: the payouts that are due, to the admins (panel.js)
+  try { await parodyCron(env, now, adminTgIds, tg) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'parody error ' + (e && e.message)).run().catch(() => { }) }   // daily worm parodies for X (last: it takes minutes)
+}
+// The Crypto Worm sticker pack (see stickers.js), owned by the first admin; every admin gets the link when it's complete.
+async function stickerPack(env) {
+  const log = note => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
+  try {
+    const admins = await adminTgIds(env); if (!admins.length) return log('stickers: no admin with Telegram');
+    const r = await makePack((m, b) => tg(env, m, b), admins[0]);
+    await log('stickers ' + JSON.stringify(r));
+    if (r.link && !r.error) for (const chat_id of admins)
+      await tg(env, 'sendMessage', { chat_id, text: `🪱 The Crypto Worm sticker pack is ready: ${r.count} stickers.\n${r.link}` });
+  } catch (e) { await log('stickers error ' + (e && e.message)) }
+}
+// A few one-off messages to chosen players (Damian 2026-10-27: winners without a wallet). bot_kv 'dm_once' holds
+// [{chat_id, text}], each sent once with the Play button; the cron deletes the key first, and bot_log gets who got it.
+export async function dmOnce(env, v) {
+  let list; try { list = JSON.parse(v) } catch { list = [] }
+  const out = [];
+  for (const d of (Array.isArray(list) ? list : []).slice(0, 50)) {
+    if (!d || d.chat_id == null || !d.text) continue;
+    const r = await tg(env, 'sendMessage', { chat_id: d.chat_id, text: String(d.text).slice(0, 4000), reply_markup: { inline_keyboard: [[{ text: d.play || '🎮 Play', url: gameLink(env, d.src ? 's_' + d.src : null) }]] } });
+    out.push(d.chat_id + (r && r.ok ? ' ok' : ' ' + ((r && r.description) || 'no answer')));
+  }
+  await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), ('dm_once ' + out.join(', ')).slice(0, 4000)).run().catch(() => { });
+}
+// One reminder for people who started the bot but never opened the game (Damian 2026-10-22): an hour after their first START,
+// in their language, with the Play button; never a second one, and none after /stop.
+const NUDGE_AFTER = 3600e3, NUDGE_UNTIL = 24 * 3600e3, NUDGE_MAX = 40;
+export async function startNudge(env, now = Date.now()) {
+  if (!env.BOT_TOKEN || !env.DB) return 0;
+  const { results } = await env.DB.prepare(`SELECT tg_id, src, lang FROM bot_starts b WHERE nudged = 0 AND first < ? AND first > ?
+      AND NOT EXISTS (SELECT 1 FROM players p WHERE p.tg_id = b.tg_id) LIMIT ?`).bind(now - NUDGE_AFTER, now - NUDGE_UNTIL, NUDGE_MAX).all();
+  let sent = 0;
+  for (const r of results) {
+    const t = WELCOME[welcomeLang(r.lang)];
+    const res = await tg(env, 'sendMessage', { chat_id: r.tg_id, text: t.nudge, reply_markup: { inline_keyboard: [[{ text: t.play, url: gameLink(env, r.src ? 's_' + r.src : null) }]] } });
+    await env.DB.prepare('UPDATE bot_starts SET nudged = ? WHERE tg_id = ?').bind(res && res.ok ? now : -now, r.tg_id).run();
+    if (res && res.ok) sent++;
+  }
+  return sent;
+}
+// The webhook's update list only changes through setWebhook. When UPDATES grows (callback_query for the idea buttons,
+// 2026-11-05), the cron sets it once, keeping the same address and secret, and only on a webhook that points here.
+export async function updatesCheck(env) {
+  const want = UPDATES.join(','), seen = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'updates'").first().catch(() => null);
+  if (seen && seen.v === want) return;
+  const info = (await tg(env, 'getWebhookInfo')).result || {}, mine = env.PUBLIC_URL && env.PUBLIC_URL + '/telegram/webhook';
+  if (!mine || info.url !== mine) return botLog(env, 'updates: left alone, the webhook is ' + (info.url || 'not set'));
+  const have = info.allowed_updates || [];
+  const ok = UPDATES.every(x => have.includes(x)) || (await tg(env, 'setWebhook', { url: mine, secret_token: await webhookSecret(env), allowed_updates: UPDATES, drop_pending_updates: false })).ok;
+  if (ok) await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('updates', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(want).run();
+  await botLog(env, 'updates ' + (ok ? 'set to ' : 'not set: ') + want);
+}
+// The bot's command menu follows COMMANDS: when the list changes (a new command such as /id), the next quarter-hour job sets it once.
+export async function commandsCheck(env) {
+  if (!env.BOT_TOKEN || !env.DB) return;
+  const want = COMMANDS.map(c => c.command + '=' + c.description).join('|');   // names and descriptions: a changed description is sent once too
+  const seen = await env.DB.prepare("SELECT v FROM bot_kv WHERE k = 'commands'").first().catch(() => null);
+  if (seen && seen.v === want) return;
+  const ok = (await tg(env, 'setMyCommands', { commands: COMMANDS })).ok;
+  if (ok) await env.DB.prepare("INSERT INTO bot_kv (k, v) VALUES ('commands', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(want).run();
+  await botLog(env, 'commands ' + (ok ? 'set to ' : 'not set: ') + want);
+}
+export async function sync(env) {
+  try { await syncNow(env) } catch (e) { await env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), 'error ' + (e && e.message)).run().catch(() => { }) }
+}
+async function syncNow(env) {
+  const log = note => env.DB.prepare('INSERT INTO bot_log (at, note) VALUES (?, ?)').bind(Date.now(), String(note).slice(0, 4000)).run().catch(() => { });
+  if (!env.BOT_TOKEN || !env.PUBLIC_URL) return log('no BOT_TOKEN or PUBLIC_URL');
+  const info = (await tg(env, 'getWebhookInfo')).result || {}, menu = (await tg(env, 'getChatMenuButton')).result || {}, mine = env.PUBLIC_URL + '/telegram/webhook';
+  await log('seen ' + JSON.stringify({ webhook: info.url || '', pending: info.pending_update_count, lastError: info.last_error_message || '', menu: menu.type }));
+  if (env.BOT_AUTOSETUP !== '1') return;
+  if (info.url && info.url !== mine) return log('left alone: the webhook points to another service');
+  const r = { webhook: (await tg(env, 'setWebhook', { url: mine, secret_token: await webhookSecret(env), allowed_updates: UPDATES })).ok,
+    description: (await tg(env, 'setMyDescription', { description: DESCRIPTION })).ok,
+    short: (await tg(env, 'setMyShortDescription', { short_description: SHORT_DESCRIPTION })).ok,
+    commands: (await tg(env, 'setMyCommands', { commands: COMMANDS })).ok,
+    groupCommands: (await tg(env, 'setMyCommands', { commands: GROUP_COMMANDS, scope: { type: 'all_group_chats' } })).ok };
+  if (menu.type !== 'web_app' && env.MENU_URL) r.menu = (await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Play', web_app: { url: env.MENU_URL } } })).ok;
+  return log('set ' + JSON.stringify(r));
+}
